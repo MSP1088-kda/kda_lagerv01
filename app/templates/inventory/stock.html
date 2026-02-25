@@ -30,7 +30,7 @@
     </div>
   </form>
 
-  <div class="table">
+  <div class="table" data-kbd-list="true">
     <div class="tr th">
       <div>#</div>
       <div>Produkt</div>
@@ -70,7 +70,7 @@
           {% endif %}
         {% endfor %}
       {% endif %}
-      <div class="tr">
+      <div class="tr" data-kbd-row="true" data-href="/inventory/transactions/new?product_id={{ p.id }}">
         <div>{{ p.id }}</div>
         <div>{{ p.name }}</div>
         <div>{{ p.track_mode }}</div>

@@ -5,6 +5,172 @@
     return tag === 'input' || tag === 'textarea' || tag === 'select';
   }
 
+  let kbdRows = [];
+  let kbdIndex = -1;
+
+  function setKbdSelection(index, scrollIntoView){
+    if(!kbdRows.length) return;
+    const next = Math.max(0, Math.min(index, kbdRows.length - 1));
+    if(kbdIndex >= 0 && kbdRows[kbdIndex]){
+      kbdRows[kbdIndex].classList.remove('kbd-selected');
+    }
+    kbdIndex = next;
+    const row = kbdRows[kbdIndex];
+    row.classList.add('kbd-selected');
+    if(scrollIntoView){
+      row.scrollIntoView({block: 'nearest'});
+    }
+  }
+
+  function initKeyboardList(){
+    const lists = Array.from(document.querySelectorAll('[data-kbd-list="true"]'));
+    if(!lists.length) return;
+
+    for(const list of lists){
+      const rows = Array.from(list.querySelectorAll('[data-kbd-row="true"]'));
+      if(!rows.length) continue;
+
+      rows.forEach((row, idx) => {
+        row.addEventListener('click', function(){
+          kbdRows = rows;
+          setKbdSelection(idx, false);
+        });
+      });
+
+      if(!kbdRows.length){
+        kbdRows = rows;
+        setKbdSelection(0, false);
+      }
+    }
+  }
+
+  function moveKbdSelection(delta){
+    if(!kbdRows.length) return false;
+    setKbdSelection((kbdIndex >= 0 ? kbdIndex : 0) + delta, true);
+    return true;
+  }
+
+  function openKbdSelection(){
+    if(!kbdRows.length || kbdIndex < 0) return false;
+    const row = kbdRows[kbdIndex];
+    const href = row.getAttribute('data-href') || '';
+    if(!href) return false;
+    window.location.href = href;
+    return true;
+  }
+
+  function scanUnsupported(input){
+    alert('Scan nicht unterstützt');
+    if(input){
+      input.focus();
+    }
+  }
+
+  async function startSerialScan(input){
+    if(!('BarcodeDetector' in window) || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      scanUnsupported(input);
+      return;
+    }
+
+    let detector;
+    try{
+      detector = new BarcodeDetector({
+        formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'qr_code']
+      });
+    }catch(_e){
+      detector = new BarcodeDetector();
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'scan-overlay';
+    overlay.innerHTML = `
+      <div class="scan-panel">
+        <video autoplay playsinline></video>
+        <div class="row right">
+          <button type="button" class="btn">Abbrechen</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const video = overlay.querySelector('video');
+    const closeBtn = overlay.querySelector('button');
+    let stream = null;
+    let stopped = false;
+    let timer = null;
+
+    const stopScan = function(){
+      if(stopped) return;
+      stopped = true;
+      if(timer){
+        clearTimeout(timer);
+      }
+      if(stream){
+        stream.getTracks().forEach(t => t.stop());
+      }
+      overlay.remove();
+    };
+
+    closeBtn.addEventListener('click', stopScan);
+
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+    }catch(_e){
+      stopScan();
+      scanUnsupported(input);
+      return;
+    }
+
+    video.srcObject = stream;
+    try{
+      await video.play();
+    }catch(_e){}
+
+    const scanStep = async function(){
+      if(stopped) return;
+      try{
+        const codes = await detector.detect(video);
+        if(codes && codes.length && codes[0].rawValue){
+          input.value = String(codes[0].rawValue);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          stopScan();
+          input.focus();
+          return;
+        }
+      }catch(_e){}
+      timer = setTimeout(scanStep, 200);
+    };
+
+    scanStep();
+  }
+
+  function initSerialScanButtons(){
+    const serialInputs = Array.from(document.querySelectorAll('input[name="serial_number"]'));
+    serialInputs.forEach(input => {
+      if(input.dataset.scanReady === '1') return;
+      input.dataset.scanReady = '1';
+
+      const wrap = document.createElement('div');
+      wrap.className = 'scan-input-row';
+      const parent = input.parentNode;
+      if(!parent) return;
+      parent.insertBefore(wrap, input);
+      wrap.appendChild(input);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn scan-btn';
+      btn.textContent = 'SCAN';
+      btn.addEventListener('click', function(){
+        startSerialScan(input);
+      });
+      wrap.appendChild(btn);
+    });
+  }
+
   // Version line
   fetch('/meta/version').then(r=>r.json()).then(v=>{
     const el = document.getElementById('versionLine');
@@ -34,6 +200,27 @@
       return;
     }
 
+    if(!e.altKey && !e.ctrlKey && !e.metaKey && !isTypingTarget(active)){
+      if(e.key === 'ArrowDown'){
+        if(moveKbdSelection(1)){
+          e.preventDefault();
+        }
+        return;
+      }
+      if(e.key === 'ArrowUp'){
+        if(moveKbdSelection(-1)){
+          e.preventDefault();
+        }
+        return;
+      }
+      if(e.key === 'Enter'){
+        if(openKbdSelection()){
+          e.preventDefault();
+        }
+        return;
+      }
+    }
+
     // Alt+number navigation
     if(e.altKey && !e.ctrlKey && !e.metaKey){
       const k = e.key;
@@ -57,4 +244,7 @@
       }
     }
   }, true);
+
+  initKeyboardList();
+  initSerialScanButtons();
 })();

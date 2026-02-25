@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, and_, exists
@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from .db import Base, get_engine, db_session, get_sessionmaker
+from .api_v1 import router as api_v1_router
 from .models import (
     Area,
     AttributeDef,
@@ -50,11 +51,26 @@ def _compute_build_id() -> str:
     This avoids manual "bump version" conflicts and still shows a visible change in the UI.
     """
     base = Path(__file__).parent
+    root = base.parent
     h = hashlib.sha256()
     for p in sorted(base.rglob("*")):
         if not p.is_file():
             continue
         if p.suffix.lower() not in (".py", ".html", ".css", ".js"):
+            continue
+        try:
+            h.update(p.read_bytes())
+        except Exception:
+            continue
+    for rel in (
+        "README.md",
+        "Dockerfile",
+        "docker-compose.yml",
+        "requirements.txt",
+        "CODEX_AGENT_GUIDELINE.md",
+    ):
+        p = root / rel
+        if not p.is_file():
             continue
         try:
             h.update(p.read_bytes())
@@ -74,6 +90,13 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 app = FastAPI(title="KDA Lager (Standalone Modul)")
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+app.state.version_meta = {
+    "version": APP_VERSION,
+    "build": APP_BUILD,
+    "git_sha": GIT_SHA,
+    "build_date": BUILD_DATE,
+}
+app.include_router(api_v1_router)
 
 
 def _flash(request: Request, message: str, level: str = "info") -> None:
@@ -105,6 +128,11 @@ def _ctx(request: Request, user=None, **kwargs):
         "build_date": BUILD_DATE,
         **kwargs,
     }
+
+
+def _wants_json(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    return request.url.path.startswith("/api/") or "application/json" in accept
 
 
 @app.on_event("startup")
@@ -186,6 +214,20 @@ async def setup_and_auth_gate(request: Request, call_next):
 app.add_middleware(SessionMiddleware, secret_key=get_session_secret(), max_age=60 * 60 * 24 * 7)
 
 
+@app.exception_handler(HTTPException)
+async def http_exception_redirect_handler(request: Request, exc: HTTPException):
+    if exc.status_code in (401, 403):
+        accept = (request.headers.get("accept") or "").lower()
+        wants_html = "text/html" in accept or accept == "" or "*/*" in accept
+        if wants_html and not _wants_json(request):
+            try:
+                _flash(request, "Bitte anmelden." if exc.status_code == 401 else "Admin erforderlich.", "warn")
+            except Exception:
+                pass
+            return RedirectResponse("/login", status_code=302)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers or {})
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -193,12 +235,7 @@ def health():
 
 @app.get("/meta/version")
 def meta_version():
-    return {
-        "version": APP_VERSION,
-        "build": APP_BUILD,
-        "git_sha": GIT_SHA,
-        "build_date": BUILD_DATE,
-    }
+    return app.state.version_meta
 
 
 # ---------------------------

@@ -245,6 +245,23 @@ class InventoryTransaction(Base):
     __table_args__ = (Index("ix_tx_created_at", "created_at"),)
 
 
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    delivered_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("ix_outbox_created_at", "created_at"),
+        Index("ix_outbox_delivered_at", "delivered_at"),
+    )
+
+
 class Reservation(Base):
     __tablename__ = "reservations"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

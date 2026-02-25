@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import datetime as dt
+import json
+
 from sqlalchemy.orm import Session
 
-from ..models import Product, StockBalance, StockSerial, InventoryTransaction, Reservation
+from ..models import (
+    InstanceConfig,
+    InventoryTransaction,
+    OutboxEvent,
+    Product,
+    Reservation,
+    StockBalance,
+    StockSerial,
+)
 
 
 def _get_or_create_balance(db: Session, product_id: int, warehouse_id: int, condition: str) -> StockBalance:
@@ -36,6 +47,49 @@ def apply_transaction(db: Session, tx: InventoryTransaction, actor_user_id: int 
 
     tx.created_by_user_id = actor_user_id
     db.add(tx)
+    db.flush()
+    _write_outbox_event(db, tx, actor_user_id)
+
+
+def _write_outbox_event(db: Session, tx: InventoryTransaction, actor_user_id: int | None) -> None:
+    event_type_map = {
+        "receipt": "StockReceived",
+        "issue": "StockIssued",
+        "transfer": "StockTransferred",
+        "adjust": "StockAdjusted",
+        "scrap": "StockScrapped",
+    }
+    inst = db.get(InstanceConfig, 1)
+    payload = {
+        "timestamp": dt.datetime.utcnow().replace(tzinfo=None).isoformat() + "Z",
+        "actor_user_id": actor_user_id,
+        "entity": {"type": "InventoryTransaction", "id": tx.id},
+        "transaction": {
+            "id": tx.id,
+            "tx_type": tx.tx_type,
+            "product_id": tx.product_id,
+            "warehouse_from_id": tx.warehouse_from_id,
+            "warehouse_to_id": tx.warehouse_to_id,
+            "condition": tx.condition,
+            "quantity": tx.quantity,
+            "serial_number": tx.serial_number,
+            "reference": tx.reference,
+        },
+    }
+    if inst and inst.base_url:
+        payload["base_url"] = inst.base_url
+    else:
+        payload["instance_id"] = 1
+
+    db.add(
+        OutboxEvent(
+            event_type=event_type_map.get(tx.tx_type, "StockChanged"),
+            entity_type="InventoryTransaction",
+            entity_id=tx.id,
+            payload_json=json.dumps(payload),
+            delivery_attempts=0,
+        )
+    )
 
 
 def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:

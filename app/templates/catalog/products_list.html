@@ -76,7 +76,7 @@
     </div>
   </form>
 
-  <div class="table">
+  <div class="table" data-kbd-list="true">
     <div class="tr th">
       <div>#</div>
       <div>Name</div>
@@ -86,7 +86,7 @@
       <div>Action</div>
     </div>
     {% for p in products %}
-      <div class="tr">
+      <div class="tr" data-kbd-row="true" {% if user.role == 'admin' %}data-href="/catalog/products/{{ p.id }}/edit"{% endif %}>
         <div>{{ p.id }}</div>
         <div>{{ p.name }}</div>
         <div>{{ p.manufacturer or "-" }}</div>

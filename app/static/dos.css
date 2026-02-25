@@ -147,6 +147,18 @@ h3{ margin-top:12px; font-size:16px; }
 .tr:first-child{ border-top:0; }
 .tr > div{ padding:8px 10px; }
 .th{ font-weight:700; background: rgba(0,255,102,0.1); }
+.tr.wh-tr{ grid-template-columns: 60px 1.2fr 1.8fr 120px; }
+
+[data-kbd-row="true"]{ cursor:pointer; }
+[data-kbd-row="true"].kbd-selected > div{
+  background: var(--fg);
+  color: var(--bg);
+}
+[data-kbd-row="true"].kbd-selected a,
+[data-kbd-row="true"].kbd-selected .btn{
+  color: var(--bg);
+  border-color: var(--bg);
+}
 
 .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
 .grid3{ display:grid; grid-template-columns: 1.2fr 1fr 1fr; gap:10px; }
@@ -163,6 +175,56 @@ h3{ margin-top:12px; font-size:16px; }
 .box-body{ padding:10px; }
 
 .mono{ font-family:inherit; white-space:pre-wrap; }
+
+.mobile-quick-actions{ display:none; margin-top:14px; }
+.mobile-quick-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+}
+.mobile-action{
+  border:1px solid var(--border);
+  display:block;
+  text-align:center;
+  padding:14px 10px;
+  font-weight:700;
+}
+
+.scan-input-row{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.scan-input-row input{
+  flex:1;
+}
+.scan-btn{
+  white-space:nowrap;
+  min-width:78px;
+}
+.scan-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.9);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  z-index:120;
+  padding:12px;
+}
+.scan-panel{
+  width:min(560px, 100%);
+  border:1px solid var(--border);
+  background:var(--bg);
+  padding:12px;
+}
+.scan-panel video{
+  width:100%;
+  min-height:220px;
+  border:1px solid var(--border);
+  background:#111;
+  object-fit:cover;
+}
 
 .nav-mobile{ display:none; }
 
@@ -192,7 +254,11 @@ h3{ margin-top:12px; font-size:16px; }
   .topbar{ flex-direction:column; align-items:stretch; }
   .content{ padding-bottom:90px; }
   .grid2, .grid3{ grid-template-columns:1fr; }
+  .mobile-quick-actions{ display:block; }
+  .mobile-quick-grid{ grid-template-columns:1fr 1fr; gap:8px; }
+  .mobile-action{ padding:16px 10px; }
   .tr{ grid-template-columns: 50px 1.6fr 0.8fr 0.8fr 0.8fr 110px; }
+  .tr.wh-tr{ grid-template-columns: 50px 1fr 1fr 100px; }
   body{ font-size:16px; }
   .btn{ padding:10px 12px; }
   .btn.small{ padding:8px 10px; }
