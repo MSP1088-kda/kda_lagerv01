@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>CSV-Import: Spalten zuordnen</h1>
+
+  <div class="hint">
+    Erkannte Zeilen: <b>{{ total_rows }}</b> | Trennzeichen: <b>{{ delimiter }}</b> | Kopfzeile: <b>{% if has_header %}Ja{% else %}Nein{% endif %}</b>
+  </div>
+
+  <h2>Vorschau (erste 10 Zeilen)</h2>
+  {% if preview_rows %}
+  <div class="mono">
+    {{ columns|join(' | ') }}<br>
+    {% for row in preview_rows %}
+      {% for c in columns %}{{ row.get(c,'') }}{% if not loop.last %} | {% endif %}{% endfor %}<br>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted">Keine Datenzeilen erkannt.</div>
+  {% endif %}
+
+  <h2>Zuordnung</h2>
+  <form method="post" action="/catalog/products/import/run" class="form">
+    <div class="grid2">
+      <div>
+        <label>Produktname (Pflicht)</label>
+        <select name="map_name" required>
+          <option value="">Bitte wählen</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('name') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Hersteller</label>
+        <select name="map_manufacturer">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('manufacturer') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>SKU / Artikelnummer</label>
+        <select name="map_sku">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('sku') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>EAN</label>
+        <select name="map_ean">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('ean') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Bereich</label>
+        <select name="map_area">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('area') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Geräteart</label>
+        <select name="map_kind">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('kind') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Gerätetyp</label>
+        <select name="map_type">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('type') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Tracking (Seriennummer/Menge)</label>
+        <select name="map_tracking">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('tracking') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Beschreibung</label>
+        <select name="map_description">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('description') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Aktiv (ja/nein)</label>
+        <select name="map_active">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('active') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <h2>Import-Optionen</h2>
+    <label class="check"><input type="checkbox" name="auto_create" checked> Fehlende Bereiche, Gerätearten und Gerätetypen automatisch anlegen</label>
+
+    <div class="row">
+      <label class="radio"><input type="radio" name="duplicate_mode" value="skip" checked> Duplikate überspringen</label>
+      <label class="radio"><input type="radio" name="duplicate_mode" value="update"> Duplikate anhand SKU oder EAN aktualisieren</label>
+    </div>
+
+    <label>Standard-Tracking (wenn keine Spalte zugeordnet ist)</label>
+    <select name="default_track_mode">
+      <option value="serial" selected>{{ 'serial'|de_label('track_mode') }}</option>
+      <option value="quantity">{{ 'quantity'|de_label('track_mode') }}</option>
+    </select>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Import starten</button>
+      <a class="btn" href="/catalog/products/import">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Ordne jede gewünschte Zielspalte einer CSV-Spalte zu.</li>
+  <li>Der Produktname ist Pflicht, alle anderen Felder sind optional.</li>
+  <li>Wähle die Duplikatstrategie und starte danach den Import.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Postausgang</h1>
+
+  <div class="row">
+    <a class="btn" href="/settings/email">E-Mail-Konten</a>
+    <a class="btn" href="/settings/email/inbox">Posteingang</a>
+    {% if user.role == 'admin' %}
+    <form method="post" action="/settings/email/outbox/send_now" class="inline">
+      <button class="btn primary" type="submit">Jetzt senden</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if user.role == 'admin' %}
+  <h2>Neue E-Mail</h2>
+  <form method="post" action="/settings/email/outbox/add" class="form">
+    <div class="grid2">
+      <div>
+        <label>Konto (optional)</label>
+        <select name="account_id">
+          <option value="">Standard verwenden</option>
+          {% for a in accounts %}
+            <option value="{{ a.id }}">{{ a.label }} &lt;{{ a.email }}&gt;{% if a.is_default %} [Standard]{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Empfänger (To)</label>
+        <input type="email" name="to_email" required>
+      </div>
+    </div>
+    <label>Betreff</label>
+    <input type="text" name="subject">
+    <label>Text</label>
+    <textarea name="body_text" rows="6"></textarea>
+    <button class="btn primary" type="submit">In Postausgang legen</button>
+  </form>
+  {% endif %}
+
+  <h2>Outbox-Liste</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 60px 1fr 1fr 0.8fr 0.8fr 1.4fr;">
+      <div>#</div>
+      <div>Empfänger</div>
+      <div>Betreff</div>
+      <div>Status</div>
+      <div>Versuche</div>
+      <div>Fehler / Versandzeit</div>
+    </div>
+    {% for r in rows %}
+      <div class="tr" style="grid-template-columns: 60px 1fr 1fr 0.8fr 0.8fr 1.4fr;">
+        <div>{{ r.id }}</div>
+        <div>{{ r.to_email }}</div>
+        <div>{{ r.subject or '-' }}</div>
+        <div>{{ r.status }}</div>
+        <div>{{ r.attempts or 0 }}</div>
+        <div>
+          {% if r.status == 'sent' %}
+            Gesendet: {{ r.sent_at or '-' }}
+          {% else %}
+            {{ r.last_error or '-' }}
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Keine Einträge im Postausgang.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Neue E-Mails landen zuerst im Postausgang und werden später gesendet.</li>
+  <li>Mit "Jetzt senden" stößt du den Versand sofort manuell an.</li>
+  <li>Bei Fehlern siehst du hier den Grund und die Anzahl der Versuche.</li>
+</ul>
+{% endblock %}

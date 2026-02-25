@@ -1,0 +1,6 @@
+:80 {
+    reverse_proxy lager:8080 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+    }
+}

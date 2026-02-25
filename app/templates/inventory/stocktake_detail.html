@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Inventur #{{ st.id }}</h1>
+
+  <div class="hint">
+    Lager: {{ warehouse.name if warehouse else st.warehouse_id }}{% if bin_row %} | Fach: {{ bin_row.code }}{% endif %} | Status: {{ st.status }}
+  </div>
+
+  <div class="row">
+    <a class="btn" href="/inventory/stocktakes">Zurück zur Liste</a>
+    {% if st.status == 'open' %}
+    <form method="post" action="/inventory/stocktakes/{{ st.id }}/close" class="inline" onsubmit="return confirm('Inventur wirklich abschließen?');">
+      <button class="btn primary" type="submit">Inventur abschließen</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if st.status == 'open' %}
+  <h2>Zeile hinzufügen</h2>
+  <form method="post" action="/inventory/stocktakes/{{ st.id }}/line/add" class="form">
+    <label>Produkt</label>
+    <select name="product_id" required>
+      {% for p in products %}
+        <option value="{{ p.id }}">{{ p.name }} [{{ p.track_mode|de_label('track_mode') }}]</option>
+      {% endfor %}
+    </select>
+    <div class="grid3">
+      <div>
+        <label>Gezählte Menge</label>
+        <input type="number" name="counted_qty" value="1" min="0">
+      </div>
+      <div>
+        <label>Seriennummer (optional)</label>
+        <input type="text" name="serial_number" placeholder="z. B. SN12345">
+      </div>
+      <div>
+        <label>Notiz</label>
+        <input type="text" name="note">
+      </div>
+    </div>
+    <button class="btn primary" type="submit">Zeile speichern</button>
+  </form>
+  {% endif %}
+
+  <h2>Zeilen</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 1fr;">
+      <div>#</div>
+      <div>Produkt-ID</div>
+      <div>Menge / SN</div>
+      <div>Notiz</div>
+    </div>
+    {% for line in lines %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr 1fr;">
+        <div>{{ line.id }}</div>
+        <div>{{ line.product_id }}</div>
+        <div>
+          {% if line.serial_number %}
+            SN: {{ line.serial_number }}
+          {% else %}
+            {{ line.counted_qty }}
+          {% endif %}
+        </div>
+        <div>{{ line.note or '-' }}</div>
+      </div>
+    {% endfor %}
+    {% if not lines %}
+      <div class="muted">Noch keine Zeilen erfasst.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Erfasse pro Produkt (und bei Serienartikeln pro Seriennummer) die Zählwerte.</li>
+  <li>Beim Abschluss werden Differenzen automatisch als Buchungen erfasst.</li>
+  <li>So bleibt der gesamte Inventurprozess revisionssicher nachvollziehbar.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>CSV-Import Ergebnis</h1>
+
+  <div class="mono">
+    Angelegt: {{ created_count }}<br>
+    Aktualisiert: {{ updated_count }}<br>
+    Übersprungen: {{ skipped_count }}<br>
+    Fehler: {{ error_count }}<br>
+  </div>
+
+  <h2>Fehlerliste (maximal 50)</h2>
+  {% if errors_preview %}
+  <div class="mono">
+    {% for e in errors_preview %}
+      - {{ e }}<br>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted">Keine Fehler aufgetreten.</div>
+  {% endif %}
+
+  <div class="row">
+    <a class="btn primary" href="/catalog/products">Zur Produktliste</a>
+    <a class="btn" href="/catalog/products/import">Neuen Import starten</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Prüfe hier, wie viele Datensätze angelegt oder aktualisiert wurden.</li>
+  <li>In der Fehlerliste stehen Zeilennummer und Ursache für übersprungene Zeilen.</li>
+  <li>Starte bei Bedarf direkt einen neuen Importlauf.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{{ error_title or "Fehler" }}</h1>
+  <p>{{ error_message or "Es ist ein Fehler aufgetreten." }}</p>
+  <p class="muted">Fehlercode: {{ error_code or "-" }}</p>
+  <div class="row">
+    <a class="btn" href="/dashboard">Zur Übersicht</a>
+    <a class="btn" href="/login">Zur Anmeldung</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Diese Seite zeigt eine verständliche Fehlermeldung.</li>
+  <li>Mit "Zur Übersicht" gehst du zur Startseite.</li>
+  <li>Mit "Zur Anmeldung" meldest du dich neu an.</li>
+</ul>
+{% endblock %}

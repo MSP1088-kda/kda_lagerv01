@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>CSV-Import Produkte</h1>
+
+  <form method="post" action="/catalog/products/import/preview" enctype="multipart/form-data" class="form">
+    <label>CSV-Datei</label>
+    <input type="file" name="csv_file" accept=".csv,text/csv" required>
+
+    <label>Trennzeichen</label>
+    <select name="delimiter">
+      <option value=";" selected>Semikolon (;)</option>
+      <option value=",">Komma (,)</option>
+    </select>
+
+    <label class="check">
+      <input type="checkbox" name="has_header" checked>
+      Erste Zeile enthält Spaltennamen
+    </label>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Vorschau und Spaltenzuordnung</button>
+      <a class="btn" href="/catalog/products">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Lade hier die CSV-Datei für den Produktimport hoch.</li>
+  <li>Wähle das passende Trennzeichen deiner Datei.</li>
+  <li>Im nächsten Schritt ordnest du die CSV-Spalten den Produktfeldern zu.</li>
+</ul>
+{% endblock %}

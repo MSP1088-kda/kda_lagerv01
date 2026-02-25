@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Posteingang</h1>
+
+  <div class="row">
+    <a class="btn" href="/settings/email">E-Mail-Konten</a>
+    <a class="btn" href="/settings/email/outbox">Postausgang</a>
+  </div>
+
+  <form method="post" action="/settings/email/inbox/fetch" class="form compact">
+    <div class="row">
+      <label>Konto</label>
+      <select name="account_id">
+        {% for a in accounts %}
+          <option value="{{ a.id }}" {% if selected_id==a.id %}selected{% endif %}>{{ a.label }} &lt;{{ a.email }}&gt;</option>
+        {% endfor %}
+      </select>
+      {% if user.role == 'admin' %}
+      <button class="btn primary" type="submit">Jetzt abrufen</button>
+      {% endif %}
+    </div>
+  </form>
+
+  <div class="table" data-kbd-list="true">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 1fr;">
+      <div>#</div>
+      <div>Datum</div>
+      <div>Von</div>
+      <div>Betreff</div>
+    </div>
+    {% for m in rows %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr 1fr;" data-kbd-row="true" data-href="/settings/email/inbox/{{ m.id }}">
+        <div>{{ m.id }}</div>
+        <div>{{ m.date_text or '-' }}</div>
+        <div>{{ m.from_text or '-' }}</div>
+        <div>{{ m.subject or '(ohne Betreff)' }}</div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Keine Nachrichten gespeichert.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der Posteingang zeigt lokal gespeicherte IMAP-Nachrichten.</li>
+  <li>Mit "Jetzt abrufen" holst du die neuesten Einträge vom Server.</li>
+  <li>Enter auf einem Eintrag öffnet die Detailansicht.</li>
+</ul>
+{% endblock %}

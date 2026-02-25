@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Seriennummer {{ serial.serial_number }}</h1>
+
+  <div class="row">
+    <a class="btn" href="/inventory/stock?warehouse_id={{ serial.warehouse_id }}">Zurück zum Bestand</a>
+  </div>
+
+  <div class="box">
+    <div class="box-title">Stammdaten</div>
+    <div class="box-body">
+      <div><b>Produkt:</b> {{ product.name if product else serial.product_id }}</div>
+      <div><b>Status:</b> {{ serial.status|de_label('serial_status') }}</div>
+      <div><b>Lager:</b> {{ warehouse.name if warehouse else serial.warehouse_id }}</div>
+      <div><b>Fach/Bin:</b> {% if bin_row %}{{ bin_row.code }}{% if bin_row.label %} ({{ bin_row.label }}){% endif %}{% else %}-{% endif %}</div>
+      <div><b>Zustand:</b> {{ serial.condition|de_label('condition') }}</div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Schnellaktionen</div>
+    <div class="box-body">
+      {% if serial.status == 'in_stock' %}
+      <form method="post" action="/inventory/serial/{{ serial.serial_number }}/action" class="inline">
+        <input type="hidden" name="action" value="reserve">
+        <input type="text" name="reference" placeholder="Referenz (optional)">
+        <button class="btn small" type="submit">Reservieren</button>
+      </form>
+      {% endif %}
+      {% if serial.status == 'reserved' %}
+      <form method="post" action="/inventory/serial/{{ serial.serial_number }}/action" class="inline">
+        <input type="hidden" name="action" value="release">
+        <button class="btn small" type="submit">Freigeben</button>
+      </form>
+      {% endif %}
+      {% if serial.status in ['in_stock', 'reserved'] %}
+      <form method="post" action="/inventory/serial/{{ serial.serial_number }}/action" class="inline" onsubmit="return confirm('Seriennummer wirklich ausbuchen?');">
+        <input type="hidden" name="action" value="scrap">
+        <input type="text" name="reference" placeholder="Referenz">
+        <button class="btn small" type="submit">Ausbuchen</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <h2>Bewegungshistorie</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 1fr;">
+      <div>#</div>
+      <div>Zeit</div>
+      <div>Typ</div>
+      <div>Referenz / Notiz</div>
+    </div>
+    {% for tx in txs %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr 1fr;">
+        <div>{{ tx.id }}</div>
+        <div>{{ tx.created_at }}</div>
+        <div>{{ tx.tx_type|de_label('tx_type') }}</div>
+        <div>{{ tx.reference or '-' }}{% if tx.note %} / {{ tx.note }}{% endif %}</div>
+      </div>
+    {% endfor %}
+    {% if not txs %}
+      <div class="muted">Keine Bewegungen gefunden.</div>
+    {% endif %}
+  </div>
+
+  <h2>Reservierungen</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr;">
+      <div>#</div>
+      <div>Zeit</div>
+      <div>Status / Referenz</div>
+    </div>
+    {% for r in reservations %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr;">
+        <div>{{ r.id }}</div>
+        <div>{{ r.created_at }}</div>
+        <div>{{ r.status|de_label('reservation_status') }}{% if r.reference %} / {{ r.reference }}{% endif %}</div>
+      </div>
+    {% endfor %}
+    {% if not reservations %}
+      <div class="muted">Keine Reservierungen gefunden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Serien-Detailseite zeigt Status, Lagerort und komplette Historie.</li>
+  <li>Über Schnellaktionen kannst du reservieren, freigeben oder ausbuchen.</li>
+  <li>Alle Änderungen bleiben über Reservierungen und Buchungen nachvollziehbar.</li>
+</ul>
+{% endblock %}

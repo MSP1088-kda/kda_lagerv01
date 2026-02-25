@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel quick-panel">
+  <h1>Schnell</h1>
+
+  <div class="box">
+    <div class="box-title">Scan / Suche</div>
+    <div class="box-body">
+      <form method="get" action="/mobile/quick" class="form compact">
+        <div class="grid2">
+          <div>
+            <label>EAN</label>
+            <div class="scan-input-row">
+              <input id="quickEan" type="text" name="ean" value="{{ ean or '' }}" placeholder="EAN scannen oder eingeben">
+              <button type="button" class="btn scan-btn" data-scan-target="quickEan">Scannen</button>
+            </div>
+          </div>
+          <div>
+            <label>Seriennummer</label>
+            <div class="scan-input-row">
+              <input id="quickSerial" type="text" name="serial" value="{{ serial or '' }}" placeholder="Seriennummer scannen">
+              <button type="button" class="btn scan-btn" data-scan-target="quickSerial">Scannen</button>
+            </div>
+          </div>
+        </div>
+        <button class="btn primary" type="submit">Suchen</button>
+      </form>
+
+      {% if found_product %}
+      <div class="hint">Produkt gefunden über EAN: <b>{{ found_product.name }}</b> (ID {{ found_product.id }})</div>
+      {% endif %}
+      {% if found_serial %}
+      <div class="hint">
+        Seriennummer gefunden:
+        <a class="btn small" href="/inventory/serial/{{ found_serial.serial_number }}">Detail öffnen</a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if role_flags.can_inventory_write %}
+  <div class="quick-grid">
+    <div class="box">
+      <div class="box-title">Schnell Wareneingang</div>
+      <div class="box-body">
+        <form method="post" action="/inventory/transactions/new" class="form compact">
+          <input type="hidden" name="tx_type" value="receipt">
+          <label>Produkt</label>
+          <select name="product_id" required>
+            {% for p in products %}
+              <option value="{{ p.id }}" {% if selected_product_id==p.id %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+          </select>
+          <label>Ziel-Lager</label>
+          <select name="warehouse_to_id" required>
+            {% for w in warehouses %}
+              <option value="{{ w.id }}">{{ w.name }}</option>
+            {% endfor %}
+          </select>
+          <label>Menge (für Mengenartikel)</label>
+          <input type="number" name="quantity" value="1" min="1">
+          <label>Seriennummer (für Serienartikel)</label>
+          <input id="quickReceiptSerial" type="text" name="serial_number">
+          <button type="button" class="btn scan-btn" data-scan-target="quickReceiptSerial">Seriennummer scannen</button>
+          <button class="btn primary mobile-action-btn" type="submit">Wareneingang buchen</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Schnell Warenausgang</div>
+      <div class="box-body">
+        <form method="post" action="/inventory/transactions/new" class="form compact">
+          <input type="hidden" name="tx_type" value="issue">
+          <label>Produkt</label>
+          <select name="product_id" required>
+            {% for p in products %}
+              <option value="{{ p.id }}" {% if selected_product_id==p.id %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+          </select>
+          <label>Quell-Lager</label>
+          <select name="warehouse_from_id" required>
+            {% for w in warehouses %}
+              <option value="{{ w.id }}">{{ w.name }}</option>
+            {% endfor %}
+          </select>
+          <label>Menge (für Mengenartikel)</label>
+          <input type="number" name="quantity" value="1" min="1">
+          <label>Seriennummer (für Serienartikel)</label>
+          <input id="quickIssueSerial" type="text" name="serial_number" value="{{ serial or '' }}">
+          <button type="button" class="btn scan-btn" data-scan-target="quickIssueSerial">Seriennummer scannen</button>
+          <button class="btn primary mobile-action-btn" type="submit">Warenausgang buchen</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if role_flags.can_reserve %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Schnell Reservieren</div>
+    <div class="box-body">
+      <form method="post" action="/inventory/reservations/new" class="form compact">
+        <label>Produkt</label>
+        <select name="product_id" required>
+          {% for p in products %}
+            <option value="{{ p.id }}" {% if selected_product_id==p.id %}selected{% endif %}>{{ p.name }}</option>
+          {% endfor %}
+        </select>
+        <label>Lager</label>
+        <select name="warehouse_id" required>
+          {% for w in warehouses %}
+            <option value="{{ w.id }}" {% if found_serial and found_serial.warehouse_id==w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+        <div class="grid2">
+          <div>
+            <label>Menge</label>
+            <input type="number" name="qty" value="1" min="1">
+          </div>
+          <div>
+            <label>Seriennummer</label>
+            <input id="quickReserveSerial" type="text" name="serial_number" value="{{ serial or '' }}">
+          </div>
+        </div>
+        <button type="button" class="btn scan-btn" data-scan-target="quickReserveSerial">Seriennummer scannen</button>
+        <label>Referenz</label>
+        <input type="text" name="reference" placeholder="z. B. Auftrag-123">
+        <button class="btn primary mobile-action-btn" type="submit">Reservieren</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Diese Seite ist für schnelle Einhand-Abläufe auf Mobilgeräten gedacht.</li>
+  <li>Scan nutzt die Kamera (BarcodeDetector); falls nicht verfügbar, einfach manuell eingeben.</li>
+  <li>EAN findet Produkte, Seriennummer führt direkt zur Detailansicht oder füllt Schnellformulare.</li>
+</ul>
+{% endblock %}

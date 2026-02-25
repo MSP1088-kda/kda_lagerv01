@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Neue Inventur</h1>
+
+  <form method="post" action="/inventory/stocktakes/new" class="form">
+    <label>Lager</label>
+    <select name="warehouse_id" required>
+      <option value="0">Bitte wählen</option>
+      {% for w in warehouses %}
+        <option value="{{ w.id }}">{{ w.name }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Fach/Bin (optional)</label>
+    <select name="bin_id">
+      <option value="0">-</option>
+      {% for b in bins %}
+        <option value="{{ b.id }}">Lager {{ b.warehouse_id }}: {{ b.code }}{% if b.label %} ({{ b.label }}){% endif %}</option>
+      {% endfor %}
+    </select>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Inventur starten</button>
+      <a class="btn" href="/inventory/stocktakes">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wähle Lager und optional Fach für den Inventurbereich.</li>
+  <li>Nach dem Start kannst du Inventurzeilen erfassen.</li>
+  <li>Der Abschluss erzeugt automatisch Korrekturbuchungen.</li>
+</ul>
+{% endblock %}

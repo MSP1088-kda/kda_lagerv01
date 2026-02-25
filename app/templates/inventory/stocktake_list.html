@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Inventuren</h1>
+
+  <div class="row">
+    <a class="btn primary" href="/inventory/stocktakes/new">Neue Inventur</a>
+    <a class="btn" href="/inventory/stock">Bestand</a>
+  </div>
+
+  <div class="table" data-kbd-list="true">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 1fr 160px;">
+      <div>#</div>
+      <div>Lager/Fach</div>
+      <div>Status</div>
+      <div>Erstellt</div>
+      <div>Aktion</div>
+    </div>
+    {% for st in rows %}
+      {% set wh = warehouses.get(st.warehouse_id) %}
+      {% set b = bins.get(st.bin_id) if st.bin_id else None %}
+      {% set u = users.get(st.created_by_user_id) if st.created_by_user_id else None %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr 1fr 160px;" data-kbd-row="true" data-href="/inventory/stocktakes/{{ st.id }}">
+        <div>{{ st.id }}</div>
+        <div>{{ wh.name if wh else st.warehouse_id }}{% if b %} / {{ b.code }}{% endif %}</div>
+        <div>{{ st.status }}</div>
+        <div>{{ st.created_at }}{% if u %} / {{ u.email }}{% endif %}</div>
+        <div><a class="btn small" href="/inventory/stocktakes/{{ st.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Noch keine Inventuren vorhanden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Inventuren laufen als eigener Prozess mit Status offen/abgeschlossen.</li>
+  <li>Beim Abschluss werden automatisch Korrekturbuchungen erzeugt.</li>
+  <li>Direkte Bestandsänderungen ohne Buchung werden vermieden.</li>
+</ul>
+{% endblock %}

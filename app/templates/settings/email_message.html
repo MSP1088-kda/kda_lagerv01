@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>E-Mail-Detail</h1>
+
+  <div class="row">
+    <a class="btn" href="/settings/email/inbox?account_id={{ msg.account_id }}">Zurück zum Posteingang</a>
+    <a class="btn" href="/settings/email">E-Mail-Konten</a>
+  </div>
+
+  <div class="box">
+    <div class="box-title">{{ msg.subject or '(ohne Betreff)' }}</div>
+    <div class="box-body">
+      <div><b>Konto:</b> {{ account.label if account else msg.account_id }}</div>
+      <div><b>Von:</b> {{ msg.from_text or '-' }}</div>
+      <div><b>Datum:</b> {{ msg.date_text or '-' }}</div>
+      <div><b>UID:</b> {{ msg.uid }}</div>
+      <div><b>Abruf:</b> {{ msg.fetched_at }}</div>
+      <hr>
+      {% if msg.body_text %}
+      <pre class="mono">{{ msg.body_text }}</pre>
+      {% else %}
+      <div>{{ msg.snippet or '-' }}</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier siehst du die Details einer gespeicherten Nachricht.</li>
+  <li>Wenn kein Volltext vorhanden ist, wird ein kurzer Auszug angezeigt.</li>
+  <li>Über den Zurück-Button kommst du direkt zum gewählten Konto zurück.</li>
+</ul>
+{% endblock %}

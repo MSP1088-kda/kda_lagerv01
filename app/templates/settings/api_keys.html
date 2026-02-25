@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>API-Schlüssel</h1>
+
+  <div class="row">
+    <a class="btn" href="/settings/company">Zurück zu Einstellungen</a>
+  </div>
+
+  {% if new_key %}
+  <div class="box">
+    <div class="box-title">Neuer Schlüssel (einmalig sichtbar)</div>
+    <div class="box-body mono">
+      {{ new_key.label }}: {{ new_key.key }}
+    </div>
+  </div>
+  {% endif %}
+
+  <h2>Neuen Schlüssel anlegen</h2>
+  <form method="post" action="/settings/api-keys/add" class="form">
+    <label>Bezeichnung</label>
+    <input type="text" name="label" required placeholder="z. B. ERP-Sync">
+    <button class="btn primary" type="submit">Schlüssel erzeugen</button>
+  </form>
+
+  <h2>Vorhandene Schlüssel</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 1fr 160px;">
+      <div>#</div>
+      <div>Bezeichnung</div>
+      <div>Status</div>
+      <div>Letzte Nutzung</div>
+      <div>Aktion</div>
+    </div>
+    {% for k in keys %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr 1fr 160px;">
+        <div>{{ k.id }}</div>
+        <div>{{ k.label }}</div>
+        <div>{% if k.enabled %}Aktiv{% else %}Deaktiviert{% endif %}</div>
+        <div>{{ k.last_used_at or '-' }}</div>
+        <div>
+          <form method="post" action="/settings/api-keys/{{ k.id }}/toggle" class="inline">
+            <button class="btn small" type="submit">{% if k.enabled %}Deaktivieren{% else %}Aktivieren{% endif %}</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+    {% if not keys %}
+      <div class="muted">Noch keine API-Schlüssel vorhanden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>API-Schlüssel erlauben Integrationen ohne Browser-Session.</li>
+  <li>Schlüssel werden nur gehasht gespeichert und im Klartext nur einmal angezeigt.</li>
+  <li>Deaktivierte Schlüssel verlieren sofort den Zugriff auf die API.</li>
+</ul>
+{% endblock %}

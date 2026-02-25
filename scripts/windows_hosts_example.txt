@@ -1,0 +1,10 @@
+# Windows hosts-Beispiel (als Administrator bearbeiten)
+# Datei: C:\Windows\System32\drivers\etc\hosts
+# Format: <IP-Adresse> <Hostname>
+
+192.168.1.20 lager
+192.168.1.20 lager.firma.lan
+
+# Danach im Browser testen:
+# http://lager/
+# http://lager.firma.lan/

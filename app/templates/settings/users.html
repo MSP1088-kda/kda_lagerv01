@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Benutzer</h1>
+
+  <div class="row">
+    <a class="btn" href="/settings/company">Zurück zu Einstellungen</a>
+  </div>
+
+  <h2>Bestehende Benutzer</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 1fr;">
+      <div>#</div>
+      <div>E-Mail</div>
+      <div>Rolle</div>
+      <div>Aktion</div>
+    </div>
+    {% for u in users %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr 1fr;">
+        <div>{{ u.id }}</div>
+        <div>{{ u.email }}</div>
+        <div>{{ u.role }}</div>
+        <div>
+          <form method="post" action="/settings/users/{{ u.id }}/role" class="form compact">
+            <div class="row">
+              <select name="role">
+                {% for r in allowed_roles %}
+                  <option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r }}</option>
+                {% endfor %}
+              </select>
+              <button class="btn small" type="submit">Rolle setzen</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <h2>Neuer Benutzer</h2>
+  <form method="post" action="/settings/users/add" class="form">
+    <label>E-Mail</label>
+    <input type="email" name="email" required>
+
+    <label>Passwort</label>
+    <input type="password" name="password" required>
+
+    <label>Rolle</label>
+    <select name="role">
+      {% for r in allowed_roles %}
+        <option value="{{ r }}">{{ r }}</option>
+      {% endfor %}
+    </select>
+
+    <button class="btn primary" type="submit">Benutzer anlegen</button>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Administratoren verwalten hier Benutzer und Rollen.</li>
+  <li>Rollen steuern, welche Bereiche im System nutzbar sind.</li>
+  <li>Mindestens ein Admin bleibt immer erhalten.</li>
+</ul>
+{% endblock %}
