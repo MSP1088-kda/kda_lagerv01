@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Backups</h1>
+
+  <form method="post" action="/settings/backup/create" class="inline">
+    <button class="btn primary" type="submit">Backup erstellen</button>
+  </form>
+
+  <h2>Vorhandene Backups</h2>
+  <div class="mono">
+    {% for b in backups %}
+      <a href="/settings/backup/download/{{ b }}">{{ b }}</a><br>
+    {% endfor %}
+    {% if not backups %}
+      <span class="muted">Noch keine Backups.</span>
+    {% endif %}
+  </div>
+
+  <div class="hint">
+    Backup enthält DB + uploads. Konsequent im <code>/data</code>-Volume gehalten, damit du nicht weinst.
+  </div>
+
+  <div class="row">
+    <a class="btn" href="/settings/company">Zurück</a>
+  </div>
+</div>
+{% endblock %}

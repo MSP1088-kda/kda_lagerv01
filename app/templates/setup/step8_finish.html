@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Setup 8/8: Abschluss</h1>
+
+  <h2>Zusammenfassung</h2>
+  <div class="mono">
+    Admins: {{ admins }}<br>
+    Firma: {{ company.name or "-" }}<br>
+  </div>
+
+  <form method="post" action="/setup/8" class="form">
+    <button type="submit" class="btn primary">Setup abschließen</button>
+  </form>
+
+  <div class="hint">
+    Danach geht's zum Login. Und dann kannst du endlich Geräte katalogisieren, statt sie zu stapeln wie Tetris mit Metall.
+  </div>
+</div>
+{% endblock %}

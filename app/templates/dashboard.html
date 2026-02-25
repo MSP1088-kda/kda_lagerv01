@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Dashboard</h1>
+
+  <div class="grid2">
+    <div class="box">
+      <div class="box-title">Katalog</div>
+      <div class="box-body">
+        Produkte: <b>{{ stats.products }}</b><br>
+        <a href="/catalog/products" class="btn small">Öffnen</a>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Lager</div>
+      <div class="box-body">
+        Lagerorte: <b>{{ stats.warehouses }}</b><br>
+        Serien im Bestand: <b>{{ stats.serials_in_stock }}</b><br>
+        Mengen-Bestandszeilen: <b>{{ stats.qty_lines }}</b><br>
+        Aktive Reservierungen: <b>{{ stats.reservations }}</b><br>
+        <a href="/inventory/stock" class="btn small">Bestand ansehen</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="hint">
+    Keyboard: Alt+2 Katalog, Alt+3 Lager, "/" für Suche.
+  </div>
+</div>
+{% endblock %}

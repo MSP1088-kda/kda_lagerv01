@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Katalog-Struktur</h1>
+
+  <div class="grid2">
+    <div class="box">
+      <div class="box-title">Bereiche</div>
+      <div class="box-body">
+        <div class="mono">
+          {% for a in areas %}
+            #{{ a.id }} {{ a.name }}<br>
+          {% endfor %}
+        </div>
+
+        {% if user.role == 'admin' %}
+        <form method="post" action="/catalog/areas/add" class="form compact">
+          <label>Neuer Bereich</label>
+          <div class="row">
+            <input type="text" name="name" placeholder="z.B. Ersatzteile" required>
+            <button class="btn small primary" type="submit">Add</button>
+          </div>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Gerätearten</div>
+      <div class="box-body">
+        <div class="mono">
+          {% for k in kinds %}
+            #{{ k.id }} (Area {{ k.area_id }}) {{ k.name }}<br>
+          {% endfor %}
+        </div>
+
+        {% if user.role == 'admin' %}
+        <form method="post" action="/catalog/kinds/add" class="form compact">
+          <label>Neue Geräteart</label>
+          <div class="grid2">
+            <div>
+              <label>Bereich</label>
+              <select name="area_id">
+                {% for a in areas %}
+                  <option value="{{ a.id }}">{{ a.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label>Name</label>
+              <input type="text" name="name" required>
+            </div>
+          </div>
+          <button class="btn small primary" type="submit">Add</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Gerätetypen</div>
+      <div class="box-body">
+        <div class="mono">
+          {% for t in types %}
+            #{{ t.id }} (Art {{ t.device_kind_id }}) {{ t.name }}<br>
+          {% endfor %}
+        </div>
+
+        {% if user.role == 'admin' %}
+        <form method="post" action="/catalog/types/add" class="form compact">
+          <label>Neuer Gerätetyp</label>
+          <div class="grid2">
+            <div>
+              <label>Geräteart</label>
+              <select name="device_kind_id">
+                {% for k in kinds %}
+                  <option value="{{ k.id }}">{{ k.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label>Name</label>
+              <input type="text" name="name" required>
+            </div>
+          </div>
+          <button class="btn small primary" type="submit">Add</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Shortcuts</div>
+      <div class="box-body">
+        <div class="mono">
+          Alt+2 → Produktliste<br>
+          Alt+3 → Bestand<br>
+          "/" → Suche fokussieren<br>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

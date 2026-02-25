@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Setup 1/8: Backup</h1>
+
+  <p>Falls du ein Backup hast: jetzt ist die Zeit, nicht später.</p>
+
+  <form method="post" action="/setup/1" enctype="multipart/form-data" class="form">
+    <input type="hidden" name="action" value="restore">
+    <label>Backup-ZIP auswählen</label>
+    <input type="file" name="backup_file" accept=".zip">
+    <div class="row">
+      <button type="submit" class="btn primary">Wiederherstellen</button>
+      <a class="btn" href="/setup/2">Überspringen</a>
+    </div>
+  </form>
+
+  <div class="hint">
+    Backup-Format: ZIP mit <code>backup.json</code>, <code>db.sqlite</code> und optional <code>uploads/</code>.
+  </div>
+</div>
+{% endblock %}

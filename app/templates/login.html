@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Login</h1>
+  <form method="post" action="/login" class="form">
+    <label>E-Mail</label>
+    <input type="email" name="email" autofocus required>
+    <label>Passwort</label>
+    <input type="password" name="password" required>
+    <div class="row">
+      <button type="submit" class="btn primary">Einloggen</button>
+      <a class="btn" href="/setup">Setup</a>
+    </div>
+  </form>
+  <div class="hint">
+    Falls du hier gelandet bist, ohne Setup gemacht zu haben: Glückwunsch, du hast den Redirect gefunden.
+  </div>
+</div>
+{% endblock %}

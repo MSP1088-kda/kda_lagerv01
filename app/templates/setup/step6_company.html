@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Setup 6/8: Firmendaten</h1>
+
+  <p>Kann später jederzeit in der UI geändert werden.</p>
+
+  <form method="post" action="/setup/6" class="form">
+    <label>Firmenname</label>
+    <input type="text" name="name" value="{{ company.name or '' }}">
+
+    <label>Adresse</label>
+    <textarea name="address" rows="4">{{ company.address or '' }}</textarea>
+
+    <label>Telefon</label>
+    <input type="text" name="phone" value="{{ company.phone or '' }}">
+
+    <label>E-Mail</label>
+    <input type="email" name="email" value="{{ company.email or '' }}">
+
+    <label>Web</label>
+    <input type="text" name="website" value="{{ company.website or '' }}">
+
+    <div class="row">
+      <button type="submit" class="btn primary">Speichern & Weiter</button>
+      <a class="btn" href="/setup/7">Überspringen</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

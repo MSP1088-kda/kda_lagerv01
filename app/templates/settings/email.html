@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>E-Mail-Konten</h1>
+
+  <div class="mono">
+    {% for a in accounts %}
+      #{{ a.id }}  {{ a.label }}  &lt;{{ a.email }}&gt;  {% if a.is_default %}[default]{% endif %} {% if not a.enabled %}[disabled]{% endif %}<br>
+    {% endfor %}
+    {% if not accounts %}
+      <span class="muted">Keine Konten.</span>
+    {% endif %}
+  </div>
+
+  {% if user.role == 'admin' %}
+  <h2>Konto hinzufügen</h2>
+  <form method="post" action="/settings/email/add" class="form">
+    <label>Label</label>
+    <input type="text" name="label" required>
+
+    <label>E-Mail</label>
+    <input type="email" name="email" required>
+
+    <div class="row">
+      <label class="check"><input type="checkbox" name="enabled" checked> Enabled</label>
+      <label class="check"><input type="checkbox" name="is_default"> Default</label>
+      <label class="check"><input type="checkbox" name="smtp_tls" checked> SMTP TLS</label>
+      <label class="check"><input type="checkbox" name="imap_tls" checked> IMAP TLS</label>
+    </div>
+
+    <h3>SMTP</h3>
+    <div class="grid2">
+      <div>
+        <label>Host</label>
+        <input type="text" name="smtp_host">
+      </div>
+      <div>
+        <label>Port</label>
+        <input type="number" name="smtp_port">
+      </div>
+    </div>
+    <label>User</label>
+    <input type="text" name="smtp_username">
+    <label>Passwort</label>
+    <input type="password" name="smtp_password">
+
+    <h3>IMAP</h3>
+    <div class="grid2">
+      <div>
+        <label>Host</label>
+        <input type="text" name="imap_host">
+      </div>
+      <div>
+        <label>Port</label>
+        <input type="number" name="imap_port">
+      </div>
+    </div>
+    <label>User</label>
+    <input type="text" name="imap_username">
+    <label>Passwort</label>
+    <input type="password" name="imap_password">
+
+    <button class="btn primary" type="submit">Speichern</button>
+  </form>
+  {% else %}
+    <div class="hint">Nur Admins dürfen neue Konten anlegen.</div>
+  {% endif %}
+
+  <div class="row">
+    <a class="btn" href="/settings/company">Zurück</a>
+  </div>
+</div>
+{% endblock %}

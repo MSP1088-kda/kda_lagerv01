@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Bestand</h1>
+
+  <form method="get" action="/inventory/stock" class="form compact">
+    <div class="grid3">
+      <div>
+        <label>Suche</label>
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Name / SKU / Hersteller">
+      </div>
+      <div>
+        <label>Lager</label>
+        <select name="warehouse_id">
+          <option value="0">Alle</option>
+          {% for w in warehouses %}
+            <option value="{{ w.id }}" {% if warehouse_id==w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="row">
+        <button class="btn primary" type="submit">Filtern</button>
+        <a class="btn" href="/inventory/stock">Reset</a>
+      </div>
+      <div class="row right">
+        <a class="btn primary" href="/inventory/transactions/new">+ Buchung</a>
+        <a class="btn" href="/inventory/reservations">Reservierungen</a>
+        <a class="btn" href="/inventory/warehouses">Lagerorte</a>
+      </div>
+    </div>
+  </form>
+
+  <div class="table">
+    <div class="tr th">
+      <div>#</div>
+      <div>Produkt</div>
+      <div>Mode</div>
+      <div>Bestand (ok)</div>
+      <div>Bestand (used)</div>
+      <div>Bestand (defect)</div>
+    </div>
+    {% for p in products %}
+      {% set ok = 0 %}
+      {% set used = 0 %}
+      {% set defect = 0 %}
+
+      {# Jinja doesn't support Python list comprehensions everywhere. Humans do. Templates don't. #}
+      {% if warehouse_id %}
+        {% set wid = warehouse_id %}
+        {% if p.track_mode == 'quantity' %}
+          {% set ok = ok + bal_map.get((p.id, wid, 'ok'), 0) %}
+          {% set used = used + bal_map.get((p.id, wid, 'used'), 0) %}
+          {% set defect = defect + bal_map.get((p.id, wid, 'defect'), 0) %}
+        {% else %}
+          {% set ok = ok + serial_count_map.get((p.id, wid, 'ok'), 0) %}
+          {% set used = used + serial_count_map.get((p.id, wid, 'used'), 0) %}
+          {% set defect = defect + serial_count_map.get((p.id, wid, 'defect'), 0) %}
+        {% endif %}
+      {% else %}
+        {% for w in warehouses %}
+          {% set wid = w.id %}
+          {% if p.track_mode == 'quantity' %}
+            {% set ok = ok + bal_map.get((p.id, wid, 'ok'), 0) %}
+            {% set used = used + bal_map.get((p.id, wid, 'used'), 0) %}
+            {% set defect = defect + bal_map.get((p.id, wid, 'defect'), 0) %}
+          {% else %}
+            {% set ok = ok + serial_count_map.get((p.id, wid, 'ok'), 0) %}
+            {% set used = used + serial_count_map.get((p.id, wid, 'used'), 0) %}
+            {% set defect = defect + serial_count_map.get((p.id, wid, 'defect'), 0) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      <div class="tr">
+        <div>{{ p.id }}</div>
+        <div>{{ p.name }}</div>
+        <div>{{ p.track_mode }}</div>
+        <div>{{ ok }}</div>
+        <div>{{ used }}</div>
+        <div>{{ defect }}</div>
+      </div>
+    {% endfor %}
+    {% if not products %}
+      <div class="muted">Keine Treffer.</div>
+    {% endif %}
+  </div>
+
+  <div class="hint">
+    Tipp: Für Seriennummer-Artikel nutzt du bei Buchungen die Seriennummer. Für Mengenartikel die Menge. Klingt banal, ist aber erstaunlich schwer für manche.
+  </div>
+</div>
+{% endblock %}

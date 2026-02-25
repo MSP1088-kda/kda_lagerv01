@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Setup 2/8: Ports</h1>
+
+  <p>In Docker ist das hier eher "Dokumentation". Das echte Portmapping passiert im <code>docker-compose.yml</code>.</p>
+
+  <form method="post" action="/setup/2" class="form">
+    <label>Web-Port (intern)</label>
+    <input type="number" name="web_port" value="{{ web_port.port if web_port else 8080 }}" min="1" max="65535">
+    <div class="row">
+      <button type="submit" class="btn primary">Speichern & Weiter</button>
+      <a class="btn" href="/setup/3">Überspringen</a>
+    </div>
+  </form>
+
+  <div class="hint">
+    Wenn du den externen Port ändern willst: <code>WEB_PORT</code> in <code>.env</code> setzen und Stack neu starten.
+  </div>
+</div>
+{% endblock %}

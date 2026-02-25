@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Setup 4/8: Hostname im LAN</h1>
+
+  <p>Damit du nicht jedes Mal IP und Port tippen musst. Menschen machen das trotzdem gern.</p>
+
+  <form method="post" action="/setup/4" class="form">
+    <label>Instanzname (frei)</label>
+    <input type="text" name="instance_name" value="{{ inst.instance_name or '' }}" placeholder="z.B. Lager Nord">
+
+    <label>Hostname (z.B. lager)</label>
+    <input type="text" name="hostname" value="{{ inst.hostname or '' }}" placeholder="lager">
+
+    <label>Modus</label>
+    <select name="hostname_mode">
+      <option value="mdns" {% if inst.hostname_mode=='mdns' %}selected{% endif %}>mDNS (.local) empfohlen</option>
+      <option value="dns" {% if inst.hostname_mode=='dns' %}selected{% endif %}>LAN-DNS (Router/AD)</option>
+      <option value="hosts" {% if inst.hostname_mode=='hosts' %}selected{% endif %}>hosts-Datei pro Client</option>
+      <option value="none" {% if inst.hostname_mode=='none' %}selected{% endif %}>kein Hostname</option>
+    </select>
+
+    <label>Base URL (optional)</label>
+    <input type="text" name="base_url" value="{{ inst.base_url or '' }}" placeholder="http://lager.local">
+
+    <div class="row">
+      <button type="submit" class="btn primary">Speichern & Weiter</button>
+      <a class="btn" href="/setup/5">Überspringen</a>
+    </div>
+  </form>
+
+  <div class="hint">
+    Hinweis: Automatisches mDNS-Advertising aus Docker ist abhängig vom Host-System. Das Setup speichert hier nur die Wunschwerte.
+  </div>
+</div>
+{% endblock %}

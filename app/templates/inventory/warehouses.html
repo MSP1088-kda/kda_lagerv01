@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Lagerorte</h1>
+
+  <div class="mono">
+    {% for w in warehouses %}
+      #{{ w.id }}  {{ w.name }}  {{ w.description or '' }}<br>
+    {% endfor %}
+    {% if not warehouses %}
+      <span class="muted">Noch keine Lagerorte. (Das Lager existiert im Kopf zählt nicht.)</span>
+    {% endif %}
+  </div>
+
+  {% if user.role == 'admin' %}
+  <h2>Neues Lager</h2>
+  <form method="post" action="/inventory/warehouses/add" class="form">
+    <label>Name</label>
+    <input type="text" name="name" required>
+    <label>Beschreibung</label>
+    <input type="text" name="description">
+    <button class="btn primary" type="submit">Anlegen</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

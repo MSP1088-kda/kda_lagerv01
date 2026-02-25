@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Setup 5/8: Admin anlegen</h1>
+
+  <form method="post" action="/setup/5" class="form">
+    <label>Admin E-Mail</label>
+    <input type="email" name="admin_email" required autofocus>
+
+    <label>Passwort</label>
+    <input type="password" name="admin_password" required>
+
+    <label>Passwort wiederholen</label>
+    <input type="password" name="admin_password2" required>
+
+    <div class="row">
+      <button type="submit" class="btn primary">Admin erstellen & Weiter</button>
+    </div>
+  </form>
+
+  <div class="hint">
+    Passwortpolicy: mindestens 10 Zeichen. Ja, mehr wäre besser. Ja, du wirst trotzdem "Sommer2026!" nehmen.
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Reservierungen</h1>
+
+  <div class="row">
+    <a class="btn primary" href="/inventory/reservations/new">+ Neu</a>
+    <a class="btn" href="/inventory/stock">Bestand</a>
+  </div>
+
+  <div class="table">
+    <div class="tr th">
+      <div>#</div>
+      <div>Status</div>
+      <div>Produkt</div>
+      <div>Lager</div>
+      <div>Qty/SN</div>
+      <div>Ref</div>
+      <div>Action</div>
+    </div>
+    {% for r in reservations %}
+      {% set p = products.get(r.product_id) %}
+      {% set w = warehouses.get(r.warehouse_id) %}
+      {% set s = serials.get(r.serial_id) if r.serial_id else None %}
+      <div class="tr">
+        <div>{{ r.id }}</div>
+        <div>{{ r.status }}</div>
+        <div>{{ p.name if p else r.product_id }}</div>
+        <div>{{ w.name if w else r.warehouse_id }}</div>
+        <div>
+          {% if s %}
+            SN: {{ s.serial_number }}
+          {% else %}
+            {{ r.qty }}
+          {% endif %}
+        </div>
+        <div>{{ r.reference or "-" }}</div>
+        <div>
+          {% if r.status == 'active' %}
+          <form method="post" action="/inventory/reservations/{{ r.id }}/release" class="inline">
+            <button class="btn small" type="submit">Release</button>
+          </form>
+          {% else %}
+            <span class="muted">-</span>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not reservations %}
+      <div class="muted">Keine Reservierungen.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

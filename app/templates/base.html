@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "KDA Lager" }}</title>
+  <link rel="stylesheet" href="/static/dos.css">
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+<div class="screen">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-line">KDA LAGER</div>
+      <div class="brand-sub">Standalone Lager-Modul</div>
+    </div>
+
+    {% if user %}
+    <nav class="nav nav-desktop">
+      <a href="/dashboard" data-hotkey="Alt+1">[1] Dashboard</a>
+      <a href="/catalog/products" data-hotkey="Alt+2">[2] Katalog</a>
+      <a href="/inventory/stock" data-hotkey="Alt+3">[3] Lager</a>
+      <a href="/settings/company" data-hotkey="Alt+4">[4] Einstellungen</a>
+      <form action="/logout" method="post" class="inline">
+        <button type="submit" class="linklike" title="Logout">[0] Logout</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+
+  {% if user %}
+  <nav class="nav nav-mobile bottomnav">
+    <a href="/dashboard">Dash</a>
+    <a href="/catalog/products">Katalog</a>
+    <a href="/inventory/stock">Lager</a>
+    <a href="/settings/company">Setup</a>
+  </nav>
+  {% endif %}
+
+  {% if flash %}
+  <section class="flash">
+    {% for f in flash %}
+      <div class="flash-item flash-{{ f.level }}">{{ f.message }}</div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <div class="footer-left">
+      <span id="versionLine">v{{ app_version }} (build {{ app_build }}, {{ build_date }}, {{ git_sha }})</span>
+    </div>
+    <div class="footer-right">
+      {% if user %}
+      <span class="muted">User: {{ user.email }} | Alt+1..4 Navigation | / Suche</span>
+      {% else %}
+      <span class="muted">/ = Suche, Tab = Navigation (weil Maus ist overrated)</span>
+      {% endif %}
+    </div>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Produktkatalog</h1>
+
+  <form method="get" action="/catalog/products" class="form compact">
+    <div class="grid3">
+      <div>
+        <label>Suche</label>
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Name / SKU / Hersteller">
+      </div>
+      <div>
+        <label>Bereich</label>
+        <select name="area_id">
+          <option value="0">Alle</option>
+          {% for a in areas %}
+            <option value="{{ a.id }}" {% if area_id==a.id %}selected{% endif %}>{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Geräteart</label>
+        <select name="kind_id">
+          <option value="0">Alle</option>
+          {% for k in kinds %}
+            <option value="{{ k.id }}" {% if kind_id==k.id %}selected{% endif %}>{{ k.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Gerätetyp</label>
+        <select name="type_id">
+          <option value="0">Alle</option>
+          {% for t in types %}
+            <option value="{{ t.id }}" {% if type_id==t.id %}selected{% endif %}>{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% if filter_attrs %}
+      <div class="box" style="grid-column: 1 / -1;">
+        <div class="box-title">Attribute-Filter</div>
+        <div class="box-body">
+          <div class="grid3">
+            {% for a in filter_attrs %}
+              <div>
+                <label>{{ a.name }}</label>
+                {% set key = 'attr_' ~ a.id %}
+                {% set val = attr_filters.get(key,'') %}
+                {% if a.value_type == 'bool' %}
+                  <select name="{{ key }}">
+                    <option value="" {% if not val %}selected{% endif %}>-</option>
+                    <option value="true" {% if val=='true' %}selected{% endif %}>Ja</option>
+                    <option value="false" {% if val=='false' %}selected{% endif %}>Nein</option>
+                  </select>
+                {% else %}
+                  <input type="text" name="{{ key }}" value="{{ val }}" placeholder="Filter...">
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+          <div class="muted">Hinweis: Attribute-Filter werden nur angezeigt, wenn Geräteart oder Gerätetyp gewählt ist.</div>
+        </div>
+      </div>
+      {% endif %}
+      <div class="row">
+        <button class="btn primary" type="submit">Filtern</button>
+        <a class="btn" href="/catalog/products">Reset</a>
+      </div>
+      <div class="row right">
+        {% if user.role == 'admin' %}
+          <a class="btn primary" href="/catalog/products/new">+ Neu</a>
+        {% endif %}
+        <a class="btn" href="/catalog/structure">Struktur</a>
+        <a class="btn" href="/catalog/attributes">Attribute</a>
+      </div>
+    </div>
+  </form>
+
+  <div class="table">
+    <div class="tr th">
+      <div>#</div>
+      <div>Name</div>
+      <div>Hersteller</div>
+      <div>SKU</div>
+      <div>Mode</div>
+      <div>Action</div>
+    </div>
+    {% for p in products %}
+      <div class="tr">
+        <div>{{ p.id }}</div>
+        <div>{{ p.name }}</div>
+        <div>{{ p.manufacturer or "-" }}</div>
+        <div>{{ p.sku or "-" }}</div>
+        <div>{{ p.track_mode }}</div>
+        <div>
+          {% if user.role == 'admin' %}
+            <a class="btn small" href="/catalog/products/{{ p.id }}/edit">Edit</a>
+          {% else %}
+            <span class="muted">-</span>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not products %}
+      <div class="muted">Keine Treffer.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

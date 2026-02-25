@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Buchung</h1>
+
+  <form method="post" action="/inventory/transactions/new" class="form">
+    <label>Typ</label>
+    <select name="tx_type" required>
+      <option value="receipt">Wareneingang (receipt)</option>
+      <option value="issue">Warenausgang (issue)</option>
+      <option value="transfer">Umlagerung (transfer)</option>
+      <option value="scrap">Ausschuss/Defekt (scrap)</option>
+      <option value="adjust">Korrektur + (adjust)</option>
+    </select>
+
+    <label>Produkt</label>
+    <select name="product_id" required>
+      {% for p in products %}
+        <option value="{{ p.id }}">{{ p.name }} {% if p.sku %}({{ p.sku }}){% endif %} [{{ p.track_mode }}]</option>
+      {% endfor %}
+    </select>
+
+    <div class="grid2">
+      <div>
+        <label>Quelle (bei issue/transfer/scrap)</label>
+        <select name="warehouse_from_id">
+          <option value="0">-</option>
+          {% for w in warehouses %}
+            <option value="{{ w.id }}">{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Ziel (bei receipt/transfer/adjust)</label>
+        <select name="warehouse_to_id">
+          <option value="0">-</option>
+          {% for w in warehouses %}
+            <option value="{{ w.id }}">{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="grid3">
+      <div>
+        <label>Zustand</label>
+        <select name="condition">
+          <option value="ok">ok</option>
+          <option value="used">used</option>
+          <option value="defect">defect</option>
+          <option value="bware">bware</option>
+        </select>
+      </div>
+      <div>
+        <label>Menge (nur Mengenartikel)</label>
+        <input type="number" name="quantity" value="1" min="1">
+      </div>
+      <div>
+        <label>Seriennummer (nur Serienartikel)</label>
+        <input type="text" name="serial_number" placeholder="SN...">
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <label>Referenz (Auftrag/Kommission)</label>
+        <input type="text" name="reference" placeholder="z.B. AUFTRAG-123">
+      </div>
+      <div>
+        <label>Notiz</label>
+        <input type="text" name="note">
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Buchen</button>
+      <a class="btn" href="/inventory/stock">Abbrechen</a>
+    </div>
+  </form>
+
+  <div class="hint">
+    Quick sanity check: receipt braucht Ziel, issue braucht Quelle, transfer braucht beides. Ja, das ist ein Test.
+  </div>
+</div>
+{% endblock %}

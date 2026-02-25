@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Reservierung neu</h1>
+
+  <form method="post" action="/inventory/reservations/new" class="form">
+    <label>Produkt</label>
+    <select name="product_id" required>
+      {% for p in products %}
+        <option value="{{ p.id }}">{{ p.name }} {% if p.sku %}({{ p.sku }}){% endif %} [{{ p.track_mode }}]</option>
+      {% endfor %}
+    </select>
+
+    <label>Lager</label>
+    <select name="warehouse_id" required>
+      {% for w in warehouses %}
+        <option value="{{ w.id }}">{{ w.name }}</option>
+      {% endfor %}
+    </select>
+
+    <div class="grid3">
+      <div>
+        <label>Zustand</label>
+        <select name="condition">
+          <option value="ok">ok</option>
+          <option value="used">used</option>
+          <option value="defect">defect</option>
+          <option value="bware">bware</option>
+        </select>
+      </div>
+      <div>
+        <label>Menge (nur Mengenartikel)</label>
+        <input type="number" name="qty" value="1" min="1">
+      </div>
+      <div>
+        <label>Seriennummer (nur Serienartikel)</label>
+        <input type="text" name="serial_number" placeholder="SN...">
+      </div>
+    </div>
+
+    <label>Referenz (Auftrag/Kommission)</label>
+    <input type="text" name="reference" placeholder="z.B. AUFTRAG-123">
+
+    <div class="row">
+      <button class="btn primary" type="submit">Reservieren</button>
+      <a class="btn" href="/inventory/reservations">Zurück</a>
+    </div>
+  </form>
+
+  <div class="hint">
+    Für Seriennummern: Die Reservierung setzt den Status auf "reserved". Release setzt wieder zurück.
+  </div>
+</div>
+{% endblock %}

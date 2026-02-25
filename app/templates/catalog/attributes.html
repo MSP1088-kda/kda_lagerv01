@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Attribute</h1>
+
+  <div class="hint">
+    Attribute sind filterbar und frei definierbar. Die Welt ist chaotisch genug, ohne Hardcoding.
+  </div>
+
+  {% if user.role == 'admin' %}
+  <div class="box">
+    <div class="box-title">Attribut anlegen</div>
+    <div class="box-body">
+      <form method="post" action="/catalog/attributes/add" class="form">
+        <label>Name</label>
+        <input type="text" name="name" required>
+
+        <label>Typ</label>
+        <select name="value_type">
+          <option value="text">Text</option>
+          <option value="number">Zahl</option>
+          <option value="bool">Ja/Nein</option>
+          <option value="enum">Auswahl (Enum)</option>
+        </select>
+
+        <label class="check"><input type="checkbox" name="is_multi"> Mehrfachwert</label>
+
+        <label>Enum Optionen (eine pro Zeile, nur bei Enum)</label>
+        <textarea name="enum_options" rows="4"></textarea>
+
+        <div class="grid2">
+          <div>
+            <label>Scope: Geräteart (optional)</label>
+            <select name="scope_kind_id">
+              <option value="0">-</option>
+              {% for k in kinds %}
+                <option value="{{ k.id }}">{{ k.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Scope: Gerätetyp (optional)</label>
+            <select name="scope_type_id">
+              <option value="0">-</option>
+              {% for t in types %}
+                <option value="{{ t.id }}">{{ t.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <button class="btn primary" type="submit">Anlegen</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  <h2>Liste</h2>
+  <div class="table">
+    <div class="tr th">
+      <div>#</div>
+      <div>Name</div>
+      <div>Typ</div>
+      <div>Scopes</div>
+      <div>+</div>
+    </div>
+    {% for a in attrs %}
+    <div class="tr">
+      <div>{{ a.id }}</div>
+      <div>{{ a.name }}</div>
+      <div>{{ a.value_type }}{% if a.is_multi %}*{% endif %}</div>
+      <div class="mono">
+        {% for s in scope_map.get(a.id, []) %}
+          {{ s }}<br>
+        {% endfor %}
+        {% if not scope_map.get(a.id) %}
+          <span class="muted">-</span>
+        {% endif %}
+      </div>
+      <div>
+        {% if user.role == 'admin' %}
+        <form method="post" action="/catalog/attributes/{{ a.id }}/scope/add" class="form compact">
+          <select name="scope_kind_id">
+            <option value="0">Art</option>
+            {% for k in kinds %}
+              <option value="{{ k.id }}">{{ k.name }}</option>
+            {% endfor %}
+          </select>
+          <select name="scope_type_id">
+            <option value="0">Typ</option>
+            {% for t in types %}
+              <option value="{{ t.id }}">{{ t.name }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn small" type="submit">Add</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+</div>
+{% endblock %}

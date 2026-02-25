@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Setup 3/8: Datenpfade</h1>
+
+  <p>Ziel: Persistenz. Backups sollen schnell gehen. Dafür liegt alles in einem Base-Pfad.</p>
+
+  <form method="post" action="/setup/3" class="form">
+    <label>Base-Pfad (im Container)</label>
+    <input type="text" name="base_path" value="{{ data_dir }}" required>
+
+    <div class="row">
+      <button type="submit" class="btn primary">Anlegen & Weiter</button>
+      <a class="btn" href="/setup/4">Überspringen</a>
+    </div>
+  </form>
+
+  <h2>Aktuelle Pfade</h2>
+  <div class="mono">
+    {% for p in paths %}
+      {{ "%-10s"|format(p.purpose) }}  {{ p.path }}<br>
+    {% endfor %}
+  </div>
+
+  <div class="hint">
+    In Docker: <code>./data:/data</code> ist bereits im Compose konfiguriert.
+  </div>
+</div>
+{% endblock %}

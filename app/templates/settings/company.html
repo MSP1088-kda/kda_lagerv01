@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Firmendaten</h1>
+
+  {% if user.role != 'admin' %}
+    <div class="hint">Nur Admins dürfen ändern. Du darfst aber schauen, das ist nett.</div>
+  {% endif %}
+
+  <form method="post" action="/settings/company" class="form">
+    <label>Firmenname</label>
+    <input type="text" name="name" value="{{ company.name or '' }}" {% if user.role!='admin' %}disabled{% endif %}>
+
+    <label>Adresse</label>
+    <textarea name="address" rows="4" {% if user.role!='admin' %}disabled{% endif %}>{{ company.address or '' }}</textarea>
+
+    <div class="grid2">
+      <div>
+        <label>Telefon</label>
+        <input type="text" name="phone" value="{{ company.phone or '' }}" {% if user.role!='admin' %}disabled{% endif %}>
+      </div>
+      <div>
+        <label>E-Mail</label>
+        <input type="email" name="email" value="{{ company.email or '' }}" {% if user.role!='admin' %}disabled{% endif %}>
+      </div>
+    </div>
+
+    <label>Web</label>
+    <input type="text" name="website" value="{{ company.website or '' }}" {% if user.role!='admin' %}disabled{% endif %}>
+
+    {% if user.role == 'admin' %}
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/settings/email">E-Mail-Konten</a>
+      <a class="btn" href="/settings/backup">Backups</a>
+    </div>
+    {% else %}
+    <div class="row">
+      <a class="btn" href="/settings/email">E-Mail-Konten</a>
+      <a class="btn" href="/settings/backup">Backups</a>
+    </div>
+    {% endif %}
+  </form>
+</div>
+{% endblock %}

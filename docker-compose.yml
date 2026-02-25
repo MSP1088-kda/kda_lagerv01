@@ -1,0 +1,17 @@
+services:
+  lager:
+    build: .
+    container_name: kda_lager
+    environment:
+      - DATA_DIR=/data
+      - APP_PORT=8080
+      # Optional: set these from CI/build system
+      - APP_VERSION=0.1.1
+      - APP_BUILD=${APP_BUILD:-dev}
+      - GIT_SHA=${GIT_SHA:-local}
+      - BUILD_DATE=${BUILD_DATE:-}
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

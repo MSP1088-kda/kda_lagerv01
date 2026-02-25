@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Setup gesperrt</h1>
+  <p>Das Setup läuft bereits in einer anderen Sitzung.</p>
+  <p class="muted">Lock Owner: {{ lock_owner }}</p>
+  <p>Wenn das Setup abgestürzt ist, warte kurz. Der Lock läuft automatisch ab.</p>
+</div>
+{% endblock %}

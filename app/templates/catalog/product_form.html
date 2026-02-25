@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  {% if product %}
+    <h1>Produkt bearbeiten #{{ product.id }}</h1>
+  {% else %}
+    <h1>Produkt neu</h1>
+  {% endif %}
+
+  <form method="post" class="form">
+    <label>Name</label>
+    <input type="text" name="name" value="{{ product.name if product else '' }}" required autofocus>
+
+    <div class="grid2">
+      <div>
+        <label>Hersteller</label>
+        <input type="text" name="manufacturer" value="{{ product.manufacturer if product else '' }}">
+      </div>
+      <div>
+        <label>SKU / Artikelnummer</label>
+        <input type="text" name="sku" value="{{ product.sku if product else '' }}">
+      </div>
+    </div>
+
+    <div class="grid3">
+      <div>
+        <label>Bereich</label>
+        <select name="area_id">
+          <option value="0">-</option>
+          {% for a in areas %}
+            <option value="{{ a.id }}" {% if product and product.area_id==a.id %}selected{% endif %}>{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Geräteart</label>
+        <select name="device_kind_id">
+          <option value="0">-</option>
+          {% for k in kinds %}
+            <option value="{{ k.id }}" {% if product and product.device_kind_id==k.id %}selected{% endif %}>{{ k.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Gerätetyp</label>
+        <select name="device_type_id">
+          <option value="0">-</option>
+          {% for t in types %}
+            <option value="{{ t.id }}" {% if product and product.device_type_id==t.id %}selected{% endif %}>{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <label>Tracking</label>
+    <select name="track_mode">
+      <option value="serial" {% if product and product.track_mode=='serial' %}selected{% endif %}>Seriennummer</option>
+      <option value="quantity" {% if product and product.track_mode=='quantity' %}selected{% endif %}>Menge</option>
+    </select>
+
+    <label>Beschreibung</label>
+    <textarea name="description" rows="4">{{ product.description if product else '' }}</textarea>
+
+    {% if product and attrs %}
+      <h2>Attribute</h2>
+      <div class="hint">Attribute sind abhängig von Geräteart/Typ (Scopes). Änderungen hier sind sofort filterbar.</div>
+
+      {% for a in attrs %}
+        <label>{{ a.name }} ({{ a.value_type }})</label>
+        {% if a.value_type == 'bool' %}
+          <select name="attr_{{ a.id }}">
+            <option value="" {% if not val_map.get(a.id) %}selected{% endif %}>-</option>
+            <option value="true" {% if val_map.get(a.id) == 'true' %}selected{% endif %}>Ja</option>
+            <option value="false" {% if val_map.get(a.id) == 'false' %}selected{% endif %}>Nein</option>
+          </select>
+        {% elif a.value_type == 'enum' %}
+          {% set opts = (a.enum_options_json|default('[]'))|safe %}
+          <input type="text" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}" placeholder="Enum Wert">
+          <div class="muted">Hinweis: Optionen werden aktuell als Freitext gespeichert (MVP). (Ja, ich weiß.)</div>
+        {% else %}
+          <input type="text" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}">
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/catalog/products">Zurück</a>
+    </div>
+  </form>
+
+  {% if product %}
+  <div class="hint">
+    Tipp: Für Lagerbewegungen zu diesem Produkt: Alt+3 → "Buchung" erstellen.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
