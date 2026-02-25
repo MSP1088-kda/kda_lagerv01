@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Erstinstallation</h1>
-  <p>Diese Instanz ist noch nicht eingerichtet. Keine Panik, das ist normal (für frische Installationen).</p>
+  <h1>Ersteinrichtung</h1>
+  <p>Diese Instanz ist noch nicht eingerichtet.</p>
 
   <form method="post" action="/setup/0" class="form">
     <label>Wie möchtest du starten?</label>
     <div class="row">
       <label class="radio">
         <input type="radio" name="mode" value="restore" checked>
-        Backup wiederherstellen
+        Sicherung wiederherstellen
       </label>
       <label class="radio">
         <input type="radio" name="mode" value="new">
@@ -18,12 +18,20 @@
     </div>
 
     <div class="row">
-      <button type="submit" class="btn primary">Weiter [Enter]</button>
+      <button type="submit" class="btn primary">Weiter</button>
     </div>
   </form>
 
   <div class="hint">
-    Tipp: Du kannst später immer noch Backups ziehen und wiederherstellen. Menschen machen trotzdem selten welche.
+    Du kannst später jederzeit neue Sicherungen erstellen und bei Bedarf wiederherstellen.
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wähle, ob du eine Sicherung einspielen oder neu starten möchtest.</li>
+  <li>Bei einem bestehenden System ist "Sicherung wiederherstellen" der richtige Weg.</li>
+  <li>Mit "Weiter" startest du die Einrichtungsschritte.</li>
+</ul>
 {% endblock %}

@@ -69,7 +69,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(String(300), nullable=False)
-    role: Mapped[str] = mapped_column(String(30), nullable=False, default="user")  # admin|user
+    role: Mapped[str] = mapped_column(String(30), nullable=False, default="lesen")  # admin|lagerist|techniker|lesen
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     transactions = relationship("InventoryTransaction", back_populates="created_by")
@@ -95,6 +95,48 @@ class EmailAccount(Base):
     imap_tls: Mapped[bool] = mapped_column(Boolean, default=True)
     imap_username: Mapped[str | None] = mapped_column(String(200), nullable=True)
     imap_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class EmailOutbox(Base):
+    __tablename__ = "email_outbox"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("email_accounts.id"), nullable=True)
+    to_email: Mapped[str] = mapped_column(String(200), nullable=False)
+    subject: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")  # queued|sent|error
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    account = relationship("EmailAccount")
+
+    __table_args__ = (
+        Index("ix_email_outbox_status", "status"),
+        Index("ix_email_outbox_created_at", "created_at"),
+    )
+
+
+class EmailMessage(Base):
+    __tablename__ = "email_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("email_accounts.id"), nullable=False)
+    folder: Mapped[str] = mapped_column(String(120), nullable=False, default="INBOX")
+    uid: Mapped[str] = mapped_column(String(120), nullable=False)
+    from_text: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    date_text: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    account = relationship("EmailAccount")
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "folder", "uid", name="uq_email_message_uid"),
+        Index("ix_email_messages_account_fetched", "account_id", "fetched_at"),
+    )
 
 
 # --- Catalog domain ---
@@ -138,6 +180,8 @@ class AttributeDef(Base):
     value_type: Mapped[str] = mapped_column(String(20), nullable=False)  # text|number|bool|enum
     enum_options_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list for enum
     is_multi: Mapped[bool] = mapped_column(Boolean, default=False)
+    group_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     scopes = relationship("AttributeScope", back_populates="attribute", cascade="all, delete-orphan")
@@ -169,6 +213,7 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     manufacturer: Mapped[str | None] = mapped_column(String(120), nullable=True)
     sku: Mapped[str | None] = mapped_column(String(80), nullable=True)  # internal article number
+    ean: Mapped[str | None] = mapped_column(String(32), nullable=True)
     track_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="serial")  # serial|quantity
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -178,6 +223,7 @@ class Product(Base):
     __table_args__ = (
         Index("ix_products_name", "name"),
         Index("ix_products_sku", "sku"),
+        Index("ix_products_ean", "ean"),
     )
 
 
@@ -202,11 +248,25 @@ class Warehouse(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class WarehouseBin(Base):
+    __tablename__ = "warehouse_bins"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    code: Mapped[str] = mapped_column(String(80), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("warehouse_id", "code", name="uq_warehouse_bin_code"),
+        Index("ix_warehouse_bins_warehouse", "warehouse_id"),
+    )
+
+
 class StockBalance(Base):
     __tablename__ = "stock_balances"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    bin_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
     condition: Mapped[str] = mapped_column(String(30), nullable=False, default="ok")  # ok|used|defect|bware
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
@@ -218,6 +278,7 @@ class StockSerial(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    bin_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
     condition: Mapped[str] = mapped_column(String(30), nullable=False, default="ok")
     serial_number: Mapped[str] = mapped_column(String(120), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="in_stock")  # in_stock|reserved|issued|scrapped
@@ -232,6 +293,8 @@ class InventoryTransaction(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     warehouse_from_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
     warehouse_to_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
+    bin_from_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
+    bin_to_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
     condition: Mapped[str] = mapped_column(String(30), nullable=False, default="ok")
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -278,6 +341,70 @@ class Reservation(Base):
     created_by = relationship("User", back_populates="reservations")
 
     __table_args__ = (Index("ix_res_status", "status"),)
+
+
+class Stocktake(Base):
+    __tablename__ = "stocktakes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    bin_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|closed
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    closed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_stocktakes_status", "status"),)
+
+
+class StocktakeLine(Base):
+    __tablename__ = "stocktake_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stocktake_id: Mapped[int] = mapped_column(ForeignKey("stocktakes.id"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    counted_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("ix_stocktake_lines_stocktake", "stocktake_id"),)
+
+
+class MinStock(Base):
+    __tablename__ = "min_stocks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    bin_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
+    min_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("product_id", "warehouse_id", "bin_id", name="uq_min_stock"),
+        Index("ix_min_stocks_wh", "warehouse_id"),
+    )
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ApiIdempotency(Base):
+    __tablename__ = "api_idempotency"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(180), nullable=False)
+    route: Mapped[str] = mapped_column(String(180), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    response_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("key", "route", name="uq_api_idempotency_key_route"),
+        Index("ix_api_idempotency_created_at", "created_at"),
+    )
 
 
 class SetupState(Base):

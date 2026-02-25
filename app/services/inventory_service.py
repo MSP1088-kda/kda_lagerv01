@@ -17,13 +17,27 @@ from ..models import (
 
 
 def _get_or_create_balance(db: Session, product_id: int, warehouse_id: int, condition: str) -> StockBalance:
-    bal = (
+    return _get_or_create_balance_for_bin(db, product_id, warehouse_id, None, condition)
+
+
+def _get_or_create_balance_for_bin(
+    db: Session,
+    product_id: int,
+    warehouse_id: int,
+    bin_id: int | None,
+    condition: str,
+) -> StockBalance:
+    q = (
         db.query(StockBalance)
         .filter(StockBalance.product_id == product_id, StockBalance.warehouse_id == warehouse_id, StockBalance.condition == condition)
-        .one_or_none()
     )
+    if bin_id is None:
+        q = q.filter(StockBalance.bin_id.is_(None))
+    else:
+        q = q.filter(StockBalance.bin_id == int(bin_id))
+    bal = q.one_or_none()
     if not bal:
-        bal = StockBalance(product_id=product_id, warehouse_id=warehouse_id, condition=condition, quantity=0)
+        bal = StockBalance(product_id=product_id, warehouse_id=warehouse_id, bin_id=bin_id, condition=condition, quantity=0)
         db.add(bal)
         db.flush()
     return bal
@@ -70,6 +84,8 @@ def _write_outbox_event(db: Session, tx: InventoryTransaction, actor_user_id: in
             "product_id": tx.product_id,
             "warehouse_from_id": tx.warehouse_from_id,
             "warehouse_to_id": tx.warehouse_to_id,
+            "bin_from_id": tx.bin_from_id,
+            "bin_to_id": tx.bin_to_id,
             "condition": tx.condition,
             "quantity": tx.quantity,
             "serial_number": tx.serial_number,
@@ -92,15 +108,45 @@ def _write_outbox_event(db: Session, tx: InventoryTransaction, actor_user_id: in
     )
 
 
+def write_reservation_outbox_event(db: Session, reservation: Reservation, event_type: str = "ReservationChanged") -> None:
+    inst = db.get(InstanceConfig, 1)
+    payload = {
+        "timestamp": dt.datetime.utcnow().replace(tzinfo=None).isoformat() + "Z",
+        "reservation": {
+            "id": reservation.id,
+            "product_id": reservation.product_id,
+            "warehouse_id": reservation.warehouse_id,
+            "condition": reservation.condition,
+            "qty": reservation.qty,
+            "serial_id": reservation.serial_id,
+            "reference": reservation.reference,
+            "status": reservation.status,
+        },
+    }
+    if inst and inst.base_url:
+        payload["base_url"] = inst.base_url
+    else:
+        payload["instance_id"] = 1
+    db.add(
+        OutboxEvent(
+            event_type=event_type,
+            entity_type="Reservation",
+            entity_id=reservation.id,
+            payload_json=json.dumps(payload, ensure_ascii=False),
+            delivery_attempts=0,
+        )
+    )
+
+
 def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
     qty = int(tx.quantity or 0)
-    if qty <= 0:
+    if tx.tx_type != "adjust" and qty <= 0:
         raise ValueError("Menge muss > 0 sein")
 
     if tx.tx_type == "receipt":
         if not tx.warehouse_to_id:
             raise ValueError("Ziel-Lager fehlt")
-        bal = _get_or_create_balance(db, tx.product_id, tx.warehouse_to_id, tx.condition)
+        bal = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_to_id, tx.bin_to_id, tx.condition)
         bal.quantity += qty
         db.add(bal)
         return
@@ -108,7 +154,7 @@ def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
     if tx.tx_type == "issue":
         if not tx.warehouse_from_id:
             raise ValueError("Quell-Lager fehlt")
-        bal = _get_or_create_balance(db, tx.product_id, tx.warehouse_from_id, tx.condition)
+        bal = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_from_id, tx.bin_from_id, tx.condition)
         if bal.quantity < qty:
             raise ValueError("Nicht genug Bestand")
         bal.quantity -= qty
@@ -119,20 +165,25 @@ def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
     if tx.tx_type == "transfer":
         if not tx.warehouse_from_id or not tx.warehouse_to_id:
             raise ValueError("Quelle/Ziel fehlt")
-        src = _get_or_create_balance(db, tx.product_id, tx.warehouse_from_id, tx.condition)
+        src = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_from_id, tx.bin_from_id, tx.condition)
         if src.quantity < qty:
             raise ValueError("Nicht genug Bestand in Quelle")
         src.quantity -= qty
-        dst = _get_or_create_balance(db, tx.product_id, tx.warehouse_to_id, tx.condition)
+        dst = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_to_id, tx.bin_to_id, tx.condition)
         dst.quantity += qty
         db.add_all([src, dst])
         return
 
     if tx.tx_type == "adjust":
-        # interpret as delta (can be positive/negative via note? But keep simple: positive only)
-        if not tx.warehouse_to_id:
+        if qty == 0:
+            raise ValueError("Korrekturmenge darf nicht 0 sein")
+        target_warehouse = tx.warehouse_to_id or tx.warehouse_from_id
+        if not target_warehouse:
             raise ValueError("Lager fehlt")
-        bal = _get_or_create_balance(db, tx.product_id, tx.warehouse_to_id, tx.condition)
+        target_bin = tx.bin_to_id if qty >= 0 else (tx.bin_from_id if tx.bin_from_id is not None else tx.bin_to_id)
+        bal = _get_or_create_balance_for_bin(db, tx.product_id, target_warehouse, target_bin, tx.condition)
+        if qty < 0 and bal.quantity < abs(qty):
+            raise ValueError("Nicht genug Bestand für negative Korrektur")
         bal.quantity += qty
         db.add(bal)
         return
@@ -140,7 +191,7 @@ def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
     if tx.tx_type == "scrap":
         if not tx.warehouse_from_id:
             raise ValueError("Quell-Lager fehlt")
-        bal = _get_or_create_balance(db, tx.product_id, tx.warehouse_from_id, tx.condition)
+        bal = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_from_id, tx.bin_from_id, tx.condition)
         if bal.quantity < qty:
             raise ValueError("Nicht genug Bestand")
         bal.quantity -= qty
@@ -164,6 +215,7 @@ def _apply_serial(db: Session, tx: InventoryTransaction) -> None:
         s = StockSerial(
             product_id=tx.product_id,
             warehouse_id=tx.warehouse_to_id,
+            bin_id=tx.bin_to_id,
             condition=tx.condition,
             serial_number=sn,
             status="in_stock",
@@ -180,6 +232,8 @@ def _apply_serial(db: Session, tx: InventoryTransaction) -> None:
             raise ValueError("Quell-Lager fehlt")
         if serial.warehouse_id != tx.warehouse_from_id:
             raise ValueError("Seriennummer liegt nicht im angegebenen Lager")
+        if tx.bin_from_id is not None and serial.bin_id != tx.bin_from_id:
+            raise ValueError("Seriennummer liegt nicht im angegebenen Fach")
         if serial.status not in ("in_stock", "reserved"):
             raise ValueError("Seriennummer ist nicht verfügbar")
         serial.status = "issued"
@@ -192,9 +246,12 @@ def _apply_serial(db: Session, tx: InventoryTransaction) -> None:
             raise ValueError("Quelle/Ziel fehlt")
         if serial.warehouse_id != tx.warehouse_from_id:
             raise ValueError("Seriennummer liegt nicht im Quell-Lager")
+        if tx.bin_from_id is not None and serial.bin_id != tx.bin_from_id:
+            raise ValueError("Seriennummer liegt nicht im angegebenen Quell-Fach")
         if serial.status != "in_stock":
             raise ValueError("Nur 'in_stock' Seriennummern umlagern")
         serial.warehouse_id = tx.warehouse_to_id
+        serial.bin_id = tx.bin_to_id
         db.add(serial)
         return
 
@@ -203,6 +260,8 @@ def _apply_serial(db: Session, tx: InventoryTransaction) -> None:
             raise ValueError("Quell-Lager fehlt")
         if serial.warehouse_id != tx.warehouse_from_id:
             raise ValueError("Seriennummer liegt nicht im angegebenen Lager")
+        if tx.bin_from_id is not None and serial.bin_id != tx.bin_from_id:
+            raise ValueError("Seriennummer liegt nicht im angegebenen Fach")
         if serial.status not in ("in_stock", "reserved"):
             raise ValueError("Seriennummer ist nicht verfügbar")
         serial.status = "scrapped"

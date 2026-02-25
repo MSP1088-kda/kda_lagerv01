@@ -1,9 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Setup gesperrt</h1>
-  <p>Das Setup läuft bereits in einer anderen Sitzung.</p>
-  <p class="muted">Lock Owner: {{ lock_owner }}</p>
-  <p>Wenn das Setup abgestürzt ist, warte kurz. Der Lock läuft automatisch ab.</p>
+  <h1>Einrichtung gesperrt</h1>
+  <p>Die Einrichtung läuft bereits in einer anderen Sitzung.</p>
+  <p class="muted">Sperr-Inhaber: {{ lock_owner }}</p>
+  <p>Wenn eine Sitzung abgebrochen wurde, warte kurz. Die Sperre läuft automatisch ab.</p>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Es kann immer nur eine laufende Einrichtung geben.</li>
+  <li>Warte kurz und lade die Seite danach neu.</li>
+  <li>Die Sperre endet automatisch nach der Ablaufzeit.</li>
+</ul>
 {% endblock %}

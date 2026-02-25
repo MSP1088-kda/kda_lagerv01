@@ -108,3 +108,11 @@ Ein Change gilt als fertig, wenn:
 - Bei unklaren Anforderungen: lieber konservativ implementieren (keine großen Umräumaktionen).
 - Fehlermeldungen nicht verstecken: Logs/Tracebacks bleiben in Logs, UI bekommt verständliche Meldung.
 ---
+
+## 12) Sprache & Hilfe (UI)
+
+- In der UI werden ausschließlich deutsche Begriffe angezeigt.
+- Keine englischen Wörter in Buttons/Labels/Tabellenüberschriften.
+- Jede Seite enthält eine Kurzhilfe unten, erreichbar über einen "Hilfe"-Button.
+- Hilfetexte sind kurz, klar und in einfachem Deutsch.
+---

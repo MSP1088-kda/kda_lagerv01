@@ -7,7 +7,7 @@
     <div class="grid3">
       <div>
         <label>Suche</label>
-        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Name / SKU / Hersteller">
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Name / SKU / Hersteller / EAN">
       </div>
       <div>
         <label>Lager</label>
@@ -18,33 +18,50 @@
           {% endfor %}
         </select>
       </div>
+      <div>
+        <label>Fach/Bin</label>
+        <select name="bin_id">
+          <option value="0">Alle</option>
+          {% for b in bins %}
+            <option value="{{ b.id }}" {% if bin_id==b.id %}selected{% endif %}>{{ b.code }}{% if b.label %} ({{ b.label }}){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
       <div class="row">
+        <label class="check"><input type="checkbox" name="only_low" value="1" {% if only_low==1 %}checked{% endif %}> Nur unter Mindestbestand</label>
         <button class="btn primary" type="submit">Filtern</button>
-        <a class="btn" href="/inventory/stock">Reset</a>
+        <a class="btn" href="/inventory/stock">Zurücksetzen</a>
       </div>
       <div class="row right">
+        {% if role_flags.can_inventory_write %}
         <a class="btn primary" href="/inventory/transactions/new">+ Buchung</a>
+        {% endif %}
+        {% if role_flags.can_reserve %}
         <a class="btn" href="/inventory/reservations">Reservierungen</a>
+        {% endif %}
+        {% if role_flags.can_inventory_write %}
+        <a class="btn" href="/inventory/stocktakes">Inventur</a>
+        {% endif %}
         <a class="btn" href="/inventory/warehouses">Lagerorte</a>
       </div>
     </div>
   </form>
 
   <div class="table" data-kbd-list="true">
-    <div class="tr th">
+    <div class="tr th" style="grid-template-columns: 60px 1.4fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr;">
       <div>#</div>
       <div>Produkt</div>
-      <div>Mode</div>
-      <div>Bestand (ok)</div>
-      <div>Bestand (used)</div>
-      <div>Bestand (defect)</div>
+      <div>Modus</div>
+      <div>Bestand (OK/Neu)</div>
+      <div>Bestand (Gebraucht)</div>
+      <div>Bestand (Defekt)</div>
+      <div>Warnung</div>
     </div>
     {% for p in products %}
       {% set ok = 0 %}
       {% set used = 0 %}
       {% set defect = 0 %}
 
-      {# Jinja doesn't support Python list comprehensions everywhere. Humans do. Templates don't. #}
       {% if warehouse_id %}
         {% set wid = warehouse_id %}
         {% if p.track_mode == 'quantity' %}
@@ -70,13 +87,21 @@
           {% endif %}
         {% endfor %}
       {% endif %}
-      <div class="tr" data-kbd-row="true" data-href="/inventory/transactions/new?product_id={{ p.id }}">
+      {% set warns = warning_map.get(p.id, []) %}
+      <div class="tr" style="grid-template-columns: 60px 1.4fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr;" data-kbd-row="true" {% if role_flags.can_inventory_write %}data-href="/inventory/transactions/new?product_id={{ p.id }}"{% endif %}>
         <div>{{ p.id }}</div>
         <div>{{ p.name }}</div>
-        <div>{{ p.track_mode }}</div>
+        <div>{{ p.track_mode|de_label('track_mode') }}</div>
         <div>{{ ok }}</div>
         <div>{{ used }}</div>
         <div>{{ defect }}</div>
+        <div>
+          {% if warns %}
+            Unter Minimum ({{ warns|length }})
+          {% else %}
+            -
+          {% endif %}
+        </div>
       </div>
     {% endfor %}
     {% if not products %}
@@ -84,8 +109,39 @@
     {% endif %}
   </div>
 
+  <h2>Seriennummern</h2>
+  <div class="table" data-kbd-list="true">
+    <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr 1fr 160px;">
+      <div>Seriennummer</div>
+      <div>Produkt-ID</div>
+      <div>Status</div>
+      <div>Zustand</div>
+      <div>Aktion</div>
+    </div>
+    {% for s in serial_rows %}
+      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr 1fr 160px;" data-kbd-row="true" data-href="/inventory/serial/{{ s.serial_number }}">
+        <div><a href="/inventory/serial/{{ s.serial_number }}">{{ s.serial_number }}</a></div>
+        <div>{{ s.product_id }}</div>
+        <div>{{ s.status|de_label('serial_status') }}</div>
+        <div>{{ s.condition|de_label('condition') }}</div>
+        <div><a class="btn small" href="/inventory/serial/{{ s.serial_number }}">Details</a></div>
+      </div>
+    {% endfor %}
+    {% if not serial_rows %}
+      <div class="muted">Keine Seriennummern gefunden.</div>
+    {% endif %}
+  </div>
+
   <div class="hint">
-    Tipp: Für Seriennummer-Artikel nutzt du bei Buchungen die Seriennummer. Für Mengenartikel die Menge. Klingt banal, ist aber erstaunlich schwer für manche.
+    Für Seriennummer-Artikel sind Details über die Seriennummer direkt erreichbar.
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Filtere Bestand nach Lager und optional Fach/Bin.</li>
+  <li>Seriennummern sind klickbar und öffnen die Detailhistorie.</li>
+  <li>Über "+ Buchung" erfasst du Zu- und Abgänge.</li>
+</ul>
 {% endblock %}

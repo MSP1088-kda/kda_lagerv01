@@ -60,7 +60,7 @@
   }
 
   function scanUnsupported(input){
-    alert('Scan nicht unterstützt');
+    alert('Kameraerkennung wird nicht unterstützt');
     if(input){
       input.focus();
     }
@@ -151,6 +151,10 @@
     const serialInputs = Array.from(document.querySelectorAll('input[name="serial_number"]'));
     serialInputs.forEach(input => {
       if(input.dataset.scanReady === '1') return;
+      if(document.querySelector(`[data-scan-target="${input.id}"]`)){
+        input.dataset.scanReady = '1';
+        return;
+      }
       input.dataset.scanReady = '1';
 
       const wrap = document.createElement('div');
@@ -163,7 +167,7 @@
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn scan-btn';
-      btn.textContent = 'SCAN';
+      btn.textContent = 'Scannen';
       btn.addEventListener('click', function(){
         startSerialScan(input);
       });
@@ -171,19 +175,61 @@
     });
   }
 
-  // Version line
+  function initGenericScanButtons(){
+    const buttons = Array.from(document.querySelectorAll('[data-scan-target]'));
+    buttons.forEach(btn => {
+      if(btn.dataset.scanReady === '1') return;
+      btn.dataset.scanReady = '1';
+      btn.addEventListener('click', function(){
+        const targetId = btn.getAttribute('data-scan-target') || '';
+        if(!targetId) return;
+        const input = document.getElementById(targetId);
+        if(!input) return;
+        startSerialScan(input);
+      });
+    });
+  }
+
+  function toggleHelpPanel(){
+    const panel = document.getElementById('helpPanel');
+    const btn = document.getElementById('helpToggle');
+    if(!panel || !btn) return;
+
+    const willShow = panel.hidden;
+    panel.hidden = !willShow;
+    btn.setAttribute('aria-expanded', willShow ? 'true' : 'false');
+  }
+
+  function initHelpPanel(){
+    const btn = document.getElementById('helpToggle');
+    if(!btn) return;
+    btn.addEventListener('click', function(){
+      toggleHelpPanel();
+    });
+  }
+
   fetch('/meta/version').then(r=>r.json()).then(v=>{
     const el = document.getElementById('versionLine');
     if(!el) return;
     const buildDate = v.build_date || '';
-    el.textContent = `v${v.version} (build ${v.build}, ${buildDate}, ${v.git_sha})`;
+    el.textContent = `v${v.version} (Stand ${v.build}, ${buildDate}, ${v.git_sha})`;
   }).catch(()=>{});
 
-  // Keyboard shortcuts
   document.addEventListener('keydown', function(e){
     const active = document.activeElement;
 
-    // "/" focuses search field
+    if(e.key === 'F1'){
+      e.preventDefault();
+      toggleHelpPanel();
+      return;
+    }
+
+    if((e.key === '?' || (e.key === '/' && e.shiftKey)) && !e.ctrlKey && !e.metaKey && !e.altKey && !isTypingTarget(active)){
+      e.preventDefault();
+      toggleHelpPanel();
+      return;
+    }
+
     if(e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !isTypingTarget(active)){
       const q = document.getElementById('q');
       if(q){
@@ -194,7 +240,6 @@
       return;
     }
 
-    // ESC blurs
     if(e.key === 'Escape' && isTypingTarget(active)){
       active.blur();
       return;
@@ -221,21 +266,26 @@
       }
     }
 
-    // Alt+number navigation
     if(e.altKey && !e.ctrlKey && !e.metaKey){
       const k = e.key;
       const map = {
         '1': '/dashboard',
         '2': '/catalog/products',
-        '3': '/inventory/stock',
-        '4': '/settings/company',
       };
+      if(document.querySelector('a[href="/inventory/stock"]')){
+        map['3'] = '/inventory/stock';
+      }
+      if(document.querySelector('a[href="/settings/company"]')){
+        map['4'] = '/settings/company';
+      }
+      if(document.querySelector('a[href="/mobile/quick"]')){
+        map['5'] = '/mobile/quick';
+      }
       if(map[k]){
         e.preventDefault();
         window.location.href = map[k];
       }
       if(k === '0'){
-        // best-effort logout (submit form if exists)
         const f = document.querySelector('form[action="/logout"]');
         if(f){
           e.preventDefault();
@@ -246,5 +296,7 @@
   }, true);
 
   initKeyboardList();
+  initGenericScanButtons();
   initSerialScanButtons();
+  initHelpPanel();
 })();

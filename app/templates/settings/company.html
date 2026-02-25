@@ -4,7 +4,7 @@
   <h1>Firmendaten</h1>
 
   {% if user.role != 'admin' %}
-    <div class="hint">Nur Admins dürfen ändern. Du darfst aber schauen, das ist nett.</div>
+    <div class="hint">Nur Administratoren dürfen Änderungen speichern.</div>
   {% endif %}
 
   <form method="post" action="/settings/company" class="form">
@@ -25,21 +25,31 @@
       </div>
     </div>
 
-    <label>Web</label>
+    <label>Webseite</label>
     <input type="text" name="website" value="{{ company.website or '' }}" {% if user.role!='admin' %}disabled{% endif %}>
 
     {% if user.role == 'admin' %}
     <div class="row">
       <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/settings/users">Benutzer</a>
+      <a class="btn" href="/settings/api-keys">API-Schlüssel</a>
       <a class="btn" href="/settings/email">E-Mail-Konten</a>
-      <a class="btn" href="/settings/backup">Backups</a>
+      <a class="btn" href="/settings/backup">Sicherungen</a>
     </div>
     {% else %}
     <div class="row">
       <a class="btn" href="/settings/email">E-Mail-Konten</a>
-      <a class="btn" href="/settings/backup">Backups</a>
+      <a class="btn" href="/settings/backup">Sicherungen</a>
     </div>
     {% endif %}
   </form>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier pflegst du die grundlegenden Daten deiner Firma.</li>
+  <li>Nur Administratoren dürfen Änderungen speichern.</li>
+  <li>Über die Schaltflächen gelangst du zu E-Mail-Konten und Sicherungen.</li>
+</ul>
 {% endblock %}

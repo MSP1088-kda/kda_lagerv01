@@ -1,20 +1,28 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Setup 8/8: Abschluss</h1>
+  <h1>Einrichtung 8/8: Abschluss</h1>
 
   <h2>Zusammenfassung</h2>
   <div class="mono">
-    Admins: {{ admins }}<br>
+    Administratoren: {{ admins }}<br>
     Firma: {{ company.name or "-" }}<br>
   </div>
 
   <form method="post" action="/setup/8" class="form">
-    <button type="submit" class="btn primary">Setup abschließen</button>
+    <button type="submit" class="btn primary">Einrichtung abschließen</button>
   </form>
 
   <div class="hint">
-    Danach geht's zum Login. Und dann kannst du endlich Geräte katalogisieren, statt sie zu stapeln wie Tetris mit Metall.
+    Nach dem Abschluss wirst du zur Anmeldung weitergeleitet.
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Prüfe die Zusammenfassung vor dem Abschluss.</li>
+  <li>Mit "Einrichtung abschließen" wird die Instanz freigegeben.</li>
+  <li>Danach meldest du dich mit dem Administratorkonto an.</li>
+</ul>
 {% endblock %}

@@ -1,19 +1,27 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Login</h1>
+  <h1>Anmeldung</h1>
   <form method="post" action="/login" class="form">
     <label>E-Mail</label>
     <input type="email" name="email" autofocus required>
     <label>Passwort</label>
     <input type="password" name="password" required>
     <div class="row">
-      <button type="submit" class="btn primary">Einloggen</button>
-      <a class="btn" href="/setup">Setup</a>
+      <button type="submit" class="btn primary">Anmelden</button>
+      <a class="btn" href="/setup">Einrichtung</a>
     </div>
   </form>
   <div class="hint">
-    Falls du hier gelandet bist, ohne Setup gemacht zu haben: Glückwunsch, du hast den Redirect gefunden.
+    Falls die Einrichtung noch nicht abgeschlossen ist, starte sie über den Button "Einrichtung".
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Melde dich mit E-Mail und Passwort an.</li>
+  <li>Ohne Konto kannst du die Einrichtung öffnen.</li>
+  <li>Nach der Anmeldung gelangst du zur Übersicht.</li>
+</ul>
 {% endblock %}

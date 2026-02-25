@@ -1,36 +1,62 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Setup 4/8: Hostname im LAN</h1>
+  <h1>Einrichtung 4/8: Hostname im Netzwerk</h1>
 
-  <p>Damit du nicht jedes Mal IP und Port tippen musst. Menschen machen das trotzdem gern.</p>
+  <p>Hier legst du fest, unter welchem Namen die Instanz im Netzwerk erreichbar sein soll.</p>
 
   <form method="post" action="/setup/4" class="form">
-    <label>Instanzname (frei)</label>
-    <input type="text" name="instance_name" value="{{ inst.instance_name or '' }}" placeholder="z.B. Lager Nord">
+    <label>Instanzname</label>
+    <input type="text" name="instance_name" value="{{ inst.instance_name or '' }}" placeholder="z. B. Lager Nord">
 
-    <label>Hostname (z.B. lager)</label>
+    <label>Hostname (z. B. lager)</label>
     <input type="text" name="hostname" value="{{ inst.hostname or '' }}" placeholder="lager">
 
     <label>Modus</label>
     <select name="hostname_mode">
       <option value="mdns" {% if inst.hostname_mode=='mdns' %}selected{% endif %}>mDNS (.local) empfohlen</option>
-      <option value="dns" {% if inst.hostname_mode=='dns' %}selected{% endif %}>LAN-DNS (Router/AD)</option>
-      <option value="hosts" {% if inst.hostname_mode=='hosts' %}selected{% endif %}>hosts-Datei pro Client</option>
-      <option value="none" {% if inst.hostname_mode=='none' %}selected{% endif %}>kein Hostname</option>
+      <option value="dns" {% if inst.hostname_mode=='dns' %}selected{% endif %}>Netzwerk-DNS</option>
+      <option value="hosts" {% if inst.hostname_mode=='hosts' %}selected{% endif %}>Hosts-Datei pro Gerät</option>
+      <option value="none" {% if inst.hostname_mode=='none' %}selected{% endif %}>Kein Hostname</option>
     </select>
 
-    <label>Base URL (optional)</label>
+    <label>Basis-URL (optional)</label>
     <input type="text" name="base_url" value="{{ inst.base_url or '' }}" placeholder="http://lager.local">
 
     <div class="row">
-      <button type="submit" class="btn primary">Speichern & Weiter</button>
+      <button type="submit" class="btn primary">Speichern und weiter</button>
       <a class="btn" href="/setup/5">Überspringen</a>
     </div>
   </form>
 
   <div class="hint">
-    Hinweis: Automatisches mDNS-Advertising aus Docker ist abhängig vom Host-System. Das Setup speichert hier nur die Wunschwerte.
+    Die Einstellungen speichern den gewünschten Namen; die tatsächliche Namensauflösung hängt von deinem Netzwerk ab.
+  </div>
+
+  <h2>So erreichst du die App im LAN</h2>
+  <div class="mono">
+    Option A: mDNS (Linux/macOS) -> {{ (inst.hostname or 'lager') }}.local<br>
+    Linux-Beispiel (Host):<br>
+    sudo ./scripts/linux_mdns_enable.sh {{ (inst.hostname or 'lager') }}<br>
+    Danach im Browser: http://{{ (inst.hostname or 'lager') }}.local/<br>
+    <br>
+    Option B: Router-/DNS-Eintrag -> z. B. {{ (inst.hostname or 'lager') }}.firma.lan<br>
+    Trage im Router oder DNS-Server einen A-Record auf die Host-IP ein.<br>
+    Danach im Browser: http://{{ (inst.hostname or 'lager') }}.firma.lan/<br>
+    <br>
+    Option C: hosts-Datei auf Clients<br>
+    Linux/macOS: /etc/hosts<br>
+    Windows: C:\\Windows\\System32\\drivers\\etc\\hosts<br>
+    Beispiel: 192.168.1.20 {{ (inst.hostname or 'lager') }}<br>
+    Vorlage: scripts/windows_hosts_example.txt<br>
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wähle hier Namen und Modus für die Erreichbarkeit im Netzwerk.</li>
+  <li>mDNS ist oft der einfachste Start in kleinen Netzwerken.</li>
+  <li>Die Basis-URL wird für Verlinkungen und Integrationen genutzt.</li>
+</ul>
 {% endblock %}

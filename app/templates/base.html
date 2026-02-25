@@ -12,17 +12,22 @@
   <header class="topbar">
     <div class="brand">
       <div class="brand-line">KDA LAGER</div>
-      <div class="brand-sub">Standalone Lager-Modul</div>
+      <div class="brand-sub">Eigenständiges Lager-Modul</div>
     </div>
 
     {% if user %}
     <nav class="nav nav-desktop">
-      <a href="/dashboard" data-hotkey="Alt+1">[1] Dashboard</a>
+      <a href="/dashboard" data-hotkey="Alt+1">[1] Übersicht</a>
       <a href="/catalog/products" data-hotkey="Alt+2">[2] Katalog</a>
+      {% if role_flags.can_inventory %}
       <a href="/inventory/stock" data-hotkey="Alt+3">[3] Lager</a>
+      <a href="/mobile/quick" data-hotkey="Alt+5">[5] Schnell</a>
+      {% endif %}
+      {% if role_flags.can_settings %}
       <a href="/settings/company" data-hotkey="Alt+4">[4] Einstellungen</a>
+      {% endif %}
       <form action="/logout" method="post" class="inline">
-        <button type="submit" class="linklike" title="Logout">[0] Logout</button>
+        <button type="submit" class="linklike" title="Abmelden">[0] Abmelden</button>
       </form>
     </nav>
     {% endif %}
@@ -30,10 +35,15 @@
 
   {% if user %}
   <nav class="nav nav-mobile bottomnav">
-    <a href="/dashboard">Dash</a>
+    <a href="/dashboard">Übersicht</a>
     <a href="/catalog/products">Katalog</a>
+    {% if role_flags.can_inventory %}
     <a href="/inventory/stock">Lager</a>
-    <a href="/settings/company">Setup</a>
+    <a href="/mobile/quick">Schnell</a>
+    {% endif %}
+    {% if role_flags.can_settings %}
+    <a href="/settings/company">Einstellungen</a>
+    {% endif %}
   </nav>
   {% endif %}
 
@@ -51,16 +61,30 @@
 
   <footer class="footer">
     <div class="footer-left">
-      <span id="versionLine">v{{ app_version }} (build {{ app_build }}, {{ build_date }}, {{ git_sha }})</span>
+      <span id="versionLine">v{{ app_version }} (Stand {{ app_build }}, {{ build_date }}, {{ git_sha }})</span>
     </div>
     <div class="footer-right">
       {% if user %}
-      <span class="muted">User: {{ user.email }} | Alt+1..4 Navigation | / Suche</span>
+      <span class="muted">Benutzer: {{ user.email }} ({{ user.role }}) | / Suche</span>
       {% else %}
-      <span class="muted">/ = Suche, Tab = Navigation (weil Maus ist overrated)</span>
+      <span class="muted">/ = Suche, Tab = Steuerung</span>
       {% endif %}
     </div>
   </footer>
 </div>
+
+<button id="helpToggle" class="help-btn" type="button" aria-expanded="false" aria-controls="helpPanel">Hilfe</button>
+<section id="helpPanel" class="help-panel" hidden>
+  <div class="help-panel-title">Kurzhilfe</div>
+  <div class="help-panel-body">
+    {% block help %}
+    <ul>
+      <li>Nutze Alt+1 bis Alt+4 für die Hauptnavigation.</li>
+      <li>Mit / springst du in das Suchfeld der aktuellen Seite.</li>
+      <li>Mit F1 blendest du diese Hilfe ein oder aus.</li>
+    </ul>
+    {% endblock %}
+  </div>
+</section>
 </body>
 </html>

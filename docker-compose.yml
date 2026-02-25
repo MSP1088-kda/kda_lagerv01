@@ -10,8 +10,26 @@ services:
       - APP_BUILD=${APP_BUILD:-dev}
       - GIT_SHA=${GIT_SHA:-local}
       - BUILD_DATE=${BUILD_DATE:-}
-    ports:
-      - "${WEB_PORT:-8080}:8080"
+    expose:
+      - "8080"
     volumes:
       - ./data:/data
     restart: unless-stopped
+
+  proxy:
+    image: caddy:2-alpine
+    container_name: kda_lager_proxy
+    depends_on:
+      - lager
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

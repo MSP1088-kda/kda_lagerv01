@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Setup 5/8: Admin anlegen</h1>
+  <h1>Einrichtung 5/8: Administrator anlegen</h1>
 
   <form method="post" action="/setup/5" class="form">
-    <label>Admin E-Mail</label>
+    <label>Administrator-E-Mail</label>
     <input type="email" name="admin_email" required autofocus>
 
     <label>Passwort</label>
@@ -14,12 +14,20 @@
     <input type="password" name="admin_password2" required>
 
     <div class="row">
-      <button type="submit" class="btn primary">Admin erstellen & Weiter</button>
+      <button type="submit" class="btn primary">Administrator erstellen und weiter</button>
     </div>
   </form>
 
   <div class="hint">
-    Passwortpolicy: mindestens 10 Zeichen. Ja, mehr wäre besser. Ja, du wirst trotzdem "Sommer2026!" nehmen.
+    Das Passwort muss mindestens 10 Zeichen lang sein.
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Lege hier das erste Administratorkonto fest.</li>
+  <li>Die E-Mail dient später als Anmeldename.</li>
+  <li>Ohne Administrator kann die Einrichtung nicht abgeschlossen werden.</li>
+</ul>
 {% endblock %}

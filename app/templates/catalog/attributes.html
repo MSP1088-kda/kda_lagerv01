@@ -4,7 +4,7 @@
   <h1>Attribute</h1>
 
   <div class="hint">
-    Attribute sind filterbar und frei definierbar. Die Welt ist chaotisch genug, ohne Hardcoding.
+    Attribute definieren zusätzliche Produkteigenschaften und steuern Filter im Katalog.
   </div>
 
   {% if user.role == 'admin' %}
@@ -12,25 +12,36 @@
     <div class="box-title">Attribut anlegen</div>
     <div class="box-body">
       <form method="post" action="/catalog/attributes/add" class="form">
-        <label>Name</label>
-        <input type="text" name="name" required>
+        <div class="grid2">
+          <div>
+            <label>Name</label>
+            <input type="text" name="name" required>
+          </div>
+          <div>
+            <label>Gruppe (optional)</label>
+            <input type="text" name="group_name" placeholder="z. B. Einbau, Energie, Maße">
+          </div>
+        </div>
 
         <label>Typ</label>
         <select name="value_type">
           <option value="text">Text</option>
           <option value="number">Zahl</option>
           <option value="bool">Ja/Nein</option>
-          <option value="enum">Auswahl (Enum)</option>
+          <option value="enum">Auswahl</option>
         </select>
 
-        <label class="check"><input type="checkbox" name="is_multi"> Mehrfachwert</label>
+        <div class="row">
+          <label class="check"><input type="checkbox" name="is_multi"> Mehrfachauswahl (nur Auswahl)</label>
+          <label class="check"><input type="checkbox" name="is_required"> Pflichtattribut</label>
+        </div>
 
-        <label>Enum Optionen (eine pro Zeile, nur bei Enum)</label>
+        <label>Optionen (bei Auswahl, eine Option pro Zeile oder mit Komma getrennt)</label>
         <textarea name="enum_options" rows="4"></textarea>
 
         <div class="grid2">
           <div>
-            <label>Scope: Geräteart (optional)</label>
+            <label>Geltungsbereich: Geräteart (optional)</label>
             <select name="scope_kind_id">
               <option value="0">-</option>
               {% for k in kinds %}
@@ -39,7 +50,7 @@
             </select>
           </div>
           <div>
-            <label>Scope: Gerätetyp (optional)</label>
+            <label>Geltungsbereich: Gerätetyp (optional)</label>
             <select name="scope_type_id">
               <option value="0">-</option>
               {% for t in types %}
@@ -55,50 +66,77 @@
   </div>
   {% endif %}
 
-  <h2>Liste</h2>
-  <div class="table">
-    <div class="tr th">
-      <div>#</div>
-      <div>Name</div>
-      <div>Typ</div>
-      <div>Scopes</div>
-      <div>+</div>
-    </div>
-    {% for a in attrs %}
-    <div class="tr">
-      <div>{{ a.id }}</div>
-      <div>{{ a.name }}</div>
-      <div>{{ a.value_type }}{% if a.is_multi %}*{% endif %}</div>
-      <div class="mono">
-        {% for s in scope_map.get(a.id, []) %}
-          {{ s }}<br>
-        {% endfor %}
-        {% if not scope_map.get(a.id) %}
-          <span class="muted">-</span>
-        {% endif %}
+  {% for group_name, group_attrs in attrs_grouped %}
+    <h2>Gruppe: {{ group_name }}</h2>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 60px 1.1fr 0.8fr 1fr 1fr 240px;">
+        <div>#</div>
+        <div>Name</div>
+        <div>Typ</div>
+        <div>Optionen</div>
+        <div>Scope</div>
+        <div>Aktion</div>
       </div>
-      <div>
-        {% if user.role == 'admin' %}
-        <form method="post" action="/catalog/attributes/{{ a.id }}/scope/add" class="form compact">
-          <select name="scope_kind_id">
-            <option value="0">Art</option>
-            {% for k in kinds %}
-              <option value="{{ k.id }}">{{ k.name }}</option>
-            {% endfor %}
-          </select>
-          <select name="scope_type_id">
-            <option value="0">Typ</option>
-            {% for t in types %}
-              <option value="{{ t.id }}">{{ t.name }}</option>
-            {% endfor %}
-          </select>
-          <button class="btn small" type="submit">Add</button>
-        </form>
-        {% endif %}
+      {% for a in group_attrs %}
+      <div class="tr" style="grid-template-columns: 60px 1.1fr 0.8fr 1fr 1fr 240px;">
+        <div>{{ a.id }}</div>
+        <div>
+          {{ a.name }}
+          {% if a.is_required %}<span class="muted"> (Pflicht)</span>{% endif %}
+          {% if a.is_multi %}<span class="muted"> (Multi)</span>{% endif %}
+        </div>
+        <div>
+          {% if a.value_type == 'text' %}Text{% elif a.value_type == 'number' %}Zahl{% elif a.value_type == 'bool' %}Ja/Nein{% elif a.value_type == 'enum' %}Auswahl{% else %}{{ a.value_type }}{% endif %}
+        </div>
+        <div class="mono">
+          {% if options_map.get(a.id) %}
+            {{ options_map.get(a.id)|join(', ') }}
+          {% else %}
+            <span class="muted">-</span>
+          {% endif %}
+        </div>
+        <div class="mono">
+          {% for s in scope_map.get(a.id, []) %}
+            {{ s }}<br>
+          {% endfor %}
+          {% if not scope_map.get(a.id) %}
+            <span class="muted">-</span>
+          {% endif %}
+        </div>
+        <div>
+          {% if user.role == 'admin' %}
+          <form method="post" action="/catalog/attributes/{{ a.id }}/scope/add" class="form compact">
+            <select name="scope_kind_id">
+              <option value="0">Art</option>
+              {% for k in kinds %}
+                <option value="{{ k.id }}">{{ k.name }}</option>
+              {% endfor %}
+            </select>
+            <select name="scope_type_id">
+              <option value="0">Typ</option>
+              {% for t in types %}
+                <option value="{{ t.id }}">{{ t.name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn small" type="submit">Scope +</button>
+          </form>
+          {% endif %}
+        </div>
       </div>
+      {% endfor %}
     </div>
-    {% endfor %}
-  </div>
+  {% endfor %}
 
+  {% if not attrs %}
+    <div class="hint">Noch keine Attribute vorhanden.</div>
+  {% endif %}
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Lege hier Attribute mit Typ, Gruppe und optionalem Pflicht-Flag an.</li>
+  <li>Bei Auswahl-Attributen definierst du feste Optionen.</li>
+  <li>Scopes bestimmen, für welche Gerätearten oder -typen das Attribut gilt.</li>
+</ul>
 {% endblock %}

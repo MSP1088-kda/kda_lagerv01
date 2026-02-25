@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Dashboard</h1>
+  <h1>Übersicht</h1>
 
   <div class="grid2">
     <div class="box">
@@ -19,13 +19,35 @@
         Serien im Bestand: <b>{{ stats.serials_in_stock }}</b><br>
         Mengen-Bestandszeilen: <b>{{ stats.qty_lines }}</b><br>
         Aktive Reservierungen: <b>{{ stats.reservations }}</b><br>
+        Unter Mindestbestand: <b>{{ stats.low_stock }}</b><br>
         <a href="/inventory/stock" class="btn small">Bestand ansehen</a>
       </div>
     </div>
   </div>
 
+  <h2>Warnungen Mindestbestand</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr 160px;">
+      <div>Produkt</div>
+      <div>Lager/Fach</div>
+      <div>Bestand / Minimum</div>
+      <div>Fehlt</div>
+    </div>
+    {% for w in warnings %}
+      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr 160px;">
+        <div>{{ w.product_name }}</div>
+        <div>{{ w.warehouse_name }}{% if w.bin_name %} / {{ w.bin_name }}{% endif %}</div>
+        <div>{{ w.current_qty }} / {{ w.min_qty }}</div>
+        <div>{{ w.missing_qty }}</div>
+      </div>
+    {% endfor %}
+    {% if not warnings %}
+      <div class="muted">Keine Warnungen.</div>
+    {% endif %}
+  </div>
+
   <section class="mobile-quick-actions">
-    <h2>Quick Actions</h2>
+    <h2>Schnellaktionen</h2>
     <div class="mobile-quick-grid">
       <a class="mobile-action" href="/inventory/transactions/new?tx_type=receipt">Wareneingang</a>
       <a class="mobile-action" href="/inventory/transactions/new?tx_type=issue">Warenausgang</a>
@@ -35,7 +57,15 @@
   </section>
 
   <div class="hint">
-    Keyboard: Alt+2 Katalog, Alt+3 Lager, "/" für Suche.
+    Tastatur: Alt+2 Katalog, Alt+3 Lager, / für Suche.
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Übersicht zeigt die wichtigsten Kennzahlen.</li>
+  <li>Über die Schnellaktionen startest du typische Lageraufgaben direkt.</li>
+  <li>Mit Alt+2 und Alt+3 springst du schnell zu Katalog oder Lager.</li>
+</ul>
 {% endblock %}

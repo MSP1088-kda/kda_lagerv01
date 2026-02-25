@@ -10,16 +10,17 @@ UI: **MS-DOS/Terminal-Look**, keyboard-first (so wenig Maus wie möglich) + resp
 ## Start (Docker)
 
 1) Entpacken  
-2) Optional: `.env.example` → `.env` und `WEB_PORT` anpassen  
+2) Optional: `.env.example` → `.env` und `HTTP_PORT`/`HTTPS_PORT` anpassen  
 3) Starten:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 4) Öffnen:
 
-- `http://localhost:8080` (oder dein `WEB_PORT`)
+- `http://localhost/`
+- `http://<host-ip>/`
 
 Beim ersten Start landest du im Setup.
 
@@ -57,9 +58,24 @@ Hinweis: Browser/OS können manche Alt-Kombos abfangen. Dann halt Tab benutzen w
 
 ## Hinweis (MVP)
 
-- Port-Step im Setup speichert nur die Wunschwerte. Das echte Portmapping passiert via Docker Compose (`WEB_PORT`).
+- Port-Step im Setup speichert nur die Wunschwerte. Das echte Portmapping passiert via Docker Compose (`HTTP_PORT`/`HTTPS_PORT`).
 - Hostname/mDNS wird im Setup nur gespeichert (Automatisierung ist host-abhängig).
 - Attribute vom Typ `enum` werden aktuell als Freitext gespeichert (MVP). Die Scope-Logik ist trotzdem da.
+
+## Hostname im LAN
+
+Für Zugriff ohne IP kannst du drei Wege nutzen:
+
+- `mDNS` (Linux/macOS): `http://lager.local/`
+- `Router/DNS`: z. B. `http://lager.firma.lan/`
+- `hosts`-Datei auf jedem Client
+
+Hilfsdateien im Projekt:
+
+- `scripts/linux_mdns_enable.sh <hostname>` (Linux, setzt Hostname und aktiviert Avahi)
+- `scripts/windows_hosts_example.txt` (Beispiel für Windows-hosts-Datei)
+
+Hinweis: Die App trägt keine Router-DNS-Einträge automatisch ein.
 
 ---
 

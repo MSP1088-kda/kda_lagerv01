@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Setup 3/8: Datenpfade</h1>
+  <h1>Einrichtung 3/8: Datenpfade</h1>
 
-  <p>Ziel: Persistenz. Backups sollen schnell gehen. Dafür liegt alles in einem Base-Pfad.</p>
+  <p>Alle persistenten Daten werden unter einem gemeinsamen Basispfad abgelegt.</p>
 
   <form method="post" action="/setup/3" class="form">
-    <label>Base-Pfad (im Container)</label>
+    <label>Basispfad (im Container)</label>
     <input type="text" name="base_path" value="{{ data_dir }}" required>
 
     <div class="row">
-      <button type="submit" class="btn primary">Anlegen & Weiter</button>
+      <button type="submit" class="btn primary">Anlegen und weiter</button>
       <a class="btn" href="/setup/4">Überspringen</a>
     </div>
   </form>
@@ -23,7 +23,15 @@
   </div>
 
   <div class="hint">
-    In Docker: <code>./data:/data</code> ist bereits im Compose konfiguriert.
+    In Docker ist standardmäßig <code>./data:/data</code> eingebunden.
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier bestimmst du, wo Daten, Sicherungen und Geheimnisse gespeichert werden.</li>
+  <li>Wähle einen persistenten Pfad, damit Daten Neustarts überstehen.</li>
+  <li>Nach dem Speichern werden die benötigten Unterordner automatisch erstellt.</li>
+</ul>
 {% endblock %}

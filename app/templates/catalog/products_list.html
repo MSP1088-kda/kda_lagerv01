@@ -7,7 +7,7 @@
     <div class="grid3">
       <div>
         <label>Suche</label>
-        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Name / SKU / Hersteller">
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Name / SKU / Hersteller / EAN">
       </div>
       <div>
         <label>Bereich</label>
@@ -36,65 +36,91 @@
           {% endfor %}
         </select>
       </div>
-      {% if filter_attrs %}
-      <div class="box" style="grid-column: 1 / -1;">
-        <div class="box-title">Attribute-Filter</div>
-        <div class="box-body">
-          <div class="grid3">
-            {% for a in filter_attrs %}
-              <div>
-                <label>{{ a.name }}</label>
-                {% set key = 'attr_' ~ a.id %}
-                {% set val = attr_filters.get(key,'') %}
-                {% if a.value_type == 'bool' %}
-                  <select name="{{ key }}">
-                    <option value="" {% if not val %}selected{% endif %}>-</option>
-                    <option value="true" {% if val=='true' %}selected{% endif %}>Ja</option>
-                    <option value="false" {% if val=='false' %}selected{% endif %}>Nein</option>
-                  </select>
-                {% else %}
-                  <input type="text" name="{{ key }}" value="{{ val }}" placeholder="Filter...">
-                {% endif %}
-              </div>
-            {% endfor %}
-          </div>
-          <div class="muted">Hinweis: Attribute-Filter werden nur angezeigt, wenn Geräteart oder Gerätetyp gewählt ist.</div>
+    </div>
+
+    {% if filter_attrs %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Attribut-Facetten</div>
+      <div class="box-body">
+        <div class="grid3">
+          {% for a in filter_attrs %}
+            {% set slug = a.slug %}
+            {% set key = 'a_' ~ slug %}
+            <div>
+              <label>{{ a.name }}</label>
+              {% if a.value_type == 'bool' %}
+                <select name="{{ key }}">
+                  <option value="">-</option>
+                  <option value="true" {% if attr_filters.get(slug) == 'true' %}selected{% endif %}>Ja</option>
+                  <option value="false" {% if attr_filters.get(slug) == 'false' %}selected{% endif %}>Nein</option>
+                </select>
+              {% elif a.value_type == 'number' %}
+                <div class="grid2">
+                  <input type="number" step="any" name="{{ key }}_min" value="{{ attr_filters.get(slug ~ '_min', '') }}" placeholder="Min">
+                  <input type="number" step="any" name="{{ key }}_max" value="{{ attr_filters.get(slug ~ '_max', '') }}" placeholder="Max">
+                </div>
+              {% elif a.value_type == 'enum' and a.is_multi %}
+                {% set selected = attr_filters.get(slug, []) %}
+                <div class="row">
+                  {% for opt in options_by_slug.get(slug, []) %}
+                  <label class="check">
+                    <input type="checkbox" name="{{ key }}" value="{{ opt }}" {% if opt in selected %}checked{% endif %}>
+                    {{ opt }}
+                  </label>
+                  {% endfor %}
+                </div>
+              {% elif a.value_type == 'enum' %}
+                <select name="{{ key }}">
+                  <option value="">-</option>
+                  {% for opt in options_by_slug.get(slug, []) %}
+                    <option value="{{ opt }}" {% if attr_filters.get(slug) == opt %}selected{% endif %}>{{ opt }}</option>
+                  {% endfor %}
+                </select>
+              {% else %}
+                <input type="text" name="{{ key }}" value="{{ attr_filters.get(slug, '') }}" placeholder="Filterwert">
+              {% endif %}
+            </div>
+          {% endfor %}
         </div>
       </div>
+    </div>
+    {% endif %}
+
+    <div class="row">
+      <button class="btn primary" type="submit">Filtern</button>
+      <a class="btn" href="/catalog/products">Zurücksetzen</a>
+    </div>
+    <div class="row right">
+      {% if user.role == 'admin' %}
+        <a class="btn primary" href="/catalog/products/new">+ Neu</a>
+        <a class="btn" href="/catalog/products/import">CSV-Import</a>
       {% endif %}
-      <div class="row">
-        <button class="btn primary" type="submit">Filtern</button>
-        <a class="btn" href="/catalog/products">Reset</a>
-      </div>
-      <div class="row right">
-        {% if user.role == 'admin' %}
-          <a class="btn primary" href="/catalog/products/new">+ Neu</a>
-        {% endif %}
-        <a class="btn" href="/catalog/structure">Struktur</a>
-        <a class="btn" href="/catalog/attributes">Attribute</a>
-      </div>
+      <a class="btn" href="/catalog/structure">Struktur</a>
+      <a class="btn" href="/catalog/attributes">Attribute</a>
     </div>
   </form>
 
   <div class="table" data-kbd-list="true">
-    <div class="tr th">
+    <div class="tr th" style="grid-template-columns: 60px 1.3fr 1fr 1fr 1fr 0.8fr 160px;">
       <div>#</div>
       <div>Name</div>
       <div>Hersteller</div>
       <div>SKU</div>
-      <div>Mode</div>
-      <div>Action</div>
+      <div>EAN</div>
+      <div>Modus</div>
+      <div>Aktion</div>
     </div>
     {% for p in products %}
-      <div class="tr" data-kbd-row="true" {% if user.role == 'admin' %}data-href="/catalog/products/{{ p.id }}/edit"{% endif %}>
+      <div class="tr" style="grid-template-columns: 60px 1.3fr 1fr 1fr 1fr 0.8fr 160px;" data-kbd-row="true" {% if user.role == 'admin' %}data-href="/catalog/products/{{ p.id }}/edit"{% endif %}>
         <div>{{ p.id }}</div>
         <div>{{ p.name }}</div>
         <div>{{ p.manufacturer or "-" }}</div>
         <div>{{ p.sku or "-" }}</div>
-        <div>{{ p.track_mode }}</div>
+        <div>{{ p.ean or "-" }}</div>
+        <div>{{ p.track_mode|de_label('track_mode') }}</div>
         <div>
           {% if user.role == 'admin' %}
-            <a class="btn small" href="/catalog/products/{{ p.id }}/edit">Edit</a>
+            <a class="btn small" href="/catalog/products/{{ p.id }}/edit">Bearbeiten</a>
           {% else %}
             <span class="muted">-</span>
           {% endif %}
@@ -106,4 +132,12 @@
     {% endif %}
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Neben Bereich/Geräteart/Gerätetyp kannst du Attribute gezielt als Facetten filtern.</li>
+  <li>Für Zahlenattribute stehen Min-/Max-Felder bereit, für Mehrfachauswahl Checkboxen.</li>
+  <li>Alle Filterwerte bleiben nach dem Absenden erhalten.</li>
+</ul>
 {% endblock %}

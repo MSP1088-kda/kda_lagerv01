@@ -22,6 +22,9 @@
       </div>
     </div>
 
+    <label>EAN (optional)</label>
+    <input type="text" name="ean" value="{{ product.ean if product and product.ean else '' }}" placeholder="8 oder 13 Ziffern">
+
     <div class="grid3">
       <div>
         <label>Bereich</label>
@@ -52,10 +55,10 @@
       </div>
     </div>
 
-    <label>Tracking</label>
+    <label>Verfolgung</label>
     <select name="track_mode">
-      <option value="serial" {% if product and product.track_mode=='serial' %}selected{% endif %}>Seriennummer</option>
-      <option value="quantity" {% if product and product.track_mode=='quantity' %}selected{% endif %}>Menge</option>
+      <option value="serial" {% if product and product.track_mode=='serial' %}selected{% endif %}>{{ 'serial'|de_label('track_mode') }}</option>
+      <option value="quantity" {% if product and product.track_mode=='quantity' %}selected{% endif %}>{{ 'quantity'|de_label('track_mode') }}</option>
     </select>
 
     <label>Beschreibung</label>
@@ -63,24 +66,97 @@
 
     {% if product and attrs %}
       <h2>Attribute</h2>
-      <div class="hint">Attribute sind abhängig von Geräteart/Typ (Scopes). Änderungen hier sind sofort filterbar.</div>
+      <div class="hint">Pflichtattribute sind mit * markiert.</div>
 
-      {% for a in attrs %}
-        <label>{{ a.name }} ({{ a.value_type }})</label>
-        {% if a.value_type == 'bool' %}
-          <select name="attr_{{ a.id }}">
-            <option value="" {% if not val_map.get(a.id) %}selected{% endif %}>-</option>
-            <option value="true" {% if val_map.get(a.id) == 'true' %}selected{% endif %}>Ja</option>
-            <option value="false" {% if val_map.get(a.id) == 'false' %}selected{% endif %}>Nein</option>
-          </select>
-        {% elif a.value_type == 'enum' %}
-          {% set opts = (a.enum_options_json|default('[]'))|safe %}
-          <input type="text" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}" placeholder="Enum Wert">
-          <div class="muted">Hinweis: Optionen werden aktuell als Freitext gespeichert (MVP). (Ja, ich weiß.)</div>
-        {% else %}
-          <input type="text" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}">
-        {% endif %}
+      {% for group_name, group_attrs in attrs_grouped %}
+      <div class="box" style="margin-top:10px;">
+        <div class="box-title">{{ group_name }}</div>
+        <div class="box-body">
+          {% for a in group_attrs %}
+            <label>
+              {{ a.name }}{% if a.is_required %} *{% endif %}
+              ({% if a.value_type == 'text' %}Text{% elif a.value_type == 'number' %}Zahl{% elif a.value_type == 'bool' %}Ja/Nein{% elif a.value_type == 'enum' %}Auswahl{% else %}{{ a.value_type }}{% endif %})
+            </label>
+
+            {% if a.value_type == 'bool' %}
+              <label class="check">
+                <input type="checkbox" name="attr_{{ a.id }}" {% if val_map.get(a.id) == 'true' %}checked{% endif %}>
+                Ja
+              </label>
+            {% elif a.value_type == 'number' %}
+              <input type="number" step="any" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}">
+            {% elif a.value_type == 'enum' and a.is_multi %}
+              <div class="row">
+                {% set selected = val_multi_map.get(a.id, []) %}
+                {% for opt in options_map.get(a.id, []) %}
+                <label class="check">
+                  <input type="checkbox" name="attr_{{ a.id }}" value="{{ opt }}" {% if opt in selected %}checked{% endif %}>
+                  {{ opt }}
+                </label>
+                {% endfor %}
+              </div>
+            {% elif a.value_type == 'enum' %}
+              <select name="attr_{{ a.id }}">
+                <option value="">-</option>
+                {% for opt in options_map.get(a.id, []) %}
+                  <option value="{{ opt }}" {% if val_map.get(a.id) == opt %}selected{% endif %}>{{ opt }}</option>
+                {% endfor %}
+              </select>
+            {% else %}
+              <input type="text" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}">
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
       {% endfor %}
+    {% endif %}
+
+    {% if product %}
+      <h2>Mindestbestand</h2>
+      <div class="box">
+        <div class="box-title">Regeln</div>
+        <div class="box-body">
+          <div class="mono">
+            {% for r in min_rows %}
+              Lager {{ r.warehouse_id }}
+              {% if r.bin_id %}
+                / Fach {{ r.bin_id }}
+              {% endif %}
+              : {{ r.min_qty }}<br>
+            {% endfor %}
+            {% if not min_rows %}
+              <span class="muted">Noch keine Mindestbestände definiert.</span>
+            {% endif %}
+          </div>
+          <form method="post" action="/catalog/products/{{ product.id }}/min_stock/set" class="form compact">
+            <div class="grid3">
+              <div>
+                <label>Lager</label>
+                <select name="warehouse_id" required>
+                  <option value="0">Bitte wählen</option>
+                  {% for w in warehouses %}
+                    <option value="{{ w.id }}">{{ w.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Fach/Bin (optional)</label>
+                <select name="bin_id">
+                  <option value="0">-</option>
+                  {% for b in bins %}
+                    <option value="{{ b.id }}">{{ b.code }}{% if b.label %} ({{ b.label }}){% endif %}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Mindestmenge</label>
+                <input type="number" name="min_qty" min="0" value="0">
+              </div>
+            </div>
+            <button class="btn small" type="submit">Speichern / Entfernen (0)</button>
+          </form>
+        </div>
+      </div>
     {% endif %}
 
     <div class="row">
@@ -91,8 +167,16 @@
 
   {% if product %}
   <div class="hint">
-    Tipp: Für Lagerbewegungen zu diesem Produkt: Alt+3 → "Buchung" erstellen.
+    Tipp: Lagerbuchungen für dieses Produkt findest du unter Lager.
   </div>
   {% endif %}
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Das Formular passt Attributfelder automatisch an deren Typ an.</li>
+  <li>Pflichtattribute müssen beim Speichern ausgefüllt sein.</li>
+  <li>Mehrfach-Auswahlattribute werden intern als Liste gespeichert.</li>
+</ul>
 {% endblock %}

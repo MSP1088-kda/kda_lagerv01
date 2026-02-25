@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase
 # Data directory where DB + uploads live (mounted volume in Docker)
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
 DB_PATH = DATA_DIR / "db.sqlite"
+DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip() or f"sqlite:///{DB_PATH.as_posix()}"
 
 _engine = None
 _SessionLocal = None
@@ -21,10 +22,10 @@ def get_engine():
     global _engine
     if _engine is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        url = f"sqlite:///{DB_PATH.as_posix()}"
+        url = DATABASE_URL
         _engine = create_engine(
             url,
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False} if url.startswith("sqlite") else {},
             pool_pre_ping=True,
         )
     return _engine

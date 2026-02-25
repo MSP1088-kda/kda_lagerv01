@@ -3,23 +3,63 @@
 <div class="panel">
   <h1>Lagerorte</h1>
 
-  <div class="table" data-kbd-list="true">
+  <div class="table">
     <div class="tr th wh-tr">
       <div>#</div>
       <div>Name</div>
       <div>Beschreibung</div>
-      <div>Action</div>
+      <div>Aktion</div>
     </div>
     {% for w in warehouses %}
-      <div class="tr wh-tr" data-kbd-row="true" data-href="/inventory/stock?warehouse_id={{ w.id }}">
+      <div class="tr wh-tr">
         <div>{{ w.id }}</div>
         <div>{{ w.name }}</div>
         <div>{{ w.description or "-" }}</div>
         <div><a class="btn small" href="/inventory/stock?warehouse_id={{ w.id }}">Bestand</a></div>
       </div>
+      <div class="tr" style="grid-template-columns: 60px 1fr 1fr 120px;">
+        <div></div>
+        <div style="grid-column: 2 / -1;">
+          <div class="box">
+            <div class="box-title">Fächer / Bins</div>
+            <div class="box-body">
+              <div class="mono">
+                {% for b in bins_by_warehouse.get(w.id, []) %}
+                  {{ b.code }}{% if b.label %} ({{ b.label }}){% endif %}
+                  {% if user.role == 'admin' %}
+                  <form method="post" action="/inventory/warehouses/{{ w.id }}/bins/{{ b.id }}/delete" class="inline" onsubmit="return confirm('Fach löschen?');">
+                    <button class="btn small" type="submit">Löschen</button>
+                  </form>
+                  {% endif %}
+                  <br>
+                {% endfor %}
+                {% if not bins_by_warehouse.get(w.id) %}
+                  <span class="muted">Noch keine Fächer vorhanden.</span>
+                {% endif %}
+              </div>
+
+              {% if user.role == 'admin' %}
+              <form method="post" action="/inventory/warehouses/{{ w.id }}/bins/add" class="form compact">
+                <div class="grid2">
+                  <div>
+                    <label>Code</label>
+                    <input type="text" name="code" placeholder="z. B. R1-F2" required>
+                  </div>
+                  <div>
+                    <label>Bezeichnung (optional)</label>
+                    <input type="text" name="label" placeholder="z. B. Regal 1 Fach 2">
+                  </div>
+                </div>
+                <button class="btn small" type="submit">Fach anlegen</button>
+              </form>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
     {% endfor %}
     {% if not warehouses %}
-      <div class="muted">Noch keine Lagerorte. (Das Lager existiert im Kopf zählt nicht.)</div>
+      <div class="muted">Noch keine Lagerorte vorhanden.</div>
     {% endif %}
   </div>
 
@@ -34,4 +74,12 @@
   </form>
   {% endif %}
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Jedes Lager kann in Fächer/Bins unterteilt werden.</li>
+  <li>Fächer werden bei Buchungen als Quell- oder Zielfach verwendet.</li>
+  <li>Fächer mit vorhandenem Bestand können nicht gelöscht werden.</li>
+</ul>
 {% endblock %}

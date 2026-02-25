@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Katalog-Struktur</h1>
+  <h1>Katalogstruktur</h1>
 
   <div class="grid2">
     <div class="box">
@@ -17,8 +17,8 @@
         <form method="post" action="/catalog/areas/add" class="form compact">
           <label>Neuer Bereich</label>
           <div class="row">
-            <input type="text" name="name" placeholder="z.B. Ersatzteile" required>
-            <button class="btn small primary" type="submit">Add</button>
+            <input type="text" name="name" placeholder="z. B. Ersatzteile" required>
+            <button class="btn small primary" type="submit">Anlegen</button>
           </div>
         </form>
         {% endif %}
@@ -30,7 +30,7 @@
       <div class="box-body">
         <div class="mono">
           {% for k in kinds %}
-            #{{ k.id }} (Area {{ k.area_id }}) {{ k.name }}<br>
+            #{{ k.id }} (Bereich {{ k.area_id }}) {{ k.name }}<br>
           {% endfor %}
         </div>
 
@@ -51,7 +51,7 @@
               <input type="text" name="name" required>
             </div>
           </div>
-          <button class="btn small primary" type="submit">Add</button>
+          <button class="btn small primary" type="submit">Anlegen</button>
         </form>
         {% endif %}
       </div>
@@ -83,22 +83,30 @@
               <input type="text" name="name" required>
             </div>
           </div>
-          <button class="btn small primary" type="submit">Add</button>
+          <button class="btn small primary" type="submit">Anlegen</button>
         </form>
         {% endif %}
       </div>
     </div>
 
     <div class="box">
-      <div class="box-title">Shortcuts</div>
+      <div class="box-title">Kurzbefehle</div>
       <div class="box-body">
         <div class="mono">
           Alt+2 → Produktliste<br>
           Alt+3 → Bestand<br>
-          "/" → Suche fokussieren<br>
+          / → Suche fokussieren<br>
         </div>
       </div>
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier pflegst du die Struktur aus Bereichen, Gerätearten und Gerätetypen.</li>
+  <li>Neue Einträge können nur von Administratoren angelegt werden.</li>
+  <li>Die Struktur wird im Produktformular direkt für die Zuordnung verwendet.</li>
+</ul>
 {% endblock %}

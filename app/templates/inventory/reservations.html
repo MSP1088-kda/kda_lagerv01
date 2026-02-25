@@ -4,7 +4,9 @@
   <h1>Reservierungen</h1>
 
   <div class="row">
+    {% if role_flags.can_reserve %}
     <a class="btn primary" href="/inventory/reservations/new">+ Neu</a>
+    {% endif %}
     <a class="btn" href="/inventory/stock">Bestand</a>
   </div>
 
@@ -14,9 +16,9 @@
       <div>Status</div>
       <div>Produkt</div>
       <div>Lager</div>
-      <div>Qty/SN</div>
-      <div>Ref</div>
-      <div>Action</div>
+      <div>Menge/SN</div>
+      <div>Referenz</div>
+      <div>Aktion</div>
     </div>
     {% for r in reservations %}
       {% set p = products.get(r.product_id) %}
@@ -24,7 +26,7 @@
       {% set s = serials.get(r.serial_id) if r.serial_id else None %}
       <div class="tr">
         <div>{{ r.id }}</div>
-        <div>{{ r.status }}</div>
+        <div>{{ r.status|de_label('reservation_status') }}</div>
         <div>{{ p.name if p else r.product_id }}</div>
         <div>{{ w.name if w else r.warehouse_id }}</div>
         <div>
@@ -36,9 +38,9 @@
         </div>
         <div>{{ r.reference or "-" }}</div>
         <div>
-          {% if r.status == 'active' %}
+          {% if r.status == 'active' and role_flags.can_inventory_write %}
           <form method="post" action="/inventory/reservations/{{ r.id }}/release" class="inline">
-            <button class="btn small" type="submit">Release</button>
+            <button class="btn small" type="submit">Freigeben</button>
           </form>
           {% else %}
             <span class="muted">-</span>
@@ -51,4 +53,12 @@
     {% endif %}
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier siehst du alle offenen und abgeschlossenen Reservierungen.</li>
+  <li>Aktive Reservierungen können über "Freigeben" wieder geöffnet werden.</li>
+  <li>Nutze "Neu", um eine weitere Reservierung anzulegen.</li>
+</ul>
 {% endblock %}

@@ -1,49 +1,49 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Setup 7/8: E-Mail-Konten</h1>
+  <h1>Einrichtung 7/8: E-Mail-Konten</h1>
 
-  <p>Optional. Du kannst später unter Einstellungen weitere Konten anlegen/ändern.</p>
+  <p>Optional. Weitere Konten können später in den Einstellungen gepflegt werden.</p>
 
   <h2>Vorhandene Konten</h2>
   {% if accounts %}
     <div class="mono">
       {% for a in accounts %}
-        #{{ a.id }}  {{ a.label }}  &lt;{{ a.email }}&gt;  {% if a.is_default %}[default]{% endif %} {% if not a.enabled %}[disabled]{% endif %}<br>
+        #{{ a.id }}  {{ a.label }}  &lt;{{ a.email }}&gt;  {% if a.is_default %}[Standard]{% endif %} {% if not a.enabled %}[deaktiviert]{% endif %}<br>
       {% endfor %}
     </div>
   {% else %}
-    <div class="muted">Noch keine.</div>
+    <div class="muted">Noch keine Konten vorhanden.</div>
   {% endif %}
 
   <h2>Konto hinzufügen</h2>
   <form method="post" action="/setup/7" class="form">
     <input type="hidden" name="action" value="add">
 
-    <label>Label</label>
-    <input type="text" name="label" placeholder="z.B. Support" required>
+    <label>Bezeichnung</label>
+    <input type="text" name="label" placeholder="z. B. Support" required>
 
     <label>E-Mail</label>
     <input type="email" name="email" placeholder="support@firma.de" required>
 
     <div class="row">
-      <label class="check"><input type="checkbox" name="is_default"> Default</label>
+      <label class="check"><input type="checkbox" name="is_default"> Standard</label>
       <label class="check"><input type="checkbox" name="smtp_tls" checked> SMTP TLS</label>
       <label class="check"><input type="checkbox" name="imap_tls" checked> IMAP TLS</label>
     </div>
 
-    <h3>SMTP (Senden)</h3>
+    <h3>SMTP (Versand)</h3>
     <div class="grid2">
       <div>
         <label>Host</label>
-        <input type="text" name="smtp_host" placeholder="smtp.example.com">
+        <input type="text" name="smtp_host" placeholder="smtp.beispiel.de">
       </div>
       <div>
         <label>Port</label>
         <input type="number" name="smtp_port" placeholder="587">
       </div>
     </div>
-    <label>Username</label>
+    <label>Benutzername</label>
     <input type="text" name="smtp_username">
     <label>Passwort</label>
     <input type="password" name="smtp_password">
@@ -52,14 +52,14 @@
     <div class="grid2">
       <div>
         <label>Host</label>
-        <input type="text" name="imap_host" placeholder="imap.example.com">
+        <input type="text" name="imap_host" placeholder="imap.beispiel.de">
       </div>
       <div>
         <label>Port</label>
         <input type="number" name="imap_port" placeholder="993">
       </div>
     </div>
-    <label>Username</label>
+    <label>Benutzername</label>
     <input type="text" name="imap_username">
     <label>Passwort</label>
     <input type="password" name="imap_password">
@@ -70,4 +70,12 @@
     </div>
   </form>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>E-Mail-Konten sind optional und können später ergänzt werden.</li>
+  <li>Trage bei Bedarf SMTP- und IMAP-Daten vollständig ein.</li>
+  <li>Mit "Überspringen" gehst du direkt zum letzten Schritt.</li>
+</ul>
 {% endblock %}

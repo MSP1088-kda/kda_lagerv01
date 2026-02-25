@@ -73,3 +73,39 @@ def slugify(text: str) -> str:
     if not s:
         s = "attr"
     return s
+
+
+def _ean_check_digit(body: str) -> int:
+    if len(body) == 7:
+        total = 0
+        for i, ch in enumerate(body):
+            digit = int(ch)
+            total += digit * 3 if i % 2 == 0 else digit
+        return (10 - (total % 10)) % 10
+    if len(body) == 12:
+        total = 0
+        for i, ch in enumerate(body):
+            digit = int(ch)
+            total += digit if i % 2 == 0 else digit * 3
+        return (10 - (total % 10)) % 10
+    raise ValueError("Ungültige EAN-Länge")
+
+
+def normalize_ean(raw: str | None) -> str | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+
+    cleaned = re.sub(r"[\s\-\./_]+", "", text)
+    if not cleaned:
+        return None
+    if not cleaned.isdigit():
+        raise ValueError("EAN darf nur Ziffern enthalten.")
+    if len(cleaned) not in (8, 13):
+        raise ValueError("EAN muss 8 oder 13 Ziffern lang sein.")
+
+    body = cleaned[:-1]
+    check = int(cleaned[-1])
+    if _ean_check_digit(body) != check:
+        raise ValueError("EAN-Prüfziffer ist ungültig.")
+    return cleaned
