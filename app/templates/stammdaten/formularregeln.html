@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel" data-formularregeln-page="1">
+  <h1>Stammdaten: Formularregeln</h1>
+
+  <div class="row">
+    {% for it in item_types %}
+      <a class="btn {% if it == selected_item_type %}primary{% endif %}" href="/stammdaten/formularregeln?item_type={{ it }}">[{{ loop.index }}] {{ item_type_labels.get(it, it) }}</a>
+    {% endfor %}
+  </div>
+
+  <form method="post" action="/stammdaten/formularregeln/save" class="form" data-formularregeln-form="1">
+    <input type="hidden" name="item_type" value="{{ selected_item_type }}">
+
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 1.2fr 90px 100px 110px 1fr 1.5fr;">
+        <div>Feld</div>
+        <div>Sichtbar</div>
+        <div>Pflicht</div>
+        <div>Reihenfolge</div>
+        <div>Abschnitt</div>
+        <div>Kurzhilfe</div>
+      </div>
+      {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 1.2fr 90px 100px 110px 1fr 1.5fr;">
+        <div>{{ row.label }}</div>
+        <div><label class="check"><input type="checkbox" name="visible_{{ row.key }}" {% if row.visible %}checked{% endif %}></label></div>
+        <div><label class="check"><input type="checkbox" name="required_{{ row.key }}" {% if row.required %}checked{% endif %}></label></div>
+        <div><input type="number" name="sort_order_{{ row.key }}" value="{{ row.sort_order }}" min="1"></div>
+        <div>
+          <select name="section_{{ row.key }}">
+            {% for sec in section_choices %}
+              <option value="{{ sec }}" {% if row.section == sec %}selected{% endif %}>{{ sec }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div><input type="text" name="help_text_{{ row.key }}" value="{{ row.help_text_de }}"></div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/stammdaten/hersteller">Hersteller</a>
+      <a class="btn" href="/stammdaten/lieferanten">Lieferanten</a>
+      <a class="btn" href="/stammdaten/zustaende">Zustände</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier legst du fest, welche Felder je Artikelart sichtbar und/oder Pflicht sind.</li>
+  <li>Tab und Leertaste reichen für Bedienung ohne Maus; Strg+S speichert direkt.</li>
+  <li>Die Regeln wirken sofort in der Produkt-Neuanlage und beim Bearbeiten.</li>
+</ul>
+{% endblock %}

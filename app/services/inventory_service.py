@@ -52,12 +52,8 @@ def apply_transaction(db: Session, tx: InventoryTransaction, actor_user_id: int 
     if not product:
         raise ValueError("Produkt nicht gefunden")
 
-    mode = product.track_mode
-
-    if mode == "quantity":
-        _apply_quantity(db, tx)
-    else:
-        _apply_serial(db, tx)
+    tx.serial_number = None
+    _apply_quantity(db, tx)
 
     tx.created_by_user_id = actor_user_id
     db.add(tx)

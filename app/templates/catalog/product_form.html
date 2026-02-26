@@ -6,65 +6,98 @@
   {% else %}
     <h1>Produkt neu</h1>
   {% endif %}
+  {% set selected_item_type = selected_item_type if selected_item_type else (product.item_type if product and product.item_type else 'material') %}
 
-  <form method="post" class="form">
-    <label>Name</label>
-    <input type="text" name="name" value="{{ product.name if product else '' }}" required autofocus>
+  <form method="post" class="form" data-product-form="1" data-product-new="{% if not product %}1{% else %}0{% endif %}">
+    <label>Artikelart</label>
+    {% if item_type_locked %}
+      <input type="text" value="{{ item_type_labels.get(selected_item_type, selected_item_type) }}" disabled>
+      <input type="hidden" name="item_type" value="{{ selected_item_type }}">
+    {% else %}
+      <select name="item_type" required>
+        {% for it in item_types %}
+          <option value="{{ it }}" {% if selected_item_type == it %}selected{% endif %}>{{ item_type_labels.get(it, it) }}</option>
+        {% endfor %}
+      </select>
+    {% endif %}
 
-    <div class="grid2">
-      <div>
-        <label>Hersteller</label>
-        <input type="text" name="manufacturer" value="{{ product.manufacturer if product else '' }}">
-      </div>
-      <div>
-        <label>SKU / Artikelnummer</label>
-        <input type="text" name="sku" value="{{ product.sku if product else '' }}">
-      </div>
-    </div>
+    {% set section = namespace(current='') %}
+    {% set selected_manufacturer_id = product.manufacturer_id if product and product.manufacturer_id else 0 %}
+    {% set selected_area_id = product.area_id if product and product.area_id else 0 %}
+    {% set selected_kind = product.device_kind_id if product and product.device_kind_id else (selected_kind_id|default(0)) %}
+    {% set selected_type = product.device_type_id if product and product.device_type_id else (selected_type_id|default(0)) %}
 
-    <label>EAN (optional)</label>
-    <input type="text" name="ean" value="{{ product.ean if product and product.ean else '' }}" placeholder="8 oder 13 Ziffern">
+    {% if form_schema %}
+      {% for field in form_schema %}
+        {% if section.current != field.section %}
+          <h2>{{ field.section }}</h2>
+          {% set section.current = field.section %}
+        {% endif %}
 
-    <div class="grid3">
-      <div>
-        <label>Bereich</label>
-        <select name="area_id">
-          <option value="0">-</option>
-          {% for a in areas %}
-            <option value="{{ a.id }}" {% if product and product.area_id==a.id %}selected{% endif %}>{{ a.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Geräteart</label>
-        <select name="device_kind_id">
-          <option value="0">-</option>
-          {% for k in kinds %}
-            <option value="{{ k.id }}" {% if product and product.device_kind_id==k.id %}selected{% endif %}>{{ k.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Gerätetyp</label>
-        <select name="device_type_id">
-          <option value="0">-</option>
-          {% for t in types %}
-            <option value="{{ t.id }}" {% if product and product.device_type_id==t.id %}selected{% endif %}>{{ t.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </div>
+        {% if field.key == 'name' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <input type="text" name="name" value="{{ product.name if product else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %} autofocus>
+        {% elif field.key == 'material_no' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <input type="text" name="material_no" value="{{ product.material_no if product and product.material_no else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+        {% elif field.key == 'manufacturer_id' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <select name="manufacturer_id" {% if field.required %}required{% endif %}>
+            <option value="0">Bitte wählen</option>
+            {% for m in manufacturers %}
+              <option value="{{ m.id }}" {% if selected_manufacturer_id == m.id %}selected{% endif %}>{{ m.name }}{% if not m.active %} (inaktiv){% endif %}</option>
+            {% endfor %}
+          </select>
+        {% elif field.key == 'sku' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <input type="text" name="sku" value="{{ product.sku if product and product.sku else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+        {% elif field.key == 'sales_name' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <input type="text" name="sales_name" value="{{ product.sales_name if product and product.sales_name else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+        {% elif field.key == 'manufacturer_name' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <input type="text" name="manufacturer_name" value="{{ product.manufacturer_name if product and product.manufacturer_name else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+        {% elif field.key == 'ean' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <input type="text" name="ean" value="{{ product.ean if product and product.ean else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+        {% elif field.key == 'area_id' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <select name="area_id" {% if field.required %}required{% endif %}>
+            <option value="0">Bitte wählen</option>
+            {% for a in areas %}
+              <option value="{{ a.id }}" {% if selected_area_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        {% elif field.key == 'device_kind_id' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <select name="device_kind_id" {% if field.required %}required{% endif %}>
+            <option value="0">Bitte wählen</option>
+            {% for k in kinds %}
+              <option value="{{ k.id }}" {% if selected_kind == k.id %}selected{% endif %}>{{ k.name }}</option>
+            {% endfor %}
+          </select>
+        {% elif field.key == 'device_type_id' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <select name="device_type_id" {% if field.required %}required{% endif %}>
+            <option value="0">Bitte wählen</option>
+            {% for t in types %}
+              <option value="{{ t.id }}" {% if selected_type == t.id %}selected{% endif %}>{{ t.name }}</option>
+            {% endfor %}
+          </select>
+        {% elif field.key == 'description' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <textarea name="description" rows="4" {% if field.required %}required{% endif %}>{{ product.description if product and product.description else '' }}</textarea>
+        {% endif %}
 
-    <label>Verfolgung</label>
-    <select name="track_mode">
-      <option value="serial" {% if product and product.track_mode=='serial' %}selected{% endif %}>{{ 'serial'|de_label('track_mode') }}</option>
-      <option value="quantity" {% if product and product.track_mode=='quantity' %}selected{% endif %}>{{ 'quantity'|de_label('track_mode') }}</option>
-    </select>
+        {% if field.help_text %}
+          <div class="hint">{{ field.help_text }}</div>
+        {% endif %}
+      {% endfor %}
+    {% else %}
+      <div class="muted">Für diese Artikelart sind noch keine Formularregeln hinterlegt.</div>
+    {% endif %}
 
-    <label>Beschreibung</label>
-    <textarea name="description" rows="4">{{ product.description if product else '' }}</textarea>
-
-    {% if product and attrs %}
+    {% if attrs %}
       <h2>Attribute</h2>
       <div class="hint">Pflichtattribute sind mit * markiert.</div>
 
@@ -79,10 +112,11 @@
             </label>
 
             {% if a.value_type == 'bool' %}
-              <label class="check">
-                <input type="checkbox" name="attr_{{ a.id }}" {% if val_map.get(a.id) == 'true' %}checked{% endif %}>
-                Ja
-              </label>
+              <select name="attr_{{ a.id }}">
+                <option value="">-</option>
+                <option value="true" {% if val_map.get(a.id) == 'true' %}selected{% endif %}>Ja</option>
+                <option value="false" {% if val_map.get(a.id) == 'false' %}selected{% endif %}>Nein</option>
+              </select>
             {% elif a.value_type == 'number' %}
               <input type="number" step="any" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}">
             {% elif a.value_type == 'enum' and a.is_multi %}
@@ -166,6 +200,12 @@
   </form>
 
   {% if product %}
+  <form method="post" action="/catalog/products/{{ product.id }}/delete" class="row" onsubmit="return confirm('Produkt wirklich löschen? Nur möglich, wenn Lagerbestand 0 ist.');">
+    <button class="btn" type="submit">Produkt löschen</button>
+  </form>
+  {% endif %}
+
+  {% if product %}
   <div class="hint">
     Tipp: Lagerbuchungen für dieses Produkt findest du unter Lager.
   </div>
@@ -175,8 +215,9 @@
 
 {% block help %}
 <ul>
-  <li>Das Formular passt Attributfelder automatisch an deren Typ an.</li>
-  <li>Pflichtattribute müssen beim Speichern ausgefüllt sein.</li>
-  <li>Mehrfach-Auswahlattribute werden intern als Liste gespeichert.</li>
+  <li>Das Formular zeigt nur Felder, die in Stammdaten → Formularregeln aktiv sind.</li>
+  <li>Pflichtfelder werden serverseitig je Artikelart geprüft.</li>
+  <li>Mit Strg+S speicherst du das Formular direkt.</li>
+  <li>Produkte lassen sich nur löschen, wenn kein Lagerbestand und keine aktive Reservierung vorhanden ist.</li>
 </ul>
 {% endblock %}

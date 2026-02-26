@@ -19,8 +19,8 @@ docker compose up --build -d
 
 4) Öffnen:
 
-- `http://localhost/`
-- `http://<host-ip>/`
+- `http://localhost:8080/`
+- `http://<host-ip>:8080/`
 
 Beim ersten Start landest du im Setup.
 

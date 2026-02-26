@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Lieferant bearbeiten #{{ row.id }}</h1>
+
+  <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/edit" class="form">
+    <div class="grid2">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" value="{{ row.name }}" required>
+      </div>
+      <div>
+        <label>Website</label>
+        <input type="text" name="website" value="{{ row.website or '' }}">
+      </div>
+      <div>
+        <label>Telefon</label>
+        <input type="text" name="phone" value="{{ row.phone or '' }}">
+      </div>
+      <div>
+        <label>E-Mail</label>
+        <input type="email" name="email" value="{{ row.email or '' }}">
+      </div>
+    </div>
+
+    <label>Adresse</label>
+    <textarea name="address" rows="2">{{ row.address or '' }}</textarea>
+
+    <label>Notiz</label>
+    <textarea name="note" rows="2">{{ row.note or '' }}</textarea>
+
+    <label class="check"><input type="checkbox" name="active" {% if row.active %}checked{% endif %}> Aktiv</label>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/stammdaten/lieferanten">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Lieferanten können bearbeitet und später wieder aktiviert werden.</li>
+  <li>Bestehende Buchungen bleiben beim Deaktivieren erhalten.</li>
+</ul>
+{% endblock %}

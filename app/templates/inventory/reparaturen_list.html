@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Reparaturen</h1>
+
+  <div class="row">
+    <a class="btn primary" href="/inventory/reparaturen/new">+ Reparaturauftrag</a>
+    <a class="btn" href="/inventory/stock">Bestand</a>
+  </div>
+
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 90px 1fr 1.2fr 1fr 120px 180px;">
+      <div>ID</div>
+      <div>Referenz</div>
+      <div>Partner</div>
+      <div>Status</div>
+      <div>Positionen</div>
+      <div>Aktionen</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 90px 1fr 1.2fr 1fr 120px 180px;">
+        <div>{{ row.id }}</div>
+        <div>{{ row.reference or ('REP-' ~ row.id) }}</div>
+        <div>{% if row.supplier_id and suppliers.get(row.supplier_id) %}{{ suppliers.get(row.supplier_id).name }}{% else %}Interne Werkstatt{% endif %}</div>
+        <div>{{ row.status }}</div>
+        <div>{{ line_counts.get(row.id, 0) }}</div>
+        <div><a class="btn small" href="/inventory/reparaturen/{{ row.id }}">Details</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Keine offenen Reparaturaufträge.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Reparaturen arbeiten journal-basiert mit zwei Buchungen (Issue + Receipt).</li>
+  <li>Statusfolge: open -> in_repair -> returned.</li>
+</ul>
+{% endblock %}

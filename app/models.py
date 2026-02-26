@@ -34,6 +34,12 @@ class InstanceConfig(Base):
     initialized_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ServicePort(Base):
     __tablename__ = "service_ports"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -203,27 +209,86 @@ class AttributeScope(Base):
     )
 
 
+class Manufacturer(Base):
+    __tablename__ = "manufacturers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    website: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Product(Base):
     __tablename__ = "products"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     area_id: Mapped[int | None] = mapped_column(ForeignKey("areas.id"), nullable=True)
     device_kind_id: Mapped[int | None] = mapped_column(ForeignKey("device_kinds.id"), nullable=True)
     device_type_id: Mapped[int | None] = mapped_column(ForeignKey("device_types.id"), nullable=True)
+    manufacturer_id: Mapped[int | None] = mapped_column(ForeignKey("manufacturers.id"), nullable=True)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     manufacturer: Mapped[str | None] = mapped_column(String(120), nullable=True)
     sku: Mapped[str | None] = mapped_column(String(80), nullable=True)  # internal article number
     ean: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    track_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="serial")  # serial|quantity
+    track_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="quantity")  # quantity
+    item_type: Mapped[str] = mapped_column(String(30), nullable=False, default="material")  # appliance|spare_part|accessory|material
+    sales_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    manufacturer_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    material_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    manufacturer_ref = relationship("Manufacturer")
     attribute_values = relationship("ProductAttributeValue", back_populates="product", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_products_name", "name"),
         Index("ix_products_sku", "sku"),
         Index("ix_products_ean", "ean"),
+        Index("ix_products_material_no", "material_no"),
+        Index("ix_products_item_type", "item_type"),
+        Index("ix_products_manufacturer_id", "manufacturer_id"),
+    )
+
+
+class ProductLink(Base):
+    __tablename__ = "product_links"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    a_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    b_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    link_type: Mapped[str] = mapped_column(String(40), nullable=False, default="kompatibel")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_productlink_a", "a_product_id"),
+        Index("ix_productlink_b", "b_product_id"),
+    )
+
+
+class ProductSet(Base):
+    __tablename__ = "product_sets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    set_number: Mapped[str] = mapped_column(String(120), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    manufacturer: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_productset_set_number", "set_number"),
+    )
+
+
+class ProductSetItem(Base):
+    __tablename__ = "product_set_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    set_id: Mapped[int] = mapped_column(ForeignKey("product_sets.id"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("set_id", "product_id", name="uq_product_set_item"),
     )
 
 
@@ -239,7 +304,49 @@ class ProductAttributeValue(Base):
     __table_args__ = (UniqueConstraint("product_id", "attribute_id", name="uq_product_attr"),)
 
 
+class ItemTypeFieldRule(Base):
+    __tablename__ = "item_type_field_rules"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_type: Mapped[str] = mapped_column(String(30), nullable=False)  # appliance|spare_part|accessory|material
+    field_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    section: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    help_text_de: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("item_type", "field_key", name="uq_item_type_field_rule"),
+        Index("ix_item_type_field_rule_order", "item_type", "sort_order"),
+    )
+
+
 # --- Inventory domain ---
+
+class Supplier(Base):
+    __tablename__ = "suppliers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    website: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class StockConditionDef(Base):
+    __tablename__ = "stock_condition_defs"
+    code: Mapped[str] = mapped_column(String(40), primary_key=True)
+    label_de: Mapped[str] = mapped_column(String(200), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        Index("ix_stock_condition_sort", "sort_order"),
+    )
+
 
 class Warehouse(Base):
     __tablename__ = "warehouses"
@@ -295,6 +402,8 @@ class InventoryTransaction(Base):
     warehouse_to_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
     bin_from_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
     bin_to_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    delivery_note_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     condition: Mapped[str] = mapped_column(String(30), nullable=False, default="ok")
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -304,8 +413,9 @@ class InventoryTransaction(Base):
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     created_by = relationship("User", back_populates="transactions")
+    supplier = relationship("Supplier")
 
-    __table_args__ = (Index("ix_tx_created_at", "created_at"),)
+    __table_args__ = (Index("ix_tx_created_at", "created_at"), Index("ix_tx_supplier_id", "supplier_id"))
 
 
 class OutboxEvent(Base):
@@ -341,6 +451,34 @@ class Reservation(Base):
     created_by = relationship("User", back_populates="reservations")
 
     __table_args__ = (Index("ix_res_status", "status"),)
+
+
+class RepairOrder(Base):
+    __tablename__ = "repair_orders"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|in_repair|returned|closed
+    reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    supplier = relationship("Supplier")
+
+    __table_args__ = (Index("ix_repair_order_status", "status"),)
+
+
+class RepairOrderLine(Base):
+    __tablename__ = "repair_order_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repair_order_id: Mapped[int] = mapped_column(ForeignKey("repair_orders.id"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    warehouse_from_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    warehouse_to_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
+    condition_in: Mapped[str] = mapped_column(String(40), nullable=False, default="GEBRAUCHT")
+    condition_out: Mapped[str] = mapped_column(String(40), nullable=False, default="B_WARE")
+
+    __table_args__ = (Index("ix_repair_order_line_order", "repair_order_id"),)
 
 
 class Stocktake(Base):
@@ -423,3 +561,10 @@ class SetupState(Base):
 
     def set_completed_steps(self, steps: list[int]) -> None:
         self.completed_steps_json = json.dumps(sorted(set(map(int, steps))))
+
+
+class UiPreference(Base):
+    __tablename__ = "ui_preferences"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pref_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    value_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Stammdaten: Lieferanten</h1>
+
+  <form method="post" action="/stammdaten/lieferanten/add" class="form">
+    <div class="grid2">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" required>
+      </div>
+      <div>
+        <label>Website</label>
+        <input type="text" name="website" placeholder="https://...">
+      </div>
+      <div>
+        <label>Telefon</label>
+        <input type="text" name="phone">
+      </div>
+      <div>
+        <label>E-Mail</label>
+        <input type="email" name="email">
+      </div>
+    </div>
+
+    <label>Adresse</label>
+    <textarea name="address" rows="2"></textarea>
+
+    <label>Notiz</label>
+    <textarea name="note" rows="2"></textarea>
+
+    <label class="check"><input type="checkbox" name="active" checked> Aktiv</label>
+    <div class="row">
+      <button class="btn primary" type="submit">Lieferant anlegen</button>
+      <a class="btn" href="/stammdaten/hersteller">Hersteller</a>
+      <a class="btn" href="/stammdaten/zustaende">Zustände</a>
+      <a class="btn" href="/stammdaten/formularregeln">Formularregeln</a>
+      <a class="btn" href="/stammdaten/ui-layout">UI-Layout</a>
+    </div>
+  </form>
+
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1.5fr 1fr 1fr 260px;">
+      <div>ID</div>
+      <div>Name</div>
+      <div>Telefon</div>
+      <div>Status</div>
+      <div>Aktionen</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 80px 1.5fr 1fr 1fr 260px;">
+        <div>{{ row.id }}</div>
+        <div>{{ row.name }}</div>
+        <div>{{ row.phone or '-' }}</div>
+        <div>{{ 'Aktiv' if row.active else 'Inaktiv' }}</div>
+        <div>
+          <a class="btn small" href="/stammdaten/lieferanten/{{ row.id }}">Details</a>
+          <a class="btn small" href="/stammdaten/lieferanten/{{ row.id }}/edit">Bearbeiten</a>
+          <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/toggle" class="inline">
+            <button class="btn small" type="submit">{{ 'Deaktivieren' if row.active else 'Aktivieren' }}</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Noch keine Lieferanten angelegt.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Lieferanten werden nicht hart gelöscht, sondern aktiv/inaktiv geschaltet.</li>
+  <li>Wareneingänge können einem Lieferanten und einer Lieferscheinnummer zugeordnet werden.</li>
+  <li>Die Detailseite zeigt die letzten Wareneingänge pro Lieferant.</li>
+</ul>
+{% endblock %}

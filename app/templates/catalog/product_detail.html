@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Produkt #{{ product.id }}</h1>
+
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 220px 1fr;">
+      <div>Feld</div>
+      <div>Wert</div>
+    </div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Bezeichnung</div><div>{{ product.name }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Artikelart</div><div>{{ item_type_labels.get(product.item_type, 'Material') }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Materialnummer</div><div>{{ product.material_no or '-' }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>EAN</div><div>{{ product.ean or '-' }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Verkaufsbezeichnung</div><div>{{ product.sales_name or '-' }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Herstellerbezeichnung</div><div>{{ product.manufacturer_name or '-' }}</div></div>
+  </div>
+
+  <div class="row" style="margin-top:10px;">
+    <a class="btn" href="/catalog/products">Zurück zur Produktliste</a>
+    <a class="btn" href="/catalog/products/{{ product.id }}/matches">Passende Kombinationen anzeigen</a>
+    {% if user.role == "admin" %}
+    <a class="btn" href="/catalog/products/{{ product.id }}/edit">Bearbeiten</a>
+    {% endif %}
+  </div>
+
+  {% set lb_open = loadbee_auto_open or loadbee_load_mode == 'auto' %}
+  {% if loadbee_enabled and product.item_type == 'appliance' and loadbee_gtin %}
+  <div class="loadbee-wrap">
+    <div class="loadbee-head">
+      <h2>Hersteller-Details</h2>
+      <div class="row">
+        <button
+          id="lbToggleBtn"
+          class="btn"
+          type="button"
+          aria-expanded="{% if lb_open %}true{% else %}false{% endif %}"
+          aria-controls="lbPanel"
+        >{% if lb_open %}Hersteller-Details schließen{% else %}Hersteller-Details öffnen{% endif %}</button>
+        <button id="lbReloadBtn" class="btn" type="button">Neu laden</button>
+      </div>
+    </div>
+    <div id="lbPanel" class="loadbee-panel{% if lb_open %} open{% endif %}" data-gtin="{{ loadbee_gtin }}">
+      <div id="lbStatus" class="muted">H: Hersteller-Details öffnen/schließen, R: Neu laden</div>
+      <div class="loadbeeTabContent" id="loadbeeTabContentId"
+           data-loadbee-apikey="{{ loadbee_api_key }}"
+           data-loadbee-gtin="{{ loadbee_gtin }}"
+           data-loadbee-locale="{{ loadbee_locales }}"
+           {% if loadbee_debug %}data-loadbee-debug="true"{% endif %}
+      ></div>
+      <script id="loadbeeScript" async src="https://cdn.loadbee.com/js/loadbee_integration.js"></script>
+    </div>
+  </div>
+  {% elif product.item_type == 'appliance' and not loadbee_gtin %}
+  <div class="hint">Keine EAN hinterlegt, daher keine Hersteller-Details.</div>
+  {% endif %}
+
+  <h2>Kompatible Geräte</h2>
+  {% if user.role == "admin" %}
+  <form method="get" action="/catalog/products/{{ product.id }}" class="form compact">
+    <div class="grid2">
+      <div>
+        <label>Suche für Auswahl</label>
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Bezeichnung, Materialnummer, EAN">
+      </div>
+      <div class="row right">
+        <button class="btn primary" type="submit">Filtern</button>
+        <a class="btn" href="/catalog/products/{{ product.id }}">Zurücksetzen</a>
+      </div>
+    </div>
+  </form>
+
+  <form method="post" action="/catalog/products/{{ product.id }}/links/add" class="form compact" style="margin-top:10px;">
+    <label>Kompatibles Gerät hinzufügen</label>
+    <select name="b_product_id" required>
+      {% for p in candidate_products %}
+        <option value="{{ p.id }}">{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.ean %} | EAN {{ p.ean }}{% endif %}</option>
+      {% endfor %}
+    </select>
+    <label>Notiz (optional)</label>
+    <input type="text" name="note">
+    <button class="btn primary" type="submit">Kompatibilität speichern</button>
+  </form>
+  {% endif %}
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 70px 1.4fr 1fr 1fr 170px;">
+      <div>#</div>
+      <div>Produkt</div>
+      <div>Materialnummer</div>
+      <div>Notiz</div>
+      <div>Aktion</div>
+    </div>
+    {% for link in links %}
+      {% set p = linked_products.get(link.b_product_id) %}
+      <div class="tr" style="grid-template-columns: 70px 1.4fr 1fr 1fr 170px;">
+        <div>{{ link.id }}</div>
+        <div>
+          {% if p %}
+          <a href="/catalog/products/{{ p.id }}">{{ p.name }}</a>
+          {% else %}
+          {{ link.b_product_id }}
+          {% endif %}
+        </div>
+        <div>{{ p.material_no if p and p.material_no else "-" }}</div>
+        <div>{{ link.note or "-" }}</div>
+        <div>
+          {% if user.role == "admin" %}
+          <form method="post" action="/catalog/products/{{ product.id }}/links/{{ link.id }}/delete" class="inline">
+            <button class="btn small" type="submit">Entfernen</button>
+          </form>
+          {% else %}
+          <span class="muted">-</span>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not links %}
+      <div class="muted">Noch keine kompatiblen Geräte hinterlegt.</div>
+    {% endif %}
+  </div>
+
+  <h2>Sets mit diesem Produkt</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 170px;">
+      <div>#</div>
+      <div>Set-Nummer</div>
+      <div>Name</div>
+      <div>Aktion</div>
+    </div>
+    {% for s in set_rows %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr 170px;">
+        <div>{{ s.id }}</div>
+        <div>{{ s.set_number }}</div>
+        <div>{{ s.name or '-' }}</div>
+        <div><a class="btn small" href="/catalog/sets/{{ s.id }}">Set öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not set_rows %}
+      <div class="muted">Dieses Produkt ist aktuell in keinem Set enthalten.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Mit Taste H öffnest oder schließt du den Bereich Hersteller-Details.</li>
+  <li>Mit Taste R wird checkAvailability neu ausgelöst (Hersteller-Details neu laden).</li>
+  <li>Debug-Modus aktivierst du unter System → Hersteller-Details (loadbee).</li>
+  <li>Voraussetzung für Hersteller-Details: Artikelart Großgerät und gepflegte EAN.</li>
+  <li>Kompatibilität wird explizit gepflegt und beim Speichern bidirektional angelegt.</li>
+  <li>Über "Passende Kombinationen anzeigen" siehst du kompatible Geräte und enthaltene Sets zusammen.</li>
+  <li>Set-Nummern pflegst du in der Set-Verwaltung.</li>
+</ul>
+{% endblock %}

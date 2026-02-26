@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Lieferant #{{ row.id }}: {{ row.name }}</h1>
+
+  <div class="box">
+    <div class="box-title">Stammdaten</div>
+    <div class="box-body">
+      <div><b>Status:</b> {{ 'Aktiv' if row.active else 'Inaktiv' }}</div>
+      <div><b>E-Mail:</b> {{ row.email or '-' }}</div>
+      <div><b>Telefon:</b> {{ row.phone or '-' }}</div>
+      <div><b>Website:</b> {{ row.website or '-' }}</div>
+      <div><b>Adresse:</b> {{ row.address or '-' }}</div>
+      <div><b>Notiz:</b> {{ row.note or '-' }}</div>
+      <div class="row">
+        <a class="btn small" href="/stammdaten/lieferanten/{{ row.id }}/edit">Bearbeiten</a>
+        <a class="btn small" href="/stammdaten/lieferanten">Zurück zur Liste</a>
+      </div>
+    </div>
+  </div>
+
+  <h2>Häufig gelieferte Produkte</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1.8fr 140px;">
+      <div>ID</div>
+      <div>Produkt</div>
+      <div>Wareneingänge</div>
+    </div>
+    {% for item in top_products %}
+      <div class="tr" style="grid-template-columns: 80px 1.8fr 140px;">
+        <div>{{ item.product.id }}</div>
+        <div>{{ item.product.name }}</div>
+        <div>{{ item.count }}</div>
+      </div>
+    {% endfor %}
+    {% if not top_products %}
+      <div class="muted">Noch keine Wareneingänge vorhanden.</div>
+    {% endif %}
+  </div>
+
+  <h2>Letzte Wareneingänge</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 180px 1.4fr 1fr 120px 1fr 1fr;">
+      <div>Zeitpunkt</div>
+      <div>Produkt</div>
+      <div>Ziel-Lager</div>
+      <div>Menge</div>
+      <div>Zustand</div>
+      <div>Lieferschein / Ref</div>
+    </div>
+    {% for tx in tx_rows %}
+      {% set product = products.get(tx.product_id) %}
+      {% set wh = warehouses.get(tx.warehouse_to_id) if tx.warehouse_to_id else None %}
+      <div class="tr" style="grid-template-columns: 180px 1.4fr 1fr 120px 1fr 1fr;">
+        <div>{{ tx.created_at }}</div>
+        <div>{{ product.name if product else tx.product_id }}</div>
+        <div>{{ wh.name if wh else '-' }}</div>
+        <div>{{ tx.quantity }}</div>
+        <div>{{ condition_labels.get(tx.condition, tx.condition) }}</div>
+        <div>{{ tx.delivery_note_no or '-' }}{% if tx.reference %} / {{ tx.reference }}{% endif %}</div>
+      </div>
+    {% endfor %}
+    {% if not tx_rows %}
+      <div class="muted">Keine Wareneingänge gefunden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier siehst du Wareneingänge dieses Lieferanten (bis zu 200 Einträge).</li>
+  <li>Die Liste hilft bei Rückfragen zu Lieferungen und Lieferscheinnummern.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel" data-item-type-chooser="1">
+  <h1>Neues Produkt: Artikelart wählen</h1>
+  <div class="hint">Tastatur: 1-4 wählen, Pfeile wechseln, Enter öffnen, Esc zurück.</div>
+
+  <div class="table" data-kbd-list="true">
+    <div class="tr th" style="grid-template-columns: 90px 1.5fr 1.2fr 150px;">
+      <div>Hotkey</div>
+      <div>Artikelart</div>
+      <div>Code</div>
+      <div>Aktion</div>
+    </div>
+    {% for it in item_types %}
+      <div class="tr" style="grid-template-columns: 90px 1.5fr 1.2fr 150px;" data-kbd-row="true" data-href="/catalog/products/new?item_type={{ it }}">
+        <div>[{{ loop.index }}]</div>
+        <div>{{ item_type_labels.get(it, it) }}</div>
+        <div>{{ it }}</div>
+        <div><a class="btn small" href="/catalog/products/new?item_type={{ it }}">Auswählen</a></div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="row">
+    <a class="btn" href="/catalog/products">Zurück zum Katalog</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wähle zuerst die Artikelart, danach zeigt das Formular nur die freigegebenen Felder.</li>
+  <li>1-4 wählen direkt die Artikelart, Enter öffnet die markierte Zeile.</li>
+  <li>Mit Esc gehst du zurück zur Produktliste.</li>
+</ul>
+{% endblock %}

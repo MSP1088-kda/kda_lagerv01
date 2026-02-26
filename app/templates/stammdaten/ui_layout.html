@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Stammdaten: UI-Layout</h1>
+
+  <form method="post" action="/stammdaten/ui-layout" class="form">
+    <h2>Tabellenspalten: Produktkatalog</h2>
+    <div class="hint">Kleine Reihenfolge-Zahl = weiter links.</div>
+    <div class="table" style="margin-bottom:12px;">
+      <div class="tr th" style="grid-template-columns: 140px 1.5fr 160px;">
+        <div>Sichtbar</div>
+        <div>Spalte</div>
+        <div>Reihenfolge</div>
+      </div>
+      {% for row in products_list_columns %}
+      <div class="tr" style="grid-template-columns: 140px 1.5fr 160px;">
+        <div><label class="check"><input type="checkbox" name="pl_visible_{{ row.key }}" {% if row.visible %}checked{% endif %}> anzeigen</label></div>
+        <div>{{ row.label }}</div>
+        <div><input type="number" name="pl_order_{{ row.key }}" value="{{ row.order }}" min="1"></div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <h2>Tabellenspalten: Bestand</h2>
+    <div class="table" style="margin-bottom:12px;">
+      <div class="tr th" style="grid-template-columns: 140px 1.5fr 160px;">
+        <div>Sichtbar</div>
+        <div>Spalte</div>
+        <div>Reihenfolge</div>
+      </div>
+      {% for row in stock_columns %}
+      <div class="tr" style="grid-template-columns: 140px 1.5fr 160px;">
+        <div><label class="check"><input type="checkbox" name="st_visible_{{ row.key }}" {% if row.visible %}checked{% endif %}> anzeigen</label></div>
+        <div>{{ row.label }}</div>
+        <div><input type="number" name="st_order_{{ row.key }}" value="{{ row.order }}" min="1"></div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <h2>Produktformular je Artikelart</h2>
+    <div class="hint">Steuert, welche Felder im Produktformular sichtbar sind (Name/Artikelart bleiben immer sichtbar).</div>
+    {% for item_type in item_types %}
+      {% set selected = form_fields_by_item_type.get(item_type, []) %}
+      <div class="box" style="margin-top:10px;">
+        <div class="box-title">{{ item_type_labels.get(item_type, item_type) }}</div>
+        <div class="box-body">
+          <div class="grid3">
+            {% for spec in product_form_field_specs %}
+            <label class="check"><input type="checkbox" name="pf_{{ item_type }}_{{ spec.key }}" {% if spec.key in selected %}checked{% endif %}> {{ spec.label }}</label>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+
+    <div class="row" style="margin-top:12px;">
+      <button class="btn primary" type="submit">UI-Stammdaten speichern</button>
+      <a class="btn" href="/stammdaten/formularregeln">Formularregeln</a>
+      <a class="btn" href="/stammdaten/hersteller">Hersteller</a>
+      <a class="btn" href="/stammdaten/lieferanten">Lieferanten</a>
+      <a class="btn" href="/stammdaten/zustaende">Zustände</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Spalten-Reihenfolge wirkt direkt auf Produktkatalog und Bestand.</li>
+  <li>Feldsichtbarkeit gilt pro Artikelart im Produktformular.</li>
+  <li>Änderungen sind global und persistent gespeichert.</li>
+</ul>
+{% endblock %}

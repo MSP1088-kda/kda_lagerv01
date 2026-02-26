@@ -97,7 +97,14 @@
         </div>
         <div class="mono">
           {% for s in scope_map.get(a.id, []) %}
-            {{ s }}<br>
+            <div class="row" style="justify-content:space-between; gap:8px;">
+              <span>{{ s.label }}</span>
+              {% if user.role == 'admin' %}
+              <form method="post" action="/catalog/attributes/{{ a.id }}/scope/{{ s.id }}/delete">
+                <button class="btn small" type="submit">Entfernen</button>
+              </form>
+              {% endif %}
+            </div>
           {% endfor %}
           {% if not scope_map.get(a.id) %}
             <span class="muted">-</span>

@@ -7,7 +7,16 @@
     <div class="grid3">
       <div>
         <label>Suche</label>
-        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Name / SKU / Hersteller / EAN">
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Suchen: Bezeichnung, Materialnummer, EAN, Hersteller, Attribute …">
+      </div>
+      <div>
+        <label>Artikelart</label>
+        <select name="item_type">
+          <option value="">Alle</option>
+          {% for it in item_type_labels.keys() %}
+            <option value="{{ it }}" {% if item_type==it %}selected{% endif %}>{{ item_type_labels.get(it) }}</option>
+          {% endfor %}
+        </select>
       </div>
       <div>
         <label>Lager</label>
@@ -32,6 +41,13 @@
         <button class="btn primary" type="submit">Filtern</button>
         <a class="btn" href="/inventory/stock">Zurücksetzen</a>
       </div>
+      <div class="row">
+        <a class="btn {% if not item_type %}primary{% endif %}" href="/inventory/stock?q={{ q }}&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Alle</a>
+        <a class="btn {% if item_type=='appliance' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=appliance&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Großgeräte</a>
+        <a class="btn {% if item_type=='spare_part' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=spare_part&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Ersatzteile</a>
+        <a class="btn {% if item_type=='accessory' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=accessory&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Zubehör</a>
+        <a class="btn {% if item_type=='material' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=material&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Material</a>
+      </div>
       <div class="row right">
         {% if role_flags.can_inventory_write %}
         <a class="btn primary" href="/inventory/transactions/new">+ Buchung</a>
@@ -40,6 +56,7 @@
         <a class="btn" href="/inventory/reservations">Reservierungen</a>
         {% endif %}
         {% if role_flags.can_inventory_write %}
+        <a class="btn" href="/inventory/reparaturen">Reparaturen</a>
         <a class="btn" href="/inventory/stocktakes">Inventur</a>
         {% endif %}
         <a class="btn" href="/inventory/warehouses">Lagerorte</a>
@@ -47,61 +64,56 @@
     </div>
   </form>
 
-  <div class="table" data-kbd-list="true">
-    <div class="tr th" style="grid-template-columns: 60px 1.4fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr;">
-      <div>#</div>
-      <div>Produkt</div>
-      <div>Modus</div>
-      <div>Bestand (OK/Neu)</div>
-      <div>Bestand (Gebraucht)</div>
-      <div>Bestand (Defekt)</div>
-      <div>Warnung</div>
+  <div class="table stock-table-desktop" data-kbd-list="true">
+    <div class="tr th" style="grid-template-columns: {{ table_grid }};">
+      {% for col in table_columns %}
+        <div>{{ col.label }}</div>
+      {% endfor %}
     </div>
     {% for p in products %}
-      {% set ok = 0 %}
-      {% set used = 0 %}
-      {% set defect = 0 %}
-
-      {% if warehouse_id %}
-        {% set wid = warehouse_id %}
-        {% if p.track_mode == 'quantity' %}
-          {% set ok = ok + bal_map.get((p.id, wid, 'ok'), 0) %}
-          {% set used = used + bal_map.get((p.id, wid, 'used'), 0) %}
-          {% set defect = defect + bal_map.get((p.id, wid, 'defect'), 0) %}
-        {% else %}
-          {% set ok = ok + serial_count_map.get((p.id, wid, 'ok'), 0) %}
-          {% set used = used + serial_count_map.get((p.id, wid, 'used'), 0) %}
-          {% set defect = defect + serial_count_map.get((p.id, wid, 'defect'), 0) %}
-        {% endif %}
-      {% else %}
-        {% for w in warehouses %}
-          {% set wid = w.id %}
-          {% if p.track_mode == 'quantity' %}
-            {% set ok = ok + bal_map.get((p.id, wid, 'ok'), 0) %}
-            {% set used = used + bal_map.get((p.id, wid, 'used'), 0) %}
-            {% set defect = defect + bal_map.get((p.id, wid, 'defect'), 0) %}
-          {% else %}
-            {% set ok = ok + serial_count_map.get((p.id, wid, 'ok'), 0) %}
-            {% set used = used + serial_count_map.get((p.id, wid, 'used'), 0) %}
-            {% set defect = defect + serial_count_map.get((p.id, wid, 'defect'), 0) %}
+      {% set display_name = p.sales_name if p.item_type == 'appliance' and p.sales_name else p.name %}
+      {% set warns = warning_map.get(p.id, []) %}
+      <div class="tr" style="grid-template-columns: {{ table_grid }};" data-kbd-row="true" {% if role_flags.can_inventory_write %}data-href="/inventory/transactions/new?product_id={{ p.id }}"{% endif %}>
+        {% for col in table_columns %}
+          {% if col.key == 'id' %}
+            <div>{{ p.id }}</div>
+          {% elif col.key == 'item_type' %}
+            <div>{{ item_type_labels.get(p.item_type, 'Material') }}</div>
+          {% elif col.key == 'product' %}
+            <div>{{ display_name }}</div>
+          {% elif col.key == 'conditions' %}
+            <div>
+              {% set shown = namespace(count=0) %}
+              {% for code in condition_codes %}
+                {% set bucket = namespace(total=0) %}
+                {% if warehouse_id %}
+                  {% set bucket.total = bal_map.get((p.id, warehouse_id, code), 0) %}
+                {% else %}
+                  {% for w in warehouses %}
+                    {% set bucket.total = bucket.total + bal_map.get((p.id, w.id, code), 0) %}
+                  {% endfor %}
+                {% endif %}
+                {% if bucket.total != 0 %}
+                  <div>{{ condition_labels.get(code, code) }}: {{ bucket.total }}</div>
+                  {% set shown.count = shown.count + 1 %}
+                {% endif %}
+              {% endfor %}
+              {% if shown.count == 0 %}
+                <div>-</div>
+              {% endif %}
+            </div>
+          {% elif col.key == 'material_no' %}
+            <div>{{ p.material_no or '-' }}</div>
+          {% elif col.key == 'warning' %}
+            <div>
+              {% if warns %}
+                Unter Minimum ({{ warns|length }})
+              {% else %}
+                -
+              {% endif %}
+            </div>
           {% endif %}
         {% endfor %}
-      {% endif %}
-      {% set warns = warning_map.get(p.id, []) %}
-      <div class="tr" style="grid-template-columns: 60px 1.4fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr;" data-kbd-row="true" {% if role_flags.can_inventory_write %}data-href="/inventory/transactions/new?product_id={{ p.id }}"{% endif %}>
-        <div>{{ p.id }}</div>
-        <div>{{ p.name }}</div>
-        <div>{{ p.track_mode|de_label('track_mode') }}</div>
-        <div>{{ ok }}</div>
-        <div>{{ used }}</div>
-        <div>{{ defect }}</div>
-        <div>
-          {% if warns %}
-            Unter Minimum ({{ warns|length }})
-          {% else %}
-            -
-          {% endif %}
-        </div>
       </div>
     {% endfor %}
     {% if not products %}
@@ -109,31 +121,25 @@
     {% endif %}
   </div>
 
-  <h2>Seriennummern</h2>
-  <div class="table" data-kbd-list="true">
-    <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr 1fr 160px;">
-      <div>Seriennummer</div>
-      <div>Produkt-ID</div>
-      <div>Status</div>
-      <div>Zustand</div>
-      <div>Aktion</div>
+  <div class="table stock-table-mobile">
+    <div class="tr th" style="grid-template-columns: 1.7fr 0.7fr;">
+      <div>Verkaufsbezeichnung</div>
+      <div>Bestand Menge</div>
     </div>
-    {% for s in serial_rows %}
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr 1fr 160px;" data-kbd-row="true" data-href="/inventory/serial/{{ s.serial_number }}">
-        <div><a href="/inventory/serial/{{ s.serial_number }}">{{ s.serial_number }}</a></div>
-        <div>{{ s.product_id }}</div>
-        <div>{{ s.status|de_label('serial_status') }}</div>
-        <div>{{ s.condition|de_label('condition') }}</div>
-        <div><a class="btn small" href="/inventory/serial/{{ s.serial_number }}">Details</a></div>
+    {% for p in products %}
+      {% set display_name = p.sales_name if p.item_type == 'appliance' and p.sales_name else p.name %}
+      <div class="tr" style="grid-template-columns: 1.7fr 0.7fr;">
+        <div>{{ display_name }}</div>
+        <div>{{ stock_total_map.get(p.id, 0) }}</div>
       </div>
     {% endfor %}
-    {% if not serial_rows %}
-      <div class="muted">Keine Seriennummern gefunden.</div>
+    {% if not products %}
+      <div class="muted">Keine Treffer.</div>
     {% endif %}
   </div>
 
   <div class="hint">
-    Für Seriennummer-Artikel sind Details über die Seriennummer direkt erreichbar.
+    Bestand ist mengengeführt und wird pro Zustand angezeigt.
   </div>
 </div>
 {% endblock %}
@@ -141,7 +147,7 @@
 {% block help %}
 <ul>
   <li>Filtere Bestand nach Lager und optional Fach/Bin.</li>
-  <li>Seriennummern sind klickbar und öffnen die Detailhistorie.</li>
+  <li>Zustände kommen aus den Stammdaten und werden mit Bezeichnung angezeigt.</li>
   <li>Über "+ Buchung" erfasst du Zu- und Abgänge.</li>
 </ul>
 {% endblock %}

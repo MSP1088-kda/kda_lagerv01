@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Zustand bearbeiten: {{ row.code }}</h1>
+
+  <form method="post" action="/stammdaten/zustaende/{{ row.code }}/edit" class="form">
+    <label>Code</label>
+    <input type="text" value="{{ row.code }}" disabled>
+
+    <label>Bezeichnung</label>
+    <input type="text" name="label_de" value="{{ row.label_de }}" required>
+
+    <label>Sortierung</label>
+    <input type="number" name="sort_order" value="{{ row.sort_order }}">
+
+    <label class="check"><input type="checkbox" name="active" {% if row.active %}checked{% endif %}> Aktiv</label>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/stammdaten/zustaende">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der Zustandscode bleibt unverändert, damit bestehende Daten stabil bleiben.</li>
+  <li>Über Sortierung steuerst du die Reihenfolge in Dropdowns.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Hersteller-Details (loadbee)</h1>
+
+  <form method="post" action="/system/loadbee" class="form" data-loadbee-form="1">
+    <label class="check">
+      <input type="checkbox" name="loadbee_enabled" {% if loadbee_enabled %}checked{% endif %}>
+      loadbee aktiv
+    </label>
+
+    <label>API-Key</label>
+    <input type="password" name="loadbee_api_key" placeholder="Leer lassen = unverändert" autocomplete="off">
+    <div class="hint">Status API-Key: {% if loadbee_api_key_set %}gesetzt{% else %}nicht gesetzt{% endif %}</div>
+
+    <label>Locales (Priorität)</label>
+    <input type="text" name="loadbee_locales" value="{{ loadbee_locales }}" placeholder="de_DE,en_GB">
+
+    <label>Lademodus</label>
+    <select name="loadbee_load_mode">
+      <option value="on_demand" {% if loadbee_load_mode == 'on_demand' %}selected{% endif %}>Nur bei Bedarf</option>
+      <option value="auto" {% if loadbee_load_mode == 'auto' %}selected{% endif %}>Automatisch</option>
+    </select>
+
+    <label class="check">
+      <input type="checkbox" name="loadbee_debug" {% if loadbee_debug %}checked{% endif %}>
+      Debug-Modus aktivieren (nur Einbindung prüfen)
+    </label>
+    <div class="hint">Bitte zuerst den Debug-Modus nutzen, um die Einbindung zu prüfen.</div>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/system/loadbee/test">Debug-Testseite</a>
+      <a class="btn" href="/settings/company">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>loadbee nutzt die EAN/GTIN des Produkts für Hersteller-Details.</li>
+  <li>Ohne EAN wird auf der Produktseite kein Herstellerprofil geladen.</li>
+  <li>Der Debug-Modus zeigt einen Integrationstest und keine echten Herstellerprofile.</li>
+  <li>Über die Debug-Testseite kannst du GTIN und Script-Einbindung isoliert prüfen.</li>
+</ul>
+{% endblock %}

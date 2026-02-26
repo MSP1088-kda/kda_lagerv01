@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/dos.css">
   <script defer src="/static/app.js"></script>
 </head>
-<body>
+<body data-auth="{% if user %}1{% else %}0{% endif %}">
 <div class="screen">
   <header class="topbar">
     <div class="brand">
@@ -18,13 +18,16 @@
     {% if user %}
     <nav class="nav nav-desktop">
       <a href="/dashboard" data-hotkey="Alt+1">[1] Übersicht</a>
-      <a href="/catalog/products" data-hotkey="Alt+2">[2] Katalog</a>
+      <a href="/catalog/products" data-hotkey="Alt+2">[2] Suchen</a>
       {% if role_flags.can_inventory %}
-      <a href="/inventory/stock" data-hotkey="Alt+3">[3] Lager</a>
-      <a href="/mobile/quick" data-hotkey="Alt+5">[5] Schnell</a>
+      <a href="/inventory/transactions/new?tx_type=receipt" data-hotkey="Alt+3">[3] Wareneingang</a>
+      <a href="/inventory/stock" data-hotkey="Alt+4">[4] Lager</a>
       {% endif %}
+      <a href="/catalog/products" data-hotkey="Alt+5">[5] Katalog</a>
       {% if role_flags.can_settings %}
-      <a href="/settings/company" data-hotkey="Alt+4">[4] Einstellungen</a>
+      <a href="/stammdaten/formularregeln" data-hotkey="Alt+6">[6] Stammdaten</a>
+      <a href="/settings/company" data-hotkey="Alt+7">[7] System</a>
+      <a href="/system/loadbee">Hersteller-Details</a>
       {% endif %}
       <form action="/logout" method="post" class="inline">
         <button type="submit" class="linklike" title="Abmelden">[0] Abmelden</button>
@@ -34,16 +37,12 @@
   </header>
 
   {% if user %}
+  {% set more_url = '/stammdaten/formularregeln' if role_flags.can_settings else '/inventory/warehouses' %}
   <nav class="nav nav-mobile bottomnav">
     <a href="/dashboard">Übersicht</a>
-    <a href="/catalog/products">Katalog</a>
-    {% if role_flags.can_inventory %}
+    <a href="/catalog/products">Suchen</a>
     <a href="/inventory/stock">Lager</a>
-    <a href="/mobile/quick">Schnell</a>
-    {% endif %}
-    {% if role_flags.can_settings %}
-    <a href="/settings/company">Einstellungen</a>
-    {% endif %}
+    <a href="{{ more_url }}">Mehr</a>
   </nav>
   {% endif %}
 
@@ -59,15 +58,23 @@
     {% block content %}{% endblock %}
   </main>
 
+  <div id="cmdPalette" class="cmd-palette" hidden>
+    <div class="cmd-panel">
+      <input id="cmdInput" type="text" placeholder="Kommando eingeben... (z. B. Wareneingang, Lieferanten, set 123)">
+      <div id="cmdResults" class="cmd-results"></div>
+      <div class="hint">Enter: Öffnen | Esc: Schließen</div>
+    </div>
+  </div>
+
   <footer class="footer">
     <div class="footer-left">
       <span id="versionLine">v{{ app_version }} (Stand {{ app_build }}, {{ build_date }}, {{ git_sha }})</span>
     </div>
     <div class="footer-right">
       {% if user %}
-      <span class="muted">Benutzer: {{ user.email }} ({{ user.role }}) | / Suche</span>
+      <span class="muted">Benutzer: {{ user.email }} ({{ user.role }}) | / Suche | Strg+K Kommando</span>
       {% else %}
-      <span class="muted">/ = Suche, Tab = Steuerung</span>
+      <span class="muted">/ = Suche, Strg+K = Kommando</span>
       {% endif %}
     </div>
   </footer>
@@ -79,8 +86,9 @@
   <div class="help-panel-body">
     {% block help %}
     <ul>
-      <li>Nutze Alt+1 bis Alt+4 für die Hauptnavigation.</li>
+      <li>Nutze Alt+1 bis Alt+7 für die Hauptnavigation.</li>
       <li>Mit / springst du in das Suchfeld der aktuellen Seite.</li>
+      <li>Mit Strg+K oder F2 öffnest du die Kommando-Palette.</li>
       <li>Mit F1 blendest du diese Hilfe ein oder aus.</li>
     </ul>
     {% endblock %}

@@ -7,8 +7,14 @@ def de_label(kind: str, value: str | None) -> str:
 
     mapping = {
         "track_mode": {
-            "serial": "Seriennummer",
+            "serial": "Menge",
             "quantity": "Menge",
+        },
+        "item_type": {
+            "appliance": "Großgerät",
+            "spare_part": "Ersatzteil",
+            "accessory": "Zubehör",
+            "material": "Material",
         },
         "tx_type": {
             "receipt": "Wareneingang",
@@ -18,10 +24,16 @@ def de_label(kind: str, value: str | None) -> str:
             "scrap": "Ausschuss",
         },
         "condition": {
-            "ok": "OK/Neu",
-            "used": "Gebraucht",
-            "defect": "Defekt",
-            "bware": "B-Ware",
+            "A_WARE": "A-Ware (Neu)",
+            "B_WARE": "B-Ware (aufbereitet)",
+            "GEBRAUCHT": "Gebraucht (Kundenrücknahme)",
+            "NEUPUNKT": "Neupunkt",
+            "IN_REPARATUR": "In Reparatur",
+            # Legacy compatibility
+            "ok": "A-Ware (Neu)",
+            "bware": "B-Ware (aufbereitet)",
+            "used": "Gebraucht (Kundenrücknahme)",
+            "defect": "In Reparatur",
         },
         "reservation_status": {
             "active": "Aktiv",

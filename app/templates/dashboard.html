@@ -1,71 +1,47 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="panel">
+<div class="panel dashboard" data-dashboard-hotkeys="1">
   <h1>Übersicht</h1>
 
-  <div class="grid2">
-    <div class="box">
-      <div class="box-title">Katalog</div>
-      <div class="box-body">
-        Produkte: <b>{{ stats.products }}</b><br>
-        <a href="/catalog/products" class="btn small">Öffnen</a>
-      </div>
-    </div>
+  <form method="get" action="/catalog/products" class="form compact">
+    <label for="q">Suche</label>
+    <input id="q" type="text" name="q" placeholder="Bezeichnung, Materialnummer, EAN, Set-Nummer...">
+  </form>
 
-    <div class="box">
-      <div class="box-title">Lager</div>
-      <div class="box-body">
-        Lagerorte: <b>{{ stats.warehouses }}</b><br>
-        Serien im Bestand: <b>{{ stats.serials_in_stock }}</b><br>
-        Mengen-Bestandszeilen: <b>{{ stats.qty_lines }}</b><br>
-        Aktive Reservierungen: <b>{{ stats.reservations }}</b><br>
-        Unter Mindestbestand: <b>{{ stats.low_stock }}</b><br>
-        <a href="/inventory/stock" class="btn small">Bestand ansehen</a>
-      </div>
-    </div>
+  <h2>Schnellaktionen</h2>
+  <div class="dashboard-actions">
+    <a class="dash-action" data-dashboard-key="1" href="/inventory/transactions/new?tx_type=receipt">[1] Wareneingang</a>
+    <a class="dash-action" data-dashboard-key="2" href="/inventory/stock">[2] Bestand</a>
+    <a class="dash-action" data-dashboard-key="3" href="/catalog/products">[3] Katalog</a>
+    <a class="dash-action" data-dashboard-key="4" href="/stammdaten/lieferanten">[4] Lieferanten</a>
+    <a class="dash-action" data-dashboard-key="5" href="/inventory/reparaturen">[5] Reparaturen</a>
+    <a class="dash-action" data-dashboard-key="6" href="/catalog/sets">[6] Sets</a>
+    <a class="dash-action" data-dashboard-key="7" href="/settings/company">[7] System</a>
   </div>
 
-  <h2>Warnungen Mindestbestand</h2>
-  <div class="table">
-    <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr 160px;">
-      <div>Produkt</div>
-      <div>Lager/Fach</div>
-      <div>Bestand / Minimum</div>
-      <div>Fehlt</div>
-    </div>
-    {% for w in warnings %}
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr 160px;">
-        <div>{{ w.product_name }}</div>
-        <div>{{ w.warehouse_name }}{% if w.bin_name %} / {{ w.bin_name }}{% endif %}</div>
-        <div>{{ w.current_qty }} / {{ w.min_qty }}</div>
-        <div>{{ w.missing_qty }}</div>
-      </div>
-    {% endfor %}
-    {% if not warnings %}
-      <div class="muted">Keine Warnungen.</div>
-    {% endif %}
-  </div>
+  <div class="hint">Tasten: 1-7 springen, / sucht, Strg+K öffnet Kommando.</div>
 
-  <section class="mobile-quick-actions">
-    <h2>Schnellaktionen</h2>
-    <div class="mobile-quick-grid">
-      <a class="mobile-action" href="/inventory/transactions/new?tx_type=receipt">Wareneingang</a>
-      <a class="mobile-action" href="/inventory/transactions/new?tx_type=issue">Warenausgang</a>
-      <a class="mobile-action" href="/inventory/transactions/new?tx_type=transfer">Umlagerung</a>
-      <a class="mobile-action" href="/inventory/reservations/new">Reservieren</a>
+  <div class="grid3 dashboard-stats">
+    <div class="box">
+      <div class="box-title">Produkte</div>
+      <div class="box-body"><b>{{ stats.products }}</b></div>
     </div>
-  </section>
-
-  <div class="hint">
-    Tastatur: Alt+2 Katalog, Alt+3 Lager, / für Suche.
+    <div class="box">
+      <div class="box-title">Aktive Reservierungen</div>
+      <div class="box-body"><b>{{ stats.reservations }}</b></div>
+    </div>
+    <div class="box">
+      <div class="box-title">Offene Reparaturen</div>
+      <div class="box-body"><b>{{ stats.open_repairs }}</b></div>
+    </div>
   </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Die Übersicht zeigt die wichtigsten Kennzahlen.</li>
-  <li>Über die Schnellaktionen startest du typische Lageraufgaben direkt.</li>
-  <li>Mit Alt+2 und Alt+3 springst du schnell zu Katalog oder Lager.</li>
+  <li>Die Übersicht ist auf schnelle Navigation reduziert.</li>
+  <li>Mit den Tasten 1-7 springst du direkt in Kernfunktionen.</li>
+  <li>Strg+K öffnet die Kommando-Palette auf jeder Seite.</li>
 </ul>
 {% endblock %}

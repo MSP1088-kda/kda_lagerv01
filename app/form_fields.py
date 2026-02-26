@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+FORM_FIELDS = (
+    {
+        "key": "name",
+        "label_de": "Bezeichnung",
+        "input_type": "text",
+        "placeholder_de": "z. B. Frontlader 8kg",
+        "section_default": "Identifikation",
+    },
+    {
+        "key": "material_no",
+        "label_de": "Materialnummer",
+        "input_type": "text",
+        "placeholder_de": "z. B. MAT-12345",
+        "section_default": "Identifikation",
+    },
+    {
+        "key": "sales_name",
+        "label_de": "Verkaufsbezeichnung",
+        "input_type": "text",
+        "placeholder_de": "z. B. Waschmaschine 8kg",
+        "section_default": "Identifikation",
+    },
+    {
+        "key": "manufacturer_name",
+        "label_de": "Herstellerbezeichnung",
+        "input_type": "text",
+        "placeholder_de": "z. B. WW8X",
+        "section_default": "Identifikation",
+    },
+    {
+        "key": "manufacturer_id",
+        "label_de": "Hersteller",
+        "input_type": "select",
+        "placeholder_de": "Bitte wählen",
+        "section_default": "Identifikation",
+    },
+    {
+        "key": "ean",
+        "label_de": "EAN",
+        "input_type": "text",
+        "placeholder_de": "8 oder 13 Ziffern",
+        "section_default": "Identifikation",
+    },
+    {
+        "key": "area_id",
+        "label_de": "Bereich",
+        "input_type": "select",
+        "placeholder_de": "Bitte wählen",
+        "section_default": "Klassifikation",
+    },
+    {
+        "key": "device_kind_id",
+        "label_de": "Geräteart",
+        "input_type": "select",
+        "placeholder_de": "Bitte wählen",
+        "section_default": "Klassifikation",
+    },
+    {
+        "key": "device_type_id",
+        "label_de": "Gerätetyp",
+        "input_type": "select",
+        "placeholder_de": "Bitte wählen",
+        "section_default": "Klassifikation",
+    },
+    {
+        "key": "sku",
+        "label_de": "SKU / Artikelnummer",
+        "input_type": "text",
+        "placeholder_de": "optional",
+        "section_default": "Identifikation",
+    },
+    {
+        "key": "description",
+        "label_de": "Beschreibung",
+        "input_type": "textarea",
+        "placeholder_de": "",
+        "section_default": "Beschreibung",
+    },
+)
+
+FORM_FIELDS_BY_KEY = {str(row["key"]): row for row in FORM_FIELDS}
+FORM_FIELD_KEYS = tuple(row["key"] for row in FORM_FIELDS)
+SELECT_FIELD_KEYS = {"manufacturer_id", "area_id", "device_kind_id", "device_type_id"}
+SECTION_CHOICES = ("Identifikation", "Klassifikation", "Beschreibung")
+
+
+DEFAULT_ITEM_TYPE_RULES = {
+    "appliance": {
+        "name": {"visible": False, "required": False},
+        "material_no": {"visible": True, "required": True},
+        "sales_name": {"visible": True, "required": True},
+        "manufacturer_name": {"visible": True, "required": False},
+        "manufacturer_id": {"visible": True, "required": True},
+        "ean": {"visible": True, "required": False},
+        "area_id": {"visible": True, "required": True},
+        "device_kind_id": {"visible": True, "required": True},
+        "device_type_id": {"visible": True, "required": True},
+        "sku": {"visible": False, "required": False},
+        "description": {"visible": True, "required": False},
+    },
+    "spare_part": {
+        "name": {"visible": True, "required": True},
+        "material_no": {"visible": True, "required": True},
+        "sales_name": {"visible": False, "required": False},
+        "manufacturer_name": {"visible": False, "required": False},
+        "manufacturer_id": {"visible": True, "required": False},
+        "ean": {"visible": True, "required": False},
+        "area_id": {"visible": False, "required": False},
+        "device_kind_id": {"visible": False, "required": False},
+        "device_type_id": {"visible": False, "required": False},
+        "sku": {"visible": False, "required": False},
+        "description": {"visible": True, "required": False},
+    },
+    "accessory": {
+        "name": {"visible": True, "required": True},
+        "material_no": {"visible": True, "required": True},
+        "sales_name": {"visible": True, "required": False},
+        "manufacturer_name": {"visible": False, "required": False},
+        "manufacturer_id": {"visible": True, "required": False},
+        "ean": {"visible": True, "required": False},
+        "area_id": {"visible": False, "required": False},
+        "device_kind_id": {"visible": False, "required": False},
+        "device_type_id": {"visible": False, "required": False},
+        "sku": {"visible": False, "required": False},
+        "description": {"visible": True, "required": False},
+    },
+    "material": {
+        "name": {"visible": True, "required": True},
+        "material_no": {"visible": True, "required": True},
+        "sales_name": {"visible": False, "required": False},
+        "manufacturer_name": {"visible": False, "required": False},
+        "manufacturer_id": {"visible": False, "required": False},
+        "ean": {"visible": False, "required": False},
+        "area_id": {"visible": False, "required": False},
+        "device_kind_id": {"visible": False, "required": False},
+        "device_type_id": {"visible": False, "required": False},
+        "sku": {"visible": False, "required": False},
+        "description": {"visible": True, "required": False},
+    },
+}

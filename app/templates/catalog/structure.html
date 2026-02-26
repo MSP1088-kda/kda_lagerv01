@@ -30,7 +30,8 @@
       <div class="box-body">
         <div class="mono">
           {% for k in kinds %}
-            #{{ k.id }} (Bereich {{ k.area_id }}) {{ k.name }}<br>
+            #{{ k.id }} (Bereich {{ k.area_id }}) {{ k.name }} -
+            <a href="/catalog/kinds/{{ k.id }}/attributes">Attribute</a><br>
           {% endfor %}
         </div>
 
@@ -62,7 +63,8 @@
       <div class="box-body">
         <div class="mono">
           {% for t in types %}
-            #{{ t.id }} (Art {{ t.device_kind_id }}) {{ t.name }}<br>
+            #{{ t.id }} (Art {{ t.device_kind_id }}) {{ t.name }} -
+            <a href="/catalog/types/{{ t.id }}/attributes">Attribute</a><br>
           {% endfor %}
         </div>
 

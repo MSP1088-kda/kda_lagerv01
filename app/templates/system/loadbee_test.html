@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>loadbee Debug-Test</h1>
+
+  <form method="post" action="/system/loadbee/test" class="form">
+    <label>GTIN / EAN</label>
+    <input type="text" name="gtin" value="{{ loadbee_test_gtin or '' }}" placeholder="z. B. 4002510000000" autofocus>
+    <div class="hint">API-Key Status: {% if loadbee_api_key_set %}gesetzt{% else %}nicht gesetzt{% endif %}</div>
+    <div class="row">
+      <button class="btn primary" type="submit">Debug prüfen</button>
+      <a class="btn" href="/system/loadbee">Zurück zu loadbee-Einstellungen</a>
+    </div>
+  </form>
+
+  {% if loadbee_api_key_set and loadbee_test_gtin %}
+  <div class="loadbee-wrap" style="margin-top:12px;">
+    <div class="loadbee-head">
+      <h2>Debug-Ergebnis</h2>
+    </div>
+    <div class="loadbee-panel open" id="lbTestPanel" data-gtin="{{ loadbee_test_gtin }}">
+      <div class="loadbeeTabContent" id="loadbeeTestContentId"
+           data-loadbee-apikey="{{ loadbee_api_key }}"
+           data-loadbee-gtin="{{ loadbee_test_gtin }}"
+           data-loadbee-locale="{{ loadbee_locales }}"
+           data-loadbee-debug="true"
+      ></div>
+      <script id="loadbeeTestScript" async src="https://cdn.loadbee.com/js/loadbee_integration.js"></script>
+    </div>
+  </div>
+  {% elif not loadbee_api_key_set %}
+  <div class="hint">Kein API-Key gesetzt. Bitte zuerst in den loadbee-Einstellungen speichern.</div>
+  {% else %}
+  <div class="hint">Bitte eine GTIN/EAN eingeben, um den Debug-Test zu starten.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Debug-Testseite trennt Einbindungsprobleme von Produktdaten-Problemen.</li>
+  <li>Gib eine GTIN/EAN ein und prüfe, ob loadbee im Debug-Modus reagiert.</li>
+  <li>Der API-Key wird hier nicht als Klartext angezeigt, nur als gesetzter technischer Wert genutzt.</li>
+</ul>
+{% endblock %}

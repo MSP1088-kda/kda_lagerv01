@@ -36,20 +36,39 @@ from .models import (
     EmailOutbox,
     InstanceConfig,
     InventoryTransaction,
+    ItemTypeFieldRule,
+    Manufacturer,
     MinStock,
     Product,
     ProductAttributeValue,
+    ProductLink,
+    ProductSet,
+    ProductSetItem,
+    RepairOrder,
+    RepairOrderLine,
     Reservation,
     ServicePort,
     SetupState,
+    SystemSetting,
+    StockConditionDef,
     Stocktake,
     StocktakeLine,
     StockBalance,
     StockSerial,
     StoragePath,
+    Supplier,
+    UiPreference,
     User,
     Warehouse,
     WarehouseBin,
+)
+from .form_fields import (
+    DEFAULT_ITEM_TYPE_RULES,
+    FORM_FIELDS,
+    FORM_FIELDS_BY_KEY,
+    FORM_FIELD_KEYS,
+    SECTION_CHOICES,
+    SELECT_FIELD_KEYS,
 )
 from .security import (
     create_api_key_secret,
@@ -122,6 +141,26 @@ EMAIL_SENDER_ENABLED = os.environ.get("EMAIL_SENDER_ENABLED", "1").strip() not i
 EMAIL_SENDER_INTERVAL = max(10, int(os.environ.get("EMAIL_SENDER_INTERVAL", "30") or 30))
 EMAIL_IMAP_ENABLED = os.environ.get("EMAIL_IMAP_ENABLED", "1").strip() not in ("0", "false", "False")
 EMAIL_IMAP_INTERVAL = max(30, int(os.environ.get("EMAIL_IMAP_INTERVAL", "120") or 120))
+
+LEGACY_CONDITION_MAP = {
+    "ok": "A_WARE",
+    "bware": "B_WARE",
+    "used": "GEBRAUCHT",
+    "defect": "IN_REPARATUR",
+}
+
+DEFAULT_STOCK_CONDITIONS: list[tuple[str, str, int, bool]] = [
+    ("A_WARE", "A-Ware (Neu)", 10, True),
+    ("B_WARE", "B-Ware (aufbereitet)", 20, True),
+    ("GEBRAUCHT", "Gebraucht (Kundenrücknahme)", 30, True),
+    ("NEUPUNKT", "Neupunkt", 40, True),
+    ("IN_REPARATUR", "In Reparatur", 90, True),
+]
+
+LOADBEE_SETTING_ENABLED = "loadbee_enabled"
+LOADBEE_SETTING_LOCALES = "loadbee_locales"
+LOADBEE_SETTING_LOAD_MODE = "loadbee_load_mode"
+LOADBEE_SETTING_DEBUG = "loadbee_debug"
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["de_label"] = lambda value, kind: de_label(kind, value)
@@ -198,9 +237,17 @@ def startup():
     if os.environ.get("DEV_CREATE_ALL", "0").strip() == "1":
         Base.metadata.create_all(bind=engine)
     _ensure_products_ean_column()
+    _ensure_products_extra_columns()
+    _cleanup_products_ern_legacy()
     _ensure_attribute_defs_columns()
     _ensure_inventory_bin_schema()
     _ensure_extended_tables()
+    _ensure_product_sets_schema()
+    _ensure_prompt_pack5_schema()
+    _ensure_ui_preferences_schema()
+    _ensure_system_settings_schema()
+    _ensure_item_type_field_rules_schema()
+    _migrate_legacy_condition_codes()
     # seed defaults
     SessionLocal = get_sessionmaker()
     db = SessionLocal()
@@ -244,6 +291,85 @@ def _ensure_products_ean_column() -> None:
         if "ean" not in cols:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN ean VARCHAR(32)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_ean ON products(ean)")
+
+
+def _ensure_products_extra_columns() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(products)").fetchall()}
+        if "item_type" not in cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN item_type VARCHAR(30) DEFAULT 'material'")
+        if "sales_name" not in cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN sales_name VARCHAR(200)")
+        if "manufacturer_name" not in cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN manufacturer_name VARCHAR(200)")
+        if "material_no" not in cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN material_no VARCHAR(120)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_material_no ON products(material_no)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_item_type ON products(item_type)")
+        conn.exec_driver_sql("UPDATE products SET item_type='material' WHERE item_type IS NULL OR TRIM(item_type)=''")
+        conn.exec_driver_sql("UPDATE products SET track_mode='quantity' WHERE track_mode IS NULL OR track_mode!='quantity'")
+
+
+def _cleanup_products_ern_legacy() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP INDEX IF EXISTS ix_products_ern")
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(products)").fetchall()}
+        if "ern" not in cols:
+            return
+        try:
+            conn.exec_driver_sql("ALTER TABLE products DROP COLUMN ern")
+        except Exception:
+            # Fallback for SQLite variants without DROP COLUMN support.
+            pass
+
+
+def _ensure_product_sets_schema() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS product_links (
+                id INTEGER PRIMARY KEY,
+                a_product_id INTEGER NOT NULL,
+                b_product_id INTEGER NOT NULL,
+                link_type VARCHAR(40) NOT NULL DEFAULT 'kompatibel',
+                note TEXT,
+                created_at DATETIME,
+                FOREIGN KEY(a_product_id) REFERENCES products(id),
+                FOREIGN KEY(b_product_id) REFERENCES products(id)
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_productlink_a ON product_links(a_product_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_productlink_b ON product_links(b_product_id)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS product_sets (
+                id INTEGER PRIMARY KEY,
+                set_number VARCHAR(120) NOT NULL,
+                name VARCHAR(200),
+                manufacturer VARCHAR(200),
+                created_at DATETIME
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_productset_set_number ON product_sets(set_number)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS product_set_items (
+                id INTEGER PRIMARY KEY,
+                set_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                FOREIGN KEY(set_id) REFERENCES product_sets(id),
+                FOREIGN KEY(product_id) REFERENCES products(id)
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_product_set_item ON product_set_items(set_id, product_id)")
 
 
 def _ensure_attribute_defs_columns() -> None:
@@ -365,6 +491,379 @@ def _ensure_extended_tables() -> None:
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_api_idempotency_created_at ON api_idempotency(created_at)")
 
 
+def _ensure_prompt_pack5_schema() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS manufacturers (
+                id INTEGER PRIMARY KEY,
+                name VARCHAR(200) NOT NULL UNIQUE,
+                website VARCHAR(240),
+                phone VARCHAR(120),
+                email VARCHAR(200),
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME
+            )
+            """
+        )
+        p_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(products)").fetchall()}
+        if "manufacturer_id" not in p_cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN manufacturer_id INTEGER")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_manufacturer_id ON products(manufacturer_id)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS suppliers (
+                id INTEGER PRIMARY KEY,
+                name VARCHAR(200) NOT NULL UNIQUE,
+                address TEXT,
+                phone VARCHAR(120),
+                email VARCHAR(200),
+                website VARCHAR(240),
+                note TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME
+            )
+            """
+        )
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS stock_condition_defs (
+                code VARCHAR(40) PRIMARY KEY,
+                label_de VARCHAR(200) NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                active BOOLEAN NOT NULL DEFAULT 1
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_stock_condition_sort ON stock_condition_defs(sort_order)")
+
+        tx_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(inventory_transactions)").fetchall()}
+        if "supplier_id" not in tx_cols:
+            conn.exec_driver_sql("ALTER TABLE inventory_transactions ADD COLUMN supplier_id INTEGER")
+        if "delivery_note_no" not in tx_cols:
+            conn.exec_driver_sql("ALTER TABLE inventory_transactions ADD COLUMN delivery_note_no VARCHAR(120)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_tx_supplier_id ON inventory_transactions(supplier_id)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS repair_orders (
+                id INTEGER PRIMARY KEY,
+                supplier_id INTEGER,
+                status VARCHAR(20) NOT NULL DEFAULT 'open',
+                reference VARCHAR(120),
+                note TEXT,
+                created_at DATETIME
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_order_status ON repair_orders(status)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS repair_order_lines (
+                id INTEGER PRIMARY KEY,
+                repair_order_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                qty INTEGER NOT NULL DEFAULT 1,
+                warehouse_from_id INTEGER NOT NULL,
+                warehouse_to_id INTEGER,
+                condition_in VARCHAR(40) NOT NULL DEFAULT 'GEBRAUCHT',
+                condition_out VARCHAR(40) NOT NULL DEFAULT 'B_WARE'
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_order_line_order ON repair_order_lines(repair_order_id)")
+
+
+def _ensure_ui_preferences_schema() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS ui_preferences (
+                id INTEGER PRIMARY KEY,
+                pref_key VARCHAR(120) NOT NULL UNIQUE,
+                value_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_ui_preferences_pref_key ON ui_preferences(pref_key)")
+
+
+def _ensure_system_settings_schema() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS system_settings (
+                "key" VARCHAR(120) PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+
+
+def _ensure_item_type_field_rules_schema() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS item_type_field_rules (
+                id INTEGER PRIMARY KEY,
+                item_type VARCHAR(30) NOT NULL,
+                field_key VARCHAR(80) NOT NULL,
+                visible BOOLEAN NOT NULL DEFAULT 1,
+                required BOOLEAN NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                section VARCHAR(80),
+                help_text_de TEXT
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_item_type_field_rule ON item_type_field_rules(item_type, field_key)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_item_type_field_rule_order ON item_type_field_rules(item_type, sort_order)"
+        )
+
+
+def _migrate_legacy_condition_codes() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        for table in ("stock_balances", "inventory_transactions", "reservations", "stock_serials"):
+            cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+            if "condition" not in cols:
+                continue
+            for old_code, new_code in LEGACY_CONDITION_MAP.items():
+                conn.exec_driver_sql(
+                    f"UPDATE {table} SET condition = :new_code WHERE condition = :old_code",
+                    {"new_code": new_code, "old_code": old_code},
+                )
+
+
+def _default_condition_code() -> str:
+    return "A_WARE"
+
+
+def _condition_code_from_input(raw: str | None) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return _default_condition_code()
+    mapped = LEGACY_CONDITION_MAP.get(value.lower(), value)
+    return mapped.upper()
+
+
+def _get_condition_defs(
+    db: Session,
+    active_only: bool = True,
+    include_fallback: bool = True,
+) -> list[StockConditionDef]:
+    q = db.query(StockConditionDef)
+    if active_only:
+        q = q.filter(StockConditionDef.active == True)
+    rows = q.order_by(StockConditionDef.sort_order.asc(), StockConditionDef.code.asc()).all()
+    if rows or not include_fallback:
+        return rows
+    fallback: list[StockConditionDef] = []
+    for code, label_de, sort_order, _active in DEFAULT_STOCK_CONDITIONS:
+        fallback.append(StockConditionDef(code=code, label_de=label_de, sort_order=sort_order, active=True))
+    return fallback
+
+
+def _condition_label_map(db: Session) -> dict[str, str]:
+    rows = db.query(StockConditionDef).order_by(StockConditionDef.sort_order.asc(), StockConditionDef.code.asc()).all()
+    labels = {r.code: r.label_de for r in rows}
+    for old_code, new_code in LEGACY_CONDITION_MAP.items():
+        if old_code not in labels:
+            labels[old_code] = labels.get(new_code, de_label("condition", new_code))
+    if labels:
+        return labels
+    for code, label_de, _order, _active in DEFAULT_STOCK_CONDITIONS:
+        labels[code] = label_de
+    return labels
+
+
+def _condition_exists(db: Session, code: str, active_only: bool = False) -> bool:
+    q = db.query(StockConditionDef).filter(StockConditionDef.code == code)
+    if active_only:
+        q = q.filter(StockConditionDef.active == True)
+    return q.count() > 0
+
+
+def _parse_supplier_id(db: Session, raw_supplier_id, active_only: bool = True) -> tuple[int | None, Supplier | None]:
+    try:
+        supplier_id = int(raw_supplier_id or 0) or None
+    except Exception:
+        return None, None
+    if not supplier_id:
+        return None, None
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
+        return None, None
+    if active_only and not supplier.active:
+        return None, None
+    return supplier_id, supplier
+
+
+def _parse_manufacturer_id(db: Session, raw_manufacturer_id) -> tuple[int | None, Manufacturer | None]:
+    try:
+        manufacturer_id = int(raw_manufacturer_id or 0) or None
+    except Exception:
+        return None, None
+    if not manufacturer_id:
+        return None, None
+    manufacturer = db.get(Manufacturer, manufacturer_id)
+    if not manufacturer:
+        return None, None
+    return manufacturer_id, manufacturer
+
+
+def _sanitize_condition_code(raw: str) -> str:
+    cleaned = []
+    for ch in (raw or "").strip().upper():
+        if ch.isalnum():
+            cleaned.append(ch)
+        else:
+            cleaned.append("_")
+    code = "".join(cleaned).strip("_")
+    while "__" in code:
+        code = code.replace("__", "_")
+    return code
+
+
+def _default_min_stock_condition(db: Session) -> str:
+    return "A_WARE" if _condition_exists(db, "A_WARE", active_only=False) else "ok"
+
+
+def _repair_reference(order: RepairOrder) -> str:
+    return (order.reference or "").strip() or f"REP-{order.id}"
+
+
+def _ensure_repair_warehouse(db: Session) -> Warehouse:
+    warehouse = db.query(Warehouse).filter(func.lower(Warehouse.name) == "reparatur").one_or_none()
+    if warehouse:
+        return warehouse
+    warehouse = Warehouse(name="Reparatur", description="Zwischenlager für Reparaturaufträge")
+    db.add(warehouse)
+    db.flush()
+    return warehouse
+
+
+def _seed_item_type_field_rules(db: Session) -> None:
+    for item_type in ITEM_TYPE_CHOICES:
+        has_rows = db.query(ItemTypeFieldRule.id).filter(ItemTypeFieldRule.item_type == item_type).first()
+        if has_rows:
+            continue
+        defaults = DEFAULT_ITEM_TYPE_RULES.get(item_type, {})
+        for idx, field in enumerate(FORM_FIELDS, start=1):
+            key = str(field["key"])
+            cfg = defaults.get(key, {})
+            db.add(
+                ItemTypeFieldRule(
+                    item_type=item_type,
+                    field_key=key,
+                    visible=bool(cfg.get("visible", False)),
+                    required=bool(cfg.get("required", False)),
+                    sort_order=idx * 10,
+                    section=str(field.get("section_default") or "Identifikation"),
+                    help_text_de=None,
+                )
+            )
+
+
+def _item_type_field_rules(db: Session, item_type: str) -> list[ItemTypeFieldRule]:
+    normalized = _normalize_item_type(item_type, fallback="material")
+    rows = (
+        db.query(ItemTypeFieldRule)
+        .filter(ItemTypeFieldRule.item_type == normalized)
+        .order_by(ItemTypeFieldRule.sort_order.asc(), ItemTypeFieldRule.id.asc())
+        .all()
+    )
+    if rows:
+        return rows
+    _seed_item_type_field_rules(db)
+    db.commit()
+    return (
+        db.query(ItemTypeFieldRule)
+        .filter(ItemTypeFieldRule.item_type == normalized)
+        .order_by(ItemTypeFieldRule.sort_order.asc(), ItemTypeFieldRule.id.asc())
+        .all()
+    )
+
+
+def _product_form_schema(db: Session, item_type: str) -> list[dict]:
+    rows = _item_type_field_rules(db, item_type)
+    schema: list[dict] = []
+    for row in rows:
+        spec = FORM_FIELDS_BY_KEY.get(str(row.field_key))
+        if not spec or not row.visible:
+            continue
+        schema.append(
+            {
+                "key": str(row.field_key),
+                "label": str(spec["label_de"]),
+                "input_type": str(spec["input_type"]),
+                "placeholder": str(spec.get("placeholder_de") or ""),
+                "required": bool(row.required),
+                "section": str(row.section or spec.get("section_default") or "Identifikation"),
+                "help_text": (row.help_text_de or "").strip(),
+                "sort_order": int(row.sort_order or 0),
+            }
+        )
+    schema.sort(key=lambda s: (str(s["section"]).lower(), int(s["sort_order"]), str(s["label"]).lower()))
+    return schema
+
+
+def _product_form_key_sets(db: Session, item_type: str) -> tuple[set[str], set[str]]:
+    rows = _item_type_field_rules(db, item_type)
+    visible = {str(r.field_key) for r in rows if r.visible}
+    required = {str(r.field_key) for r in rows if r.visible and r.required}
+    return visible, required
+
+
+def _product_field_label(field_key: str) -> str:
+    spec = FORM_FIELDS_BY_KEY.get(field_key)
+    if spec:
+        return str(spec["label_de"])
+    return field_key
+
+
+def _parse_product_select_id(db: Session, field_key: str, raw_value) -> tuple[int | None, bool]:
+    try:
+        value = int(raw_value or 0) or None
+    except Exception:
+        value = None
+    if not value:
+        return None, False
+    model = None
+    if field_key == "manufacturer_id":
+        model = Manufacturer
+    elif field_key == "area_id":
+        model = Area
+    elif field_key == "device_kind_id":
+        model = DeviceKind
+    elif field_key == "device_type_id":
+        model = DeviceType
+    if model is None:
+        return value, True
+    row = db.get(model, value)
+    return value, bool(row)
+
+
+def _minimum_visible_fields(item_type: str) -> set[str]:
+    normalized = _normalize_item_type(item_type, fallback="material")
+    if normalized == "appliance":
+        return {"sales_name", "material_no", "manufacturer_id", "area_id", "device_kind_id", "device_type_id"}
+    if normalized == "spare_part":
+        return {"name", "material_no"}
+    if normalized == "accessory":
+        return {"name", "material_no"}
+    return {"name", "material_no"}
+
+
 def _seed_defaults(db: Session):
     # instance
     inst = db.get(InstanceConfig, 1)
@@ -395,6 +894,13 @@ def _seed_defaults(db: Session):
     for name in ["Waschen", "Spülen", "Kälte", "Wärme"]:
         if db.query(Area).filter(func.lower(Area.name) == name.lower()).count() == 0:
             db.add(Area(name=name))
+    # default stock conditions
+    for code, label_de, sort_order, active in DEFAULT_STOCK_CONDITIONS:
+        row = db.get(StockConditionDef, code)
+        if not row:
+            db.add(StockConditionDef(code=code, label_de=label_de, sort_order=sort_order, active=active))
+    _seed_item_type_field_rules(db)
+    _ensure_repair_warehouse(db)
     db.query(User).filter(User.role == "user").update({User.role: "lesen"})
     db.commit()
 
@@ -440,23 +946,14 @@ async def _email_imap_loop() -> None:
 
 
 def _current_qty_for_min_scope(db: Session, product: Product, warehouse_id: int, bin_id: int | None) -> int:
-    if product.track_mode == "quantity":
-        q = db.query(func.coalesce(func.sum(StockBalance.quantity), 0)).filter(
-            StockBalance.product_id == product.id,
-            StockBalance.warehouse_id == warehouse_id,
-            StockBalance.condition == "ok",
-        )
-        if bin_id is not None:
-            q = q.filter(StockBalance.bin_id == bin_id)
-        return int(q.scalar() or 0)
-    q = db.query(func.count(StockSerial.id)).filter(
-        StockSerial.product_id == product.id,
-        StockSerial.warehouse_id == warehouse_id,
-        StockSerial.status == "in_stock",
-        StockSerial.condition == "ok",
+    cond = _default_min_stock_condition(db)
+    q = db.query(func.coalesce(func.sum(StockBalance.quantity), 0)).filter(
+        StockBalance.product_id == product.id,
+        StockBalance.warehouse_id == warehouse_id,
+        StockBalance.condition == cond,
     )
     if bin_id is not None:
-        q = q.filter(StockSerial.bin_id == bin_id)
+        q = q.filter(StockBalance.bin_id == bin_id)
     return int(q.scalar() or 0)
 
 
@@ -871,6 +1368,7 @@ def dashboard(request: Request, user=Depends(require_user), db: Session = Depend
     serials_in_stock = db.query(StockSerial).filter(StockSerial.status == "in_stock").count()
     qty_lines = db.query(StockBalance).count()
     reservations = db.query(Reservation).filter(Reservation.status == "active").count()
+    open_repairs = db.query(RepairOrder).filter(RepairOrder.status.in_(("open", "in_repair"))).count()
     warnings = _collect_min_stock_warnings(db, limit=50)
     return templates.TemplateResponse(
         "dashboard.html",
@@ -883,6 +1381,7 @@ def dashboard(request: Request, user=Depends(require_user), db: Session = Depend
                 "serials_in_stock": serials_in_stock,
                 "qty_lines": qty_lines,
                 "reservations": reservations,
+                "open_repairs": open_repairs,
                 "low_stock": len(warnings),
             },
             warnings=warnings,
@@ -1071,13 +1570,16 @@ def attributes_list(request: Request, user=Depends(require_user), db: Session = 
     type_map = {t.id: t for t in types}
     options_map: dict[int, list[str]] = {}
     grouped: dict[str, list[AttributeDef]] = {}
-    scope_map: dict[int, list[str]] = {}
+    scope_map: dict[int, list[dict[str, str | int]]] = {}
     for s in scopes:
-        labels = scope_map.setdefault(s.attribute_id, [])
+        rows = scope_map.setdefault(s.attribute_id, [])
+        label = ""
         if s.device_type_id and s.device_type_id in type_map:
-            labels.append(f"Typ: {type_map[s.device_type_id].name}")
+            label = f"Typ: {type_map[s.device_type_id].name}"
         elif s.device_kind_id and s.device_kind_id in kind_map:
-            labels.append(f"Art: {kind_map[s.device_kind_id].name}")
+            label = f"Art: {kind_map[s.device_kind_id].name}"
+        if label:
+            rows.append({"id": int(s.id), "label": label})
     for a in attrs:
         options_map[a.id] = _enum_options_from_json(a.enum_options_json)
         group_name = (a.group_name or "").strip() or "Ohne Gruppe"
@@ -1188,6 +1690,249 @@ def attributes_scope_add(
     return RedirectResponse("/catalog/attributes", status_code=302)
 
 
+@app.post("/catalog/attributes/{attr_id}/scope/{scope_id}/delete")
+def attributes_scope_delete(attr_id: int, scope_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(AttributeScope, scope_id)
+    if not row or int(row.attribute_id) != int(attr_id):
+        raise HTTPException(status_code=404)
+    db.delete(row)
+    db.commit()
+    _flash(request, "Scope entfernt.", "info")
+    return RedirectResponse("/catalog/attributes", status_code=302)
+
+
+@app.get("/catalog/kinds/{kind_id}/attributes", response_class=HTMLResponse)
+def kind_attributes_get(kind_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    kind = db.get(DeviceKind, kind_id)
+    if not kind:
+        raise HTTPException(status_code=404)
+    scope_rows = (
+        db.query(AttributeScope, AttributeDef)
+        .join(AttributeDef, AttributeDef.id == AttributeScope.attribute_id)
+        .filter(AttributeScope.device_kind_id == kind_id, AttributeScope.device_type_id.is_(None))
+        .order_by(AttributeDef.group_name.asc(), AttributeDef.name.asc())
+        .all()
+    )
+    all_attrs = db.query(AttributeDef).order_by(AttributeDef.group_name.asc(), AttributeDef.name.asc()).all()
+    existing_ids = {int(attr.id) for _scope, attr in scope_rows}
+    available_attrs = [a for a in all_attrs if int(a.id) not in existing_ids]
+    options_map = {a.id: _enum_options_from_json(a.enum_options_json) for a in all_attrs}
+    return templates.TemplateResponse(
+        "catalog/kind_attributes.html",
+        _ctx(
+            request,
+            user=user,
+            kind=kind,
+            scope_rows=scope_rows,
+            available_attrs=available_attrs,
+            options_map=options_map,
+        ),
+    )
+
+
+@app.post("/catalog/kinds/{kind_id}/attributes/add")
+async def kind_attributes_add(kind_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    kind = db.get(DeviceKind, kind_id)
+    if not kind:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    attr_id = int(form.get("attribute_id") or 0)
+    if not attr_id or not db.get(AttributeDef, attr_id):
+        _flash(request, "Bitte ein Attribut auswählen.", "error")
+        return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
+    exists_row = (
+        db.query(AttributeScope)
+        .filter(
+            AttributeScope.attribute_id == attr_id,
+            AttributeScope.device_kind_id == kind_id,
+            AttributeScope.device_type_id.is_(None),
+        )
+        .count()
+    )
+    if exists_row:
+        _flash(request, "Attribut ist bereits zugewiesen.", "info")
+        return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
+    db.add(AttributeScope(attribute_id=attr_id, device_kind_id=kind_id, device_type_id=None))
+    db.commit()
+    _flash(request, "Attribut zur Geräteart zugewiesen.", "info")
+    return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
+
+
+@app.post("/catalog/kinds/{kind_id}/attributes/new")
+async def kind_attributes_new(kind_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    kind = db.get(DeviceKind, kind_id)
+    if not kind:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    value_type = (form.get("value_type") or "").strip()
+    enum_options = (form.get("enum_options") or "").strip()
+    if not name:
+        _flash(request, "Attributname fehlt.", "error")
+        return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
+    if value_type not in _ALLOWED_ATTRIBUTE_TYPES:
+        _flash(request, "Ungültiger Attribut-Typ.", "error")
+        return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
+    options = _parse_enum_options(enum_options)
+    enum_json = None
+    is_multi = form.get("is_multi") == "on"
+    if value_type == "enum":
+        if not options:
+            _flash(request, "Auswahlattribute brauchen mindestens eine Option.", "error")
+            return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
+        enum_json = json.dumps(options, ensure_ascii=False)
+    else:
+        is_multi = False
+    slug = slugify(name)
+    base = slug
+    idx = 2
+    while db.query(AttributeDef).filter(AttributeDef.slug == slug).count() > 0:
+        slug = f"{base}-{idx}"
+        idx += 1
+    attr = AttributeDef(
+        name=name,
+        slug=slug,
+        value_type=value_type,
+        enum_options_json=enum_json,
+        is_multi=is_multi,
+        group_name=(form.get("group_name") or "").strip() or None,
+        is_required=form.get("is_required") == "on",
+    )
+    db.add(attr)
+    db.flush()
+    db.add(AttributeScope(attribute_id=attr.id, device_kind_id=kind_id, device_type_id=None))
+    db.commit()
+    _flash(request, "Attribut angelegt und zugewiesen.", "info")
+    return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
+
+
+@app.post("/catalog/kinds/{kind_id}/attributes/{scope_id}/delete")
+def kind_attributes_delete(kind_id: int, scope_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(AttributeScope, scope_id)
+    if not row or int(row.device_kind_id or 0) != int(kind_id) or row.device_type_id is not None:
+        raise HTTPException(status_code=404)
+    db.delete(row)
+    db.commit()
+    _flash(request, "Attribut-Zuordnung entfernt.", "info")
+    return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
+
+
+@app.get("/catalog/types/{type_id}/attributes", response_class=HTMLResponse)
+def type_attributes_get(type_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    dtype = db.get(DeviceType, type_id)
+    if not dtype:
+        raise HTTPException(status_code=404)
+    scope_rows = (
+        db.query(AttributeScope, AttributeDef)
+        .join(AttributeDef, AttributeDef.id == AttributeScope.attribute_id)
+        .filter(AttributeScope.device_type_id == type_id, AttributeScope.device_kind_id.is_(None))
+        .order_by(AttributeDef.group_name.asc(), AttributeDef.name.asc())
+        .all()
+    )
+    all_attrs = db.query(AttributeDef).order_by(AttributeDef.group_name.asc(), AttributeDef.name.asc()).all()
+    existing_ids = {int(attr.id) for _scope, attr in scope_rows}
+    available_attrs = [a for a in all_attrs if int(a.id) not in existing_ids]
+    options_map = {a.id: _enum_options_from_json(a.enum_options_json) for a in all_attrs}
+    return templates.TemplateResponse(
+        "catalog/type_attributes.html",
+        _ctx(
+            request,
+            user=user,
+            dtype=dtype,
+            scope_rows=scope_rows,
+            available_attrs=available_attrs,
+            options_map=options_map,
+        ),
+    )
+
+
+@app.post("/catalog/types/{type_id}/attributes/add")
+async def type_attributes_add(type_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    dtype = db.get(DeviceType, type_id)
+    if not dtype:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    attr_id = int(form.get("attribute_id") or 0)
+    if not attr_id or not db.get(AttributeDef, attr_id):
+        _flash(request, "Bitte ein Attribut auswählen.", "error")
+        return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
+    exists_row = (
+        db.query(AttributeScope)
+        .filter(
+            AttributeScope.attribute_id == attr_id,
+            AttributeScope.device_type_id == type_id,
+            AttributeScope.device_kind_id.is_(None),
+        )
+        .count()
+    )
+    if exists_row:
+        _flash(request, "Attribut ist bereits zugewiesen.", "info")
+        return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
+    db.add(AttributeScope(attribute_id=attr_id, device_kind_id=None, device_type_id=type_id))
+    db.commit()
+    _flash(request, "Attribut zum Gerätetyp zugewiesen.", "info")
+    return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
+
+
+@app.post("/catalog/types/{type_id}/attributes/new")
+async def type_attributes_new(type_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    dtype = db.get(DeviceType, type_id)
+    if not dtype:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    value_type = (form.get("value_type") or "").strip()
+    enum_options = (form.get("enum_options") or "").strip()
+    if not name:
+        _flash(request, "Attributname fehlt.", "error")
+        return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
+    if value_type not in _ALLOWED_ATTRIBUTE_TYPES:
+        _flash(request, "Ungültiger Attribut-Typ.", "error")
+        return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
+    options = _parse_enum_options(enum_options)
+    enum_json = None
+    is_multi = form.get("is_multi") == "on"
+    if value_type == "enum":
+        if not options:
+            _flash(request, "Auswahlattribute brauchen mindestens eine Option.", "error")
+            return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
+        enum_json = json.dumps(options, ensure_ascii=False)
+    else:
+        is_multi = False
+    slug = slugify(name)
+    base = slug
+    idx = 2
+    while db.query(AttributeDef).filter(AttributeDef.slug == slug).count() > 0:
+        slug = f"{base}-{idx}"
+        idx += 1
+    attr = AttributeDef(
+        name=name,
+        slug=slug,
+        value_type=value_type,
+        enum_options_json=enum_json,
+        is_multi=is_multi,
+        group_name=(form.get("group_name") or "").strip() or None,
+        is_required=form.get("is_required") == "on",
+    )
+    db.add(attr)
+    db.flush()
+    db.add(AttributeScope(attribute_id=attr.id, device_kind_id=None, device_type_id=type_id))
+    db.commit()
+    _flash(request, "Attribut angelegt und zugewiesen.", "info")
+    return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
+
+
+@app.post("/catalog/types/{type_id}/attributes/{scope_id}/delete")
+def type_attributes_delete(type_id: int, scope_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(AttributeScope, scope_id)
+    if not row or int(row.device_type_id or 0) != int(type_id) or row.device_kind_id is not None:
+        raise HTTPException(status_code=404)
+    db.delete(row)
+    db.commit()
+    _flash(request, "Attribut-Zuordnung entfernt.", "info")
+    return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
+
+
 # ---------------------------
 # Catalog: Products
 # ---------------------------
@@ -1245,13 +1990,223 @@ def _guess_column(columns: list[str], candidates: tuple[str, ...]) -> str:
     return ""
 
 
-def _parse_track_mode(raw: str, default_mode: str) -> str:
+ITEM_TYPE_CHOICES = ("appliance", "spare_part", "accessory", "material")
+ITEM_TYPE_LABELS = {
+    "appliance": "Großgerät",
+    "spare_part": "Ersatzteil",
+    "accessory": "Zubehör",
+    "material": "Material",
+}
+
+UI_PREF_KEY_PRODUCT_FORM_FIELDS = "product_form_fields_by_item_type"
+UI_PREF_KEY_PRODUCTS_LIST_COLUMNS = "products_list_columns"
+UI_PREF_KEY_STOCK_COLUMNS = "stock_overview_columns"
+
+PRODUCT_FORM_FIELD_SPECS = (
+    {"key": "material_no", "label": "Materialnummer"},
+    {"key": "manufacturer_id", "label": "Hersteller"},
+    {"key": "sku", "label": "SKU / Artikelnummer"},
+    {"key": "sales_name", "label": "Verkaufsbezeichnung"},
+    {"key": "manufacturer_name", "label": "Herstellerbezeichnung"},
+    {"key": "ean", "label": "EAN"},
+    {"key": "area_id", "label": "Bereich"},
+    {"key": "device_kind_id", "label": "Geräteart"},
+    {"key": "device_type_id", "label": "Gerätetyp"},
+    {"key": "description", "label": "Beschreibung"},
+)
+PRODUCT_FORM_FIELD_KEYS = tuple(spec["key"] for spec in PRODUCT_FORM_FIELD_SPECS)
+DEFAULT_PRODUCT_FORM_FIELDS_BY_ITEM_TYPE = {it: list(PRODUCT_FORM_FIELD_KEYS) for it in ITEM_TYPE_CHOICES}
+
+PRODUCTS_LIST_COLUMN_SPECS = (
+    {"key": "id", "label": "#", "width": "60px"},
+    {"key": "item_type", "label": "Artikelart", "width": "0.9fr"},
+    {"key": "name", "label": "Bezeichnung", "width": "1.4fr"},
+    {"key": "material_no", "label": "Materialnummer", "width": "1fr"},
+    {"key": "sales_name", "label": "Verkaufsbezeichnung", "width": "1fr"},
+    {"key": "manufacturer_name", "label": "Herstellerbezeichnung", "width": "1fr"},
+    {"key": "actions", "label": "Aktion", "width": "220px"},
+)
+
+STOCK_COLUMN_SPECS = (
+    {"key": "id", "label": "#", "width": "60px"},
+    {"key": "item_type", "label": "Artikelart", "width": "0.9fr"},
+    {"key": "product", "label": "Produkt", "width": "1.4fr"},
+    {"key": "conditions", "label": "Bestände nach Zustand", "width": "1.6fr"},
+    {"key": "material_no", "label": "Materialnummer", "width": "0.9fr"},
+    {"key": "warning", "label": "Warnung", "width": "1fr"},
+)
+
+
+def _get_ui_pref_json(db: Session, pref_key: str):
+    row = db.query(UiPreference).filter(UiPreference.pref_key == pref_key).one_or_none()
+    if not row:
+        return None
+    try:
+        return json.loads(row.value_json or "null")
+    except Exception:
+        return None
+
+
+def _set_ui_pref_json(db: Session, pref_key: str, value) -> None:
+    row = db.query(UiPreference).filter(UiPreference.pref_key == pref_key).one_or_none()
+    payload = json.dumps(value, ensure_ascii=False)
+    if row:
+        row.value_json = payload
+    else:
+        db.add(UiPreference(pref_key=pref_key, value_json=payload))
+
+
+def _sanitize_product_form_fields_by_item_type(raw) -> dict[str, list[str]]:
+    allowed = set(PRODUCT_FORM_FIELD_KEYS)
+    out: dict[str, list[str]] = {}
+    for item_type in ITEM_TYPE_CHOICES:
+        values = None
+        if isinstance(raw, dict):
+            values = raw.get(item_type)
+        if values is None:
+            out[item_type] = list(DEFAULT_PRODUCT_FORM_FIELDS_BY_ITEM_TYPE[item_type])
+            continue
+        selected: list[str] = []
+        if isinstance(values, list):
+            for key in values:
+                key_s = str(key)
+                if key_s in allowed and key_s not in selected:
+                    selected.append(key_s)
+        out[item_type] = selected
+    return out
+
+
+def _product_form_fields_by_item_type(db: Session) -> dict[str, list[str]]:
+    raw = _get_ui_pref_json(db, UI_PREF_KEY_PRODUCT_FORM_FIELDS)
+    return _sanitize_product_form_fields_by_item_type(raw)
+
+
+def _visible_product_form_fields(db: Session, item_type: str | None) -> set[str]:
+    normalized = _normalize_item_type(item_type, fallback="material")
+    cfg = _product_form_fields_by_item_type(db)
+    return set(cfg.get(normalized, []))
+
+
+def _sanitize_table_column_keys(raw, specs: tuple[dict, ...]) -> list[str]:
+    allowed_keys = [str(spec["key"]) for spec in specs]
+    selected: list[str] = []
+    if isinstance(raw, list):
+        for key in raw:
+            key_s = str(key)
+            if key_s in allowed_keys and key_s not in selected:
+                selected.append(key_s)
+    if not selected:
+        selected = list(allowed_keys)
+    return selected
+
+
+def _table_columns_from_keys(specs: tuple[dict, ...], keys: list[str]) -> tuple[list[dict], str]:
+    by_key = {str(spec["key"]): spec for spec in specs}
+    cols = [by_key[key] for key in keys if key in by_key]
+    if not cols:
+        cols = list(specs)
+    grid = " ".join(str(col["width"]) for col in cols)
+    return cols, grid
+
+
+def _products_list_columns(db: Session) -> tuple[list[dict], str]:
+    keys = _sanitize_table_column_keys(_get_ui_pref_json(db, UI_PREF_KEY_PRODUCTS_LIST_COLUMNS), PRODUCTS_LIST_COLUMN_SPECS)
+    return _table_columns_from_keys(PRODUCTS_LIST_COLUMN_SPECS, keys)
+
+
+def _stock_overview_columns(db: Session) -> tuple[list[dict], str]:
+    keys = _sanitize_table_column_keys(_get_ui_pref_json(db, UI_PREF_KEY_STOCK_COLUMNS), STOCK_COLUMN_SPECS)
+    return _table_columns_from_keys(STOCK_COLUMN_SPECS, keys)
+
+
+def _parse_column_selection(form, specs: tuple[dict, ...], prefix: str) -> list[str]:
+    ranked: list[tuple[int, int, str]] = []
+    for idx, spec in enumerate(specs, start=1):
+        key = str(spec["key"])
+        if form.get(f"{prefix}_visible_{key}") != "on":
+            continue
+        try:
+            order = int(form.get(f"{prefix}_order_{key}") or idx)
+        except Exception:
+            order = idx
+        ranked.append((order, idx, key))
+    ranked.sort(key=lambda row: (row[0], row[1]))
+    selected = [key for _order, _idx, key in ranked]
+    return _sanitize_table_column_keys(selected, specs)
+
+
+def _column_setting_rows(specs: tuple[dict, ...], selected_keys: list[str]) -> list[dict]:
+    order_map = {key: idx + 1 for idx, key in enumerate(selected_keys)}
+    rows: list[dict] = []
+    for idx, spec in enumerate(specs, start=1):
+        key = str(spec["key"])
+        rows.append(
+            {
+                "key": key,
+                "label": spec["label"],
+                "visible": key in order_map,
+                "order": order_map.get(key, idx + 20),
+            }
+        )
+    return rows
+
+
+def _normalize_item_type(raw: str | None, fallback: str = "material") -> str:
     v = (raw or "").strip().lower()
-    if v in ("seriennummer", "serial", "sn"):
-        return "serial"
-    if v in ("menge", "quantity"):
-        return "quantity"
-    return default_mode
+    return v if v in ITEM_TYPE_CHOICES else fallback
+
+
+def _item_type_label(raw: str | None) -> str:
+    key = _normalize_item_type(raw, fallback="material")
+    return ITEM_TYPE_LABELS.get(key, "Material")
+
+
+def _parse_track_mode(raw: str, default_mode: str) -> str:
+    _ = raw
+    _ = default_mode
+    return "quantity"
+
+
+def build_product_search_filter(q: str, include_attribute_values: bool = False):
+    q = (q or "").strip()
+    if not q:
+        return None
+
+    like = f"%{q}%"
+    q_compact = q.replace(" ", "").replace("-", "")
+    compact_like = f"%{q_compact}%"
+
+    conds = [
+        Product.name.ilike(like),
+        Product.manufacturer.ilike(like),
+        Product.material_no.ilike(like),
+        Product.sales_name.ilike(like),
+        Product.manufacturer_name.ilike(like),
+    ]
+    if hasattr(Product, "ean"):
+        conds.append(Product.ean.ilike(like))
+    if hasattr(Product, "sku"):
+        conds.append(Product.sku.ilike(like))
+
+    if q_compact:
+        compact_cols = [Product.material_no]
+        if hasattr(Product, "ean"):
+            compact_cols.append(Product.ean)
+        for col in compact_cols:
+            normalized = func.replace(func.replace(func.coalesce(col, ""), " ", ""), "-", "")
+            conds.append(normalized.ilike(compact_like))
+
+    if include_attribute_values:
+        conds.append(
+            exists().where(
+                and_(
+                    ProductAttributeValue.product_id == Product.id,
+                    ProductAttributeValue.value_text.ilike(like),
+                )
+            )
+        )
+
+    return or_(*conds)
 
 
 def _parse_active(raw: str, default_value: bool = True) -> bool:
@@ -1377,7 +2332,15 @@ def _parse_product_attribute_values(form, attrs: list[AttributeDef]) -> tuple[di
         value_text = ""
 
         if attr.value_type == "bool":
-            value_text = "true" if (form.get(key) in ("on", "true", "1")) else "false"
+            raw_bool = (form.get(key) or "").strip().lower()
+            if raw_bool in ("on", "true", "1", "ja", "j"):
+                value_text = "true"
+            elif raw_bool in ("false", "0", "nein", "n"):
+                value_text = "false"
+            else:
+                if attr.is_required:
+                    errors.append(f"Pflichtattribut fehlt: {label}")
+                value_text = ""
         elif attr.value_type == "number":
             raw = (form.get(key) or "").strip()
             if not raw:
@@ -1425,6 +2388,7 @@ def products_list(
     request: Request,
     user=Depends(require_user),
     q: str = "",
+    item_type: str = "",
     area_id: int = 0,
     kind_id: int = 0,
     type_id: int = 0,
@@ -1433,12 +2397,14 @@ def products_list(
     areas = db.query(Area).order_by(Area.name.asc()).all()
     kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
     types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
-    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
 
     query = db.query(Product).filter(Product.active == True)
-    if q:
-        like = f"%{q.strip()}%"
-        query = query.filter(or_(Product.name.ilike(like), Product.sku.ilike(like), Product.ean.ilike(like), Product.manufacturer.ilike(like)))
+    search_filter = build_product_search_filter(q, include_attribute_values=True)
+    if search_filter is not None:
+        query = query.filter(search_filter)
+    item_type = _normalize_item_type(item_type, fallback="")
+    if item_type:
+        query = query.filter(Product.item_type == item_type)
     if area_id:
         query = query.filter(Product.area_id == area_id)
     if kind_id:
@@ -1563,6 +2529,7 @@ def products_list(
         )
 
     products = query.order_by(Product.id.desc()).limit(200).all()
+    table_columns, table_grid = _products_list_columns(db)
     return templates.TemplateResponse(
         "catalog/products_list.html",
         _ctx(
@@ -1570,6 +2537,8 @@ def products_list(
             user=user,
             products=products,
             q=q,
+            item_type=item_type,
+            item_type_labels=ITEM_TYPE_LABELS,
             areas=areas,
             kinds=kinds,
             types=types,
@@ -1579,6 +2548,8 @@ def products_list(
             filter_attrs=filter_attrs,
             attr_filters=attr_filters,
             options_by_slug=options_by_slug,
+            table_columns=table_columns,
+            table_grid=table_grid,
         ),
     )
 
@@ -1710,9 +2681,7 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     duplicate_mode = (form.get("duplicate_mode") or "skip").strip()
     if duplicate_mode not in ("skip", "update"):
         duplicate_mode = "skip"
-    default_track_mode = (form.get("default_track_mode") or "serial").strip()
-    if default_track_mode not in ("serial", "quantity"):
-        default_track_mode = "serial"
+    default_track_mode = "quantity"
 
     created = 0
     updated = 0
@@ -1735,7 +2704,7 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             area_name = _csv_value(row, mapping["area"])
             kind_name = _csv_value(row, mapping["kind"])
             type_name = _csv_value(row, mapping["type"])
-            track_mode = _parse_track_mode(_csv_value(row, mapping["tracking"]), default_track_mode)
+            _ = _parse_track_mode(_csv_value(row, mapping["tracking"]), default_track_mode)
             description = _csv_value(row, mapping["description"]) or None
 
             existing = _find_product_by_sku_or_ean(db, sku=sku, ean=ean)
@@ -1755,7 +2724,7 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 product = existing
                 updated += 1
             else:
-                product = Product(active=True)
+                product = Product(active=True, track_mode="quantity", item_type="material")
                 created += 1
 
             default_active = bool(product.active) if product.id else True
@@ -1766,7 +2735,8 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             product.area_id = area.id if area else None
             product.device_kind_id = kind.id if kind else None
             product.device_type_id = dtype.id if dtype else None
-            product.track_mode = track_mode
+            product.track_mode = "quantity"
+            product.item_type = _normalize_item_type(getattr(product, "item_type", None), fallback="material")
             product.description = description
             product.active = _parse_active(_csv_value(row, mapping["active"]), default_value=default_active)
             db.add(product)
@@ -1793,40 +2763,182 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
 
 
 @app.get("/catalog/products/new", response_class=HTMLResponse)
-def products_new_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+def products_new_get(
+    request: Request,
+    user=Depends(require_admin),
+    item_type: str = "",
+    device_kind_id: int = 0,
+    device_type_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    selected_item_type = _normalize_item_type(item_type, fallback="")
+    if not selected_item_type:
+        return templates.TemplateResponse(
+            "catalog/product_new_choose_type.html",
+            _ctx(
+                request,
+                user=user,
+                item_types=ITEM_TYPE_CHOICES,
+                item_type_labels=ITEM_TYPE_LABELS,
+            ),
+        )
+
     areas = db.query(Area).order_by(Area.name.asc()).all()
     kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
     types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
-    return templates.TemplateResponse("catalog/product_form.html", _ctx(request, user=user, product=None, areas=areas, kinds=kinds, types=types))
+    manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc()).all()
+    selected_kind_id = int(device_kind_id or 0)
+    selected_type_id = int(device_type_id or 0)
+    if selected_kind_id and not db.get(DeviceKind, selected_kind_id):
+        selected_kind_id = 0
+    if selected_type_id:
+        selected_type = db.get(DeviceType, selected_type_id)
+        if not selected_type:
+            selected_type_id = 0
+        else:
+            if selected_kind_id and int(selected_type.device_kind_id or 0) != selected_kind_id:
+                selected_type_id = 0
+            elif not selected_kind_id:
+                selected_kind_id = int(selected_type.device_kind_id or 0)
+
+    attrs = _applicable_attributes(db, selected_kind_id or None, selected_type_id or None)
+    options_map: dict[int, list[str]] = {}
+    grouped: dict[str, list[AttributeDef]] = {}
+    for a in attrs:
+        options_map[a.id] = _enum_options_from_json(a.enum_options_json)
+        group_name = (a.group_name or "").strip() or "Ohne Gruppe"
+        grouped.setdefault(group_name, []).append(a)
+    attrs_grouped = sorted(grouped.items(), key=lambda item: (item[0] != "Ohne Gruppe", item[0].lower()))
+    form_schema = _product_form_schema(db, selected_item_type)
+    return templates.TemplateResponse(
+        "catalog/product_form.html",
+        _ctx(
+            request,
+            user=user,
+            product=None,
+            areas=areas,
+            kinds=kinds,
+            types=types,
+            manufacturers=manufacturers,
+            item_types=ITEM_TYPE_CHOICES,
+            item_type_labels=ITEM_TYPE_LABELS,
+            selected_item_type=selected_item_type,
+            item_type_locked=True,
+            selected_kind_id=selected_kind_id,
+            selected_type_id=selected_type_id,
+            attrs=attrs,
+            attrs_grouped=attrs_grouped,
+            val_map={},
+            val_multi_map={},
+            options_map=options_map,
+            form_schema=form_schema,
+        ),
+    )
 
 
 @app.post("/catalog/products/new")
 async def products_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     form = await request.form()
-    name = (form.get("name") or "").strip()
+    item_type = _normalize_item_type(form.get("item_type"), fallback="")
+    if not item_type:
+        _flash(request, "Bitte zuerst eine Artikelart wählen.", "error")
+        return RedirectResponse("/catalog/products/new", status_code=302)
+    visible_fields, required_fields = _product_form_key_sets(db, item_type)
+
+    text_values: dict[str, str] = {}
+    select_values: dict[str, int | None] = {}
+    errors: list[str] = []
+
+    for key in visible_fields:
+        if key in SELECT_FIELD_KEYS:
+            value, exists = _parse_product_select_id(db, key, form.get(key))
+            select_values[key] = value if exists else None
+            if key in required_fields and not value:
+                errors.append(f"Feld '{_product_field_label(key)}' ist erforderlich.")
+            elif value and not exists:
+                errors.append(f"Ungültiger Wert für Feld '{_product_field_label(key)}'.")
+            continue
+        text_values[key] = (form.get(key) or "").strip()
+        if key in required_fields and not text_values[key]:
+            errors.append(f"Feld '{_product_field_label(key)}' ist erforderlich.")
+
+    name = text_values.get("name", "") if "name" in visible_fields else ""
+    if item_type == "appliance" and (("name" not in visible_fields) or not name):
+        name = text_values.get("sales_name", "") or text_values.get("material_no", "") or name
     if not name:
-        _flash(request, "Name ist Pflicht.", "error")
-        return RedirectResponse("/catalog/products/new", status_code=302)
+        errors.append("Feld 'Bezeichnung' ist erforderlich.")
+
+    manufacturer_id = select_values.get("manufacturer_id") if "manufacturer_id" in visible_fields else None
+    manufacturer_row = db.get(Manufacturer, manufacturer_id) if manufacturer_id else None
+    if item_type == "appliance" and "manufacturer_id" in visible_fields and not manufacturer_id:
+        errors.append("Für Großgeräte ist ein Hersteller Pflicht.")
+
+    material_no = text_values.get("material_no") or None if "material_no" in visible_fields else None
+    if material_no:
+        existing_material = (
+            db.query(Product)
+            .filter(func.lower(Product.material_no) == material_no.lower())
+            .one_or_none()
+        )
+        if existing_material:
+            errors.append("Materialnummer existiert bereits.")
+
+    ean = None
     try:
-        ean = normalize_ean(form.get("ean"))
+        if "ean" in visible_fields:
+            ean = normalize_ean(text_values.get("ean"))
     except ValueError as e:
-        _flash(request, f"Ungültige EAN: {e}", "error")
-        return RedirectResponse("/catalog/products/new", status_code=302)
+        errors.append(f"Ungültige EAN: {e}")
+
+    area_id = select_values.get("area_id") if "area_id" in visible_fields else None
+    device_kind_id = select_values.get("device_kind_id") if "device_kind_id" in visible_fields else None
+    device_type_id = select_values.get("device_type_id") if "device_type_id" in visible_fields else None
+
+    attrs = _applicable_attributes(db, device_kind_id, device_type_id)
+    parsed_values, parse_errors = _parse_product_attribute_values(form, attrs)
+    if parse_errors:
+        errors.extend(parse_errors)
+
+    redirect_params = [f"item_type={item_type}"]
+    if device_kind_id:
+        redirect_params.append(f"device_kind_id={int(device_kind_id)}")
+    if device_type_id:
+        redirect_params.append(f"device_type_id={int(device_type_id)}")
+    redirect_url = "/catalog/products/new?" + "&".join(redirect_params)
+
+    if errors:
+        for msg in errors[:5]:
+            _flash(request, msg, "error")
+        return RedirectResponse(redirect_url, status_code=302)
+
+    sales_name = text_values.get("sales_name") or None if "sales_name" in visible_fields else None
+    manufacturer_name = text_values.get("manufacturer_name") or None if "manufacturer_name" in visible_fields else None
+    sku = text_values.get("sku") or None if "sku" in visible_fields else None
+    description = text_values.get("description") or None if "description" in visible_fields else None
 
     p = Product(
         name=name,
-        manufacturer=(form.get("manufacturer") or "").strip() or None,
-        sku=(form.get("sku") or "").strip() or None,
+        item_type=item_type,
+        manufacturer=manufacturer_row.name if manufacturer_row else None,
+        manufacturer_id=manufacturer_id,
+        material_no=material_no,
+        sales_name=sales_name,
+        manufacturer_name=manufacturer_name,
+        sku=sku,
         ean=ean,
-        track_mode=form.get("track_mode") or "serial",
-        description=(form.get("description") or "").strip() or None,
-        area_id=int(form.get("area_id") or 0) or None,
-        device_kind_id=int(form.get("device_kind_id") or 0) or None,
-        device_type_id=int(form.get("device_type_id") or 0) or None,
+        track_mode="quantity",
+        description=description,
+        area_id=area_id,
+        device_kind_id=device_kind_id,
+        device_type_id=device_type_id,
         active=True,
     )
     db.add(p)
     db.flush()
+    for a in attrs:
+        value_text = parsed_values.get(a.id, "")
+        if value_text != "":
+            db.add(ProductAttributeValue(product_id=p.id, attribute_id=a.id, value_text=value_text))
     write_product_outbox_event(db, p, event_type="ProductCreated")
     db.commit()
     _flash(request, "Produkt angelegt.", "info")
@@ -1841,6 +2953,13 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
     areas = db.query(Area).order_by(Area.name.asc()).all()
     kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
     types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
+    manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc()).all()
+    if p.manufacturer_id and all(int(m.id) != int(p.manufacturer_id) for m in manufacturers):
+        selected_manufacturer = db.get(Manufacturer, p.manufacturer_id)
+        if selected_manufacturer:
+            manufacturers.append(selected_manufacturer)
+            manufacturers = sorted(manufacturers, key=lambda m: (str(m.name or "").lower(), m.id))
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
 
     attrs = _applicable_attributes(db, p.device_kind_id, p.device_type_id)
     val_map = {v.attribute_id: v.value_text for v in p.attribute_values}
@@ -1869,6 +2988,8 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
         .all()
     )
     bins = db.query(WarehouseBin).order_by(WarehouseBin.warehouse_id.asc(), WarehouseBin.code.asc()).all()
+    selected_item_type = _normalize_item_type(p.item_type, fallback="material")
+    form_schema = _product_form_schema(db, selected_item_type)
 
     return templates.TemplateResponse(
         "catalog/product_form.html",
@@ -1879,6 +3000,9 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
             areas=areas,
             kinds=kinds,
             types=types,
+            manufacturers=manufacturers,
+            item_types=ITEM_TYPE_CHOICES,
+            item_type_labels=ITEM_TYPE_LABELS,
             warehouses=warehouses,
             attrs=attrs,
             attrs_grouped=attrs_grouped,
@@ -1887,6 +3011,9 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
             options_map=options_map,
             min_rows=min_rows,
             bins=bins,
+            selected_item_type=selected_item_type,
+            item_type_locked=True,
+            form_schema=form_schema,
         ),
     )
 
@@ -1897,23 +3024,82 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
     if not p:
         raise HTTPException(status_code=404)
     form = await request.form()
-    try:
-        ean = normalize_ean(form.get("ean"))
-    except ValueError as e:
-        _flash(request, f"Ungültige EAN: {e}", "error")
+    item_type = _normalize_item_type(p.item_type, fallback="material")
+    visible_fields, required_fields = _product_form_key_sets(db, item_type)
+
+    text_values: dict[str, str] = {}
+    select_values: dict[str, int | None] = {}
+    errors: list[str] = []
+
+    for key in visible_fields:
+        if key in SELECT_FIELD_KEYS:
+            value, exists = _parse_product_select_id(db, key, form.get(key))
+            select_values[key] = value if exists else None
+            if key in required_fields and not value:
+                errors.append(f"Feld '{_product_field_label(key)}' ist erforderlich.")
+            elif value and not exists:
+                errors.append(f"Ungültiger Wert für Feld '{_product_field_label(key)}'.")
+            continue
+        text_values[key] = (form.get(key) or "").strip()
+        if key in required_fields and not text_values[key]:
+            errors.append(f"Feld '{_product_field_label(key)}' ist erforderlich.")
+
+    updated_name = text_values.get("name", "") if "name" in visible_fields else p.name
+    if item_type == "appliance" and (("name" not in visible_fields) or not updated_name):
+        updated_name = text_values.get("sales_name", "") or text_values.get("material_no", "") or (p.name or "")
+    if not updated_name:
+        errors.append("Feld 'Bezeichnung' ist erforderlich.")
+
+    manufacturer_id = select_values.get("manufacturer_id") if "manufacturer_id" in visible_fields else p.manufacturer_id
+    manufacturer_row = db.get(Manufacturer, manufacturer_id) if manufacturer_id else None
+    if item_type == "appliance" and "manufacturer_id" in visible_fields and not manufacturer_id:
+        errors.append("Für Großgeräte ist ein Hersteller Pflicht.")
+
+    material_no = text_values.get("material_no") or None if "material_no" in visible_fields else p.material_no
+    if "material_no" in visible_fields and material_no:
+        existing_material = (
+            db.query(Product)
+            .filter(func.lower(Product.material_no) == material_no.lower(), Product.id != p.id)
+            .one_or_none()
+        )
+        if existing_material:
+            errors.append("Materialnummer existiert bereits.")
+
+    ean = p.ean
+    if "ean" in visible_fields:
+        try:
+            ean = normalize_ean(text_values.get("ean"))
+        except ValueError as e:
+            errors.append(f"Ungültige EAN: {e}")
+
+    if errors:
+        for msg in errors[:5]:
+            _flash(request, msg, "error")
         return RedirectResponse(f"/catalog/products/{product_id}/edit", status_code=302)
-    p.name = (form.get("name") or "").strip()
-    if not p.name:
-        _flash(request, "Name ist Pflicht.", "error")
-        return RedirectResponse(f"/catalog/products/{product_id}/edit", status_code=302)
-    p.manufacturer = (form.get("manufacturer") or "").strip() or None
-    p.sku = (form.get("sku") or "").strip() or None
-    p.ean = ean
-    p.track_mode = form.get("track_mode") or p.track_mode
-    p.description = (form.get("description") or "").strip() or None
-    p.area_id = int(form.get("area_id") or 0) or None
-    p.device_kind_id = int(form.get("device_kind_id") or 0) or None
-    p.device_type_id = int(form.get("device_type_id") or 0) or None
+
+    p.name = updated_name
+    if "manufacturer_id" in visible_fields:
+        p.manufacturer_id = manufacturer_id
+        p.manufacturer = manufacturer_row.name if manufacturer_row else None
+    if "material_no" in visible_fields:
+        p.material_no = material_no
+    if "sales_name" in visible_fields:
+        p.sales_name = text_values.get("sales_name") or None
+    if "manufacturer_name" in visible_fields:
+        p.manufacturer_name = text_values.get("manufacturer_name") or None
+    if "sku" in visible_fields:
+        p.sku = text_values.get("sku") or None
+    if "ean" in visible_fields:
+        p.ean = ean
+    if "description" in visible_fields:
+        p.description = text_values.get("description") or None
+    if "area_id" in visible_fields:
+        p.area_id = select_values.get("area_id")
+    if "device_kind_id" in visible_fields:
+        p.device_kind_id = select_values.get("device_kind_id")
+    if "device_type_id" in visible_fields:
+        p.device_type_id = select_values.get("device_type_id")
+    p.track_mode = "quantity"
 
     attrs = _applicable_attributes(db, p.device_kind_id, p.device_type_id)
     parsed_values, parse_errors = _parse_product_attribute_values(form, attrs)
@@ -1945,6 +3131,47 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
     db.commit()
     _flash(request, "Produkt gespeichert.", "info")
     return RedirectResponse(f"/catalog/products/{p.id}/edit", status_code=302)
+
+
+@app.post("/catalog/products/{product_id}/delete")
+def product_delete(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+    if not bool(product.active):
+        _flash(request, "Produkt ist bereits gelöscht.", "info")
+        return RedirectResponse("/catalog/products", status_code=302)
+
+    non_zero_balances = (
+        db.query(StockBalance)
+        .filter(StockBalance.product_id == product_id, StockBalance.quantity != 0)
+        .count()
+    )
+    serials_in_stock = (
+        db.query(StockSerial)
+        .filter(StockSerial.product_id == product_id, StockSerial.status.in_(("in_stock", "reserved")))
+        .count()
+    )
+    active_reservations = (
+        db.query(Reservation)
+        .filter(Reservation.product_id == product_id, Reservation.status == "active")
+        .count()
+    )
+    if non_zero_balances or serials_in_stock or active_reservations:
+        _flash(
+            request,
+            "Produkt kann nicht gelöscht werden: Bestand ist nicht 0 oder es gibt aktive Reservierungen.",
+            "error",
+        )
+        return RedirectResponse(f"/catalog/products/{product_id}/edit", status_code=302)
+
+    product.active = False
+    db.add(product)
+    db.flush()
+    write_product_outbox_event(db, product, event_type="ProductDeleted")
+    db.commit()
+    _flash(request, "Produkt aus dem Katalog gelöscht.", "info")
+    return RedirectResponse("/catalog/products", status_code=302)
 
 
 @app.post("/catalog/products/{product_id}/min_stock/set")
@@ -1989,6 +3216,1094 @@ async def product_min_stock_set(product_id: int, request: Request, user=Depends(
     db.commit()
     _flash(request, "Mindestbestand gespeichert.", "info")
     return RedirectResponse(f"/catalog/products/{product_id}/edit", status_code=302)
+
+
+# ---------------------------
+# Catalog: Product links/sets
+# ---------------------------
+
+@app.get("/catalog/products/{product_id}", response_class=HTMLResponse)
+def product_detail_get(
+    product_id: int,
+    request: Request,
+    user=Depends(require_user),
+    q: str = "",
+    db: Session = Depends(db_session),
+):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+
+    links = (
+        db.query(ProductLink)
+        .filter(ProductLink.a_product_id == product_id, ProductLink.link_type == "kompatibel")
+        .order_by(ProductLink.id.desc())
+        .all()
+    )
+    linked_ids = [int(l.b_product_id) for l in links]
+    linked_products: dict[int, Product] = {}
+    if linked_ids:
+        linked_products = {p.id: p for p in db.query(Product).filter(Product.id.in_(linked_ids)).all()}
+
+    set_rows = (
+        db.query(ProductSet)
+        .join(ProductSetItem, ProductSetItem.set_id == ProductSet.id)
+        .filter(ProductSetItem.product_id == product_id)
+        .order_by(ProductSet.id.desc())
+        .all()
+    )
+
+    candidates_q = db.query(Product).filter(Product.active == True, Product.id != product_id)
+    search_filter = build_product_search_filter(q)
+    if search_filter is not None:
+        candidates_q = candidates_q.filter(search_filter)
+    candidate_products = candidates_q.order_by(Product.name.asc()).limit(250).all()
+    loadbee = _loadbee_settings(db, include_secret=True)
+    loadbee_api_key = str(loadbee.get("api_key") or "")
+    loadbee_enabled = bool(loadbee.get("enabled")) and bool(loadbee_api_key)
+    loadbee_locales = str(loadbee.get("locales") or "de_DE")
+    loadbee_debug = bool(loadbee.get("debug"))
+    loadbee_load_mode = str(loadbee.get("load_mode") or "on_demand")
+    loadbee_auto_open = (request.query_params.get("show") or "").strip().lower() == "hersteller"
+    loadbee_gtin = _normalize_loadbee_gtin(product.ean)
+
+    return templates.TemplateResponse(
+        "catalog/product_detail.html",
+        _ctx(
+            request,
+            user=user,
+            product=product,
+            links=links,
+            linked_products=linked_products,
+            set_rows=set_rows,
+            candidate_products=candidate_products,
+            q=q,
+            item_type_labels=ITEM_TYPE_LABELS,
+            loadbee_enabled=loadbee_enabled,
+            loadbee_api_key=loadbee_api_key,
+            loadbee_locales=loadbee_locales,
+            loadbee_debug=loadbee_debug,
+            loadbee_load_mode=loadbee_load_mode,
+            loadbee_auto_open=loadbee_auto_open,
+            loadbee_gtin=loadbee_gtin,
+        ),
+    )
+
+
+@app.post("/catalog/products/{product_id}/links/add")
+async def product_link_add(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    target_id = int(form.get("b_product_id") or 0)
+    note = (form.get("note") or "").strip() or None
+    if not target_id:
+        _flash(request, "Bitte kompatibles Gerät auswählen.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    if target_id == product_id:
+        _flash(request, "Ein Produkt kann nicht mit sich selbst verknüpft werden.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    target = db.get(Product, target_id)
+    if not target:
+        _flash(request, "Produkt nicht gefunden.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+    inserted = 0
+    exists_ab = (
+        db.query(ProductLink)
+        .filter(
+            ProductLink.a_product_id == product_id,
+            ProductLink.b_product_id == target_id,
+            ProductLink.link_type == "kompatibel",
+        )
+        .count()
+        > 0
+    )
+    if not exists_ab:
+        db.add(ProductLink(a_product_id=product_id, b_product_id=target_id, link_type="kompatibel", note=note))
+        inserted += 1
+
+    exists_ba = (
+        db.query(ProductLink)
+        .filter(
+            ProductLink.a_product_id == target_id,
+            ProductLink.b_product_id == product_id,
+            ProductLink.link_type == "kompatibel",
+        )
+        .count()
+        > 0
+    )
+    if not exists_ba:
+        db.add(ProductLink(a_product_id=target_id, b_product_id=product_id, link_type="kompatibel", note=note))
+        inserted += 1
+
+    if inserted:
+        db.commit()
+        _flash(request, "Kompatibilität gespeichert.", "info")
+    else:
+        _flash(request, "Kompatibilität existiert bereits.", "info")
+    return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+
+@app.post("/catalog/products/{product_id}/links/{link_id}/delete")
+def product_link_delete(product_id: int, link_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    link = db.get(ProductLink, link_id)
+    if not link or link.a_product_id != product_id:
+        raise HTTPException(status_code=404)
+    target_id = int(link.b_product_id)
+    db.query(ProductLink).filter(
+        ProductLink.link_type == "kompatibel",
+        or_(
+            and_(ProductLink.a_product_id == product_id, ProductLink.b_product_id == target_id),
+            and_(ProductLink.a_product_id == target_id, ProductLink.b_product_id == product_id),
+        ),
+    ).delete(synchronize_session=False)
+    db.commit()
+    _flash(request, "Kompatibilität entfernt.", "info")
+    return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+
+@app.get("/catalog/products/{product_id}/matches", response_class=HTMLResponse)
+def product_matches_get(product_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+
+    link_rows = (
+        db.query(ProductLink)
+        .filter(
+            ProductLink.link_type == "kompatibel",
+            or_(ProductLink.a_product_id == product_id, ProductLink.b_product_id == product_id),
+        )
+        .order_by(ProductLink.id.desc())
+        .all()
+    )
+    compatible_ids: set[int] = set()
+    for row in link_rows:
+        if row.a_product_id == product_id:
+            compatible_ids.add(int(row.b_product_id))
+        elif row.b_product_id == product_id:
+            compatible_ids.add(int(row.a_product_id))
+
+    compatible_products: list[Product] = []
+    if compatible_ids:
+        compatible_products = (
+            db.query(Product)
+            .filter(Product.id.in_(compatible_ids))
+            .order_by(Product.name.asc())
+            .all()
+        )
+
+    set_rows = (
+        db.query(ProductSet)
+        .join(ProductSetItem, ProductSetItem.set_id == ProductSet.id)
+        .filter(ProductSetItem.product_id == product_id)
+        .order_by(ProductSet.id.desc())
+        .all()
+    )
+
+    return templates.TemplateResponse(
+        "catalog/product_matches.html",
+        _ctx(
+            request,
+            user=user,
+            product=product,
+            compatible_products=compatible_products,
+            set_rows=set_rows,
+            item_type_labels=ITEM_TYPE_LABELS,
+        ),
+    )
+
+
+@app.get("/catalog/sets", response_class=HTMLResponse)
+def sets_list(request: Request, user=Depends(require_user), q: str = "", db: Session = Depends(db_session)):
+    query = db.query(ProductSet)
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.outerjoin(ProductSetItem, ProductSetItem.set_id == ProductSet.id).outerjoin(
+            Product, Product.id == ProductSetItem.product_id
+        )
+        conds = [
+            ProductSet.set_number.ilike(like),
+            ProductSet.name.ilike(like),
+            ProductSet.manufacturer.ilike(like),
+        ]
+        product_filter = build_product_search_filter(q)
+        if product_filter is not None:
+            conds.append(product_filter)
+        query = query.filter(or_(*conds)).distinct()
+
+    rows = query.order_by(ProductSet.id.desc()).limit(300).all()
+    set_ids = [r.id for r in rows]
+    count_map: dict[int, int] = {}
+    if set_ids:
+        raw_counts = (
+            db.query(ProductSetItem.set_id, func.count(ProductSetItem.id))
+            .filter(ProductSetItem.set_id.in_(set_ids))
+            .group_by(ProductSetItem.set_id)
+            .all()
+        )
+        count_map = {int(set_id): int(cnt) for set_id, cnt in raw_counts}
+
+    return templates.TemplateResponse(
+        "catalog/sets_list.html",
+        _ctx(request, user=user, rows=rows, count_map=count_map, q=q),
+    )
+
+
+@app.post("/catalog/sets/new")
+async def sets_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    set_number = (form.get("set_number") or "").strip()
+    if not set_number:
+        _flash(request, "Set-Nummer ist Pflicht.", "error")
+        return RedirectResponse("/catalog/sets", status_code=302)
+    row = ProductSet(
+        set_number=set_number,
+        name=(form.get("name") or "").strip() or None,
+        manufacturer=(form.get("manufacturer") or "").strip() or None,
+    )
+    db.add(row)
+    db.commit()
+    _flash(request, "Set angelegt.", "info")
+    return RedirectResponse(f"/catalog/sets/{row.id}", status_code=302)
+
+
+@app.get("/catalog/sets/{set_id}", response_class=HTMLResponse)
+def set_detail_get(set_id: int, request: Request, user=Depends(require_user), q: str = "", db: Session = Depends(db_session)):
+    row = db.get(ProductSet, set_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    items = (
+        db.query(ProductSetItem)
+        .filter(ProductSetItem.set_id == set_id)
+        .order_by(ProductSetItem.id.asc())
+        .all()
+    )
+    product_ids = [it.product_id for it in items]
+    products_map: dict[int, Product] = {}
+    if product_ids:
+        products_map = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()}
+
+    candidates_q = db.query(Product).filter(Product.active == True)
+    search_filter = build_product_search_filter(q)
+    if search_filter is not None:
+        candidates_q = candidates_q.filter(search_filter)
+    candidates = candidates_q.order_by(Product.name.asc()).limit(300).all()
+
+    return templates.TemplateResponse(
+        "catalog/set_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            items=items,
+            products_map=products_map,
+            candidates=candidates,
+            q=q,
+            item_type_labels=ITEM_TYPE_LABELS,
+        ),
+    )
+
+
+@app.post("/catalog/sets/{set_id}/items/add")
+async def set_item_add(set_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(ProductSet, set_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    product_id = int(form.get("product_id") or 0)
+    if not product_id:
+        _flash(request, "Bitte Produkt auswählen.", "error")
+        return RedirectResponse(f"/catalog/sets/{set_id}", status_code=302)
+    product = db.get(Product, product_id)
+    if not product:
+        _flash(request, "Produkt nicht gefunden.", "error")
+        return RedirectResponse(f"/catalog/sets/{set_id}", status_code=302)
+
+    exists_item = (
+        db.query(ProductSetItem)
+        .filter(ProductSetItem.set_id == set_id, ProductSetItem.product_id == product_id)
+        .count()
+        > 0
+    )
+    if exists_item:
+        _flash(request, "Produkt ist bereits im Set.", "info")
+        return RedirectResponse(f"/catalog/sets/{set_id}", status_code=302)
+
+    db.add(ProductSetItem(set_id=set_id, product_id=product_id))
+    db.commit()
+    _flash(request, "Produkt zum Set hinzugefügt.", "info")
+    return RedirectResponse(f"/catalog/sets/{set_id}", status_code=302)
+
+
+@app.post("/catalog/sets/{set_id}/items/{item_id}/delete")
+def set_item_delete(set_id: int, item_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(ProductSetItem, item_id)
+    if not row or row.set_id != set_id:
+        raise HTTPException(status_code=404)
+    db.delete(row)
+    db.commit()
+    _flash(request, "Produkt aus Set entfernt.", "info")
+    return RedirectResponse(f"/catalog/sets/{set_id}", status_code=302)
+
+
+# ---------------------------
+# Stammdaten
+# ---------------------------
+
+@app.get("/stammdaten/hersteller", response_class=HTMLResponse)
+def manufacturer_list(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = db.query(Manufacturer).order_by(Manufacturer.active.desc(), Manufacturer.name.asc()).all()
+    return templates.TemplateResponse("stammdaten/hersteller_list.html", _ctx(request, user=user, rows=rows))
+
+
+@app.post("/stammdaten/hersteller/add")
+async def manufacturer_add(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        _flash(request, "Herstellername ist Pflicht.", "error")
+        return RedirectResponse("/stammdaten/hersteller", status_code=302)
+    exists = db.query(Manufacturer).filter(func.lower(Manufacturer.name) == name.lower()).count() > 0
+    if exists:
+        _flash(request, "Hersteller existiert bereits.", "error")
+        return RedirectResponse("/stammdaten/hersteller", status_code=302)
+    row = Manufacturer(
+        name=name,
+        website=(form.get("website") or "").strip() or None,
+        phone=(form.get("phone") or "").strip() or None,
+        email=(form.get("email") or "").strip() or None,
+        active=form.get("active") == "on",
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/hersteller", status_code=302)
+    _flash(request, "Hersteller angelegt.", "info")
+    return RedirectResponse("/stammdaten/hersteller", status_code=302)
+
+
+@app.get("/stammdaten/hersteller/{manufacturer_id}/edit", response_class=HTMLResponse)
+def manufacturer_edit_get(manufacturer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Manufacturer, manufacturer_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse("stammdaten/hersteller_edit.html", _ctx(request, user=user, row=row))
+
+
+@app.post("/stammdaten/hersteller/{manufacturer_id}/edit")
+async def manufacturer_edit_post(manufacturer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Manufacturer, manufacturer_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        _flash(request, "Herstellername ist Pflicht.", "error")
+        return RedirectResponse(f"/stammdaten/hersteller/{manufacturer_id}/edit", status_code=302)
+    exists = (
+        db.query(Manufacturer)
+        .filter(func.lower(Manufacturer.name) == name.lower(), Manufacturer.id != manufacturer_id)
+        .count()
+        > 0
+    )
+    if exists:
+        _flash(request, "Hersteller existiert bereits.", "error")
+        return RedirectResponse(f"/stammdaten/hersteller/{manufacturer_id}/edit", status_code=302)
+    row.name = name
+    row.website = (form.get("website") or "").strip() or None
+    row.phone = (form.get("phone") or "").strip() or None
+    row.email = (form.get("email") or "").strip() or None
+    row.active = form.get("active") == "on"
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse(f"/stammdaten/hersteller/{manufacturer_id}/edit", status_code=302)
+    _flash(request, "Hersteller gespeichert.", "info")
+    return RedirectResponse("/stammdaten/hersteller", status_code=302)
+
+
+@app.post("/stammdaten/hersteller/{manufacturer_id}/toggle")
+def manufacturer_toggle(manufacturer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Manufacturer, manufacturer_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    row.active = not bool(row.active)
+    db.add(row)
+    db.commit()
+    _flash(request, f"Hersteller {'aktiviert' if row.active else 'deaktiviert'}.", "info")
+    return RedirectResponse("/stammdaten/hersteller", status_code=302)
+
+
+@app.get("/stammdaten/lieferanten", response_class=HTMLResponse)
+def supplier_list(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = db.query(Supplier).order_by(Supplier.active.desc(), Supplier.name.asc()).all()
+    return templates.TemplateResponse("stammdaten/lieferanten_list.html", _ctx(request, user=user, rows=rows))
+
+
+@app.post("/stammdaten/lieferanten/add")
+async def supplier_add(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        _flash(request, "Lieferantenname ist Pflicht.", "error")
+        return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+    exists = db.query(Supplier).filter(func.lower(Supplier.name) == name.lower()).count() > 0
+    if exists:
+        _flash(request, "Lieferant existiert bereits.", "error")
+        return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+    row = Supplier(
+        name=name,
+        address=(form.get("address") or "").strip() or None,
+        phone=(form.get("phone") or "").strip() or None,
+        email=(form.get("email") or "").strip() or None,
+        website=(form.get("website") or "").strip() or None,
+        note=(form.get("note") or "").strip() or None,
+        active=form.get("active") == "on",
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+    _flash(request, "Lieferant angelegt.", "info")
+    return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+
+
+@app.get("/stammdaten/lieferanten/{supplier_id}/edit", response_class=HTMLResponse)
+def supplier_edit_get(supplier_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Supplier, supplier_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse("stammdaten/lieferanten_edit.html", _ctx(request, user=user, row=row))
+
+
+@app.post("/stammdaten/lieferanten/{supplier_id}/edit")
+async def supplier_edit_post(supplier_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Supplier, supplier_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        _flash(request, "Lieferantenname ist Pflicht.", "error")
+        return RedirectResponse(f"/stammdaten/lieferanten/{supplier_id}/edit", status_code=302)
+    exists = db.query(Supplier).filter(func.lower(Supplier.name) == name.lower(), Supplier.id != supplier_id).count() > 0
+    if exists:
+        _flash(request, "Lieferant existiert bereits.", "error")
+        return RedirectResponse(f"/stammdaten/lieferanten/{supplier_id}/edit", status_code=302)
+    row.name = name
+    row.address = (form.get("address") or "").strip() or None
+    row.phone = (form.get("phone") or "").strip() or None
+    row.email = (form.get("email") or "").strip() or None
+    row.website = (form.get("website") or "").strip() or None
+    row.note = (form.get("note") or "").strip() or None
+    row.active = form.get("active") == "on"
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse(f"/stammdaten/lieferanten/{supplier_id}/edit", status_code=302)
+    _flash(request, "Lieferant gespeichert.", "info")
+    return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+
+
+@app.post("/stammdaten/lieferanten/{supplier_id}/toggle")
+def supplier_toggle(supplier_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Supplier, supplier_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    row.active = not bool(row.active)
+    db.add(row)
+    db.commit()
+    _flash(request, f"Lieferant {'aktiviert' if row.active else 'deaktiviert'}.", "info")
+    return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+
+
+@app.get("/stammdaten/lieferanten/{supplier_id}", response_class=HTMLResponse)
+def supplier_detail(supplier_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Supplier, supplier_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    tx_rows = (
+        db.query(InventoryTransaction)
+        .filter(InventoryTransaction.tx_type == "receipt", InventoryTransaction.supplier_id == supplier_id)
+        .order_by(InventoryTransaction.created_at.desc(), InventoryTransaction.id.desc())
+        .limit(200)
+        .all()
+    )
+    product_ids = sorted({int(t.product_id) for t in tx_rows})
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+    warehouses = {w.id: w for w in db.query(Warehouse).all()}
+    condition_labels = _condition_label_map(db)
+    top_products_raw = (
+        db.query(InventoryTransaction.product_id, func.count(InventoryTransaction.id).label("cnt"))
+        .filter(InventoryTransaction.tx_type == "receipt", InventoryTransaction.supplier_id == supplier_id)
+        .group_by(InventoryTransaction.product_id)
+        .order_by(func.count(InventoryTransaction.id).desc())
+        .limit(50)
+        .all()
+    )
+    top_products: list[dict] = []
+    for product_id, cnt in top_products_raw:
+        product = products.get(int(product_id))
+        if not product:
+            continue
+        top_products.append({"product": product, "count": int(cnt or 0)})
+    return templates.TemplateResponse(
+        "stammdaten/lieferant_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            tx_rows=tx_rows,
+            products=products,
+            warehouses=warehouses,
+            condition_labels=condition_labels,
+            top_products=top_products,
+        ),
+    )
+
+
+@app.get("/stammdaten/zustaende", response_class=HTMLResponse)
+def condition_list(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = db.query(StockConditionDef).order_by(StockConditionDef.sort_order.asc(), StockConditionDef.code.asc()).all()
+    return templates.TemplateResponse("stammdaten/zustaende_list.html", _ctx(request, user=user, rows=rows))
+
+
+@app.post("/stammdaten/zustaende/add")
+async def condition_add(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    code = _sanitize_condition_code(form.get("code") or "")
+    label_de = (form.get("label_de") or "").strip()
+    try:
+        sort_order = int(form.get("sort_order") or 0)
+    except Exception:
+        sort_order = 0
+    active = form.get("active") == "on"
+    if not code or not label_de:
+        _flash(request, "Code und Bezeichnung sind Pflicht.", "error")
+        return RedirectResponse("/stammdaten/zustaende", status_code=302)
+    if db.get(StockConditionDef, code):
+        _flash(request, "Zustandscode existiert bereits.", "error")
+        return RedirectResponse("/stammdaten/zustaende", status_code=302)
+    row = StockConditionDef(code=code, label_de=label_de, sort_order=sort_order, active=active)
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/zustaende", status_code=302)
+    _flash(request, "Zustand angelegt.", "info")
+    return RedirectResponse("/stammdaten/zustaende", status_code=302)
+
+
+@app.get("/stammdaten/zustaende/{code}/edit", response_class=HTMLResponse)
+def condition_edit_get(code: str, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(StockConditionDef, code)
+    if not row:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse("stammdaten/zustaende_edit.html", _ctx(request, user=user, row=row))
+
+
+@app.post("/stammdaten/zustaende/{code}/edit")
+async def condition_edit_post(code: str, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(StockConditionDef, code)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    label_de = (form.get("label_de") or "").strip()
+    if not label_de:
+        _flash(request, "Bezeichnung ist Pflicht.", "error")
+        return RedirectResponse(f"/stammdaten/zustaende/{code}/edit", status_code=302)
+    row.label_de = label_de
+    try:
+        row.sort_order = int(form.get("sort_order") or 0)
+    except Exception:
+        row.sort_order = 0
+    row.active = form.get("active") == "on"
+    db.add(row)
+    db.commit()
+    _flash(request, "Zustand gespeichert.", "info")
+    return RedirectResponse("/stammdaten/zustaende", status_code=302)
+
+
+@app.post("/stammdaten/zustaende/{code}/toggle")
+def condition_toggle(code: str, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(StockConditionDef, code)
+    if not row:
+        raise HTTPException(status_code=404)
+    row.active = not bool(row.active)
+    db.add(row)
+    db.commit()
+    _flash(request, f"Zustand {'aktiviert' if row.active else 'deaktiviert'}.", "info")
+    return RedirectResponse("/stammdaten/zustaende", status_code=302)
+
+
+@app.get("/stammdaten/formularregeln", response_class=HTMLResponse)
+def formularregeln_get(
+    request: Request,
+    user=Depends(require_admin),
+    item_type: str = "appliance",
+    db: Session = Depends(db_session),
+):
+    selected_item_type = _normalize_item_type(item_type, fallback="appliance")
+    rows = _item_type_field_rules(db, selected_item_type)
+    by_key = {str(r.field_key): r for r in rows}
+    rule_rows: list[dict] = []
+    for idx, field in enumerate(FORM_FIELDS, start=1):
+        key = str(field["key"])
+        row = by_key.get(key)
+        rule_rows.append(
+            {
+                "key": key,
+                "label": str(field["label_de"]),
+                "visible": bool(getattr(row, "visible", False)),
+                "required": bool(getattr(row, "required", False)),
+                "sort_order": int(getattr(row, "sort_order", idx * 10) or idx * 10),
+                "section": str(getattr(row, "section", None) or field.get("section_default") or "Identifikation"),
+                "help_text_de": str(getattr(row, "help_text_de", "") or ""),
+            }
+        )
+    rule_rows.sort(key=lambda r: (str(r["section"]).lower(), int(r["sort_order"]), str(r["label"]).lower()))
+    return templates.TemplateResponse(
+        "stammdaten/formularregeln.html",
+        _ctx(
+            request,
+            user=user,
+            item_types=ITEM_TYPE_CHOICES,
+            item_type_labels=ITEM_TYPE_LABELS,
+            selected_item_type=selected_item_type,
+            rows=rule_rows,
+            section_choices=SECTION_CHOICES,
+        ),
+    )
+
+
+@app.post("/stammdaten/formularregeln/save")
+async def formularregeln_save(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    item_type = _normalize_item_type(form.get("item_type"), fallback="appliance")
+    rows = _item_type_field_rules(db, item_type)
+    by_key = {str(r.field_key): r for r in rows}
+
+    visible_after: set[str] = set()
+    for idx, field in enumerate(FORM_FIELDS, start=1):
+        key = str(field["key"])
+        row = by_key.get(key)
+        if row is None:
+            row = ItemTypeFieldRule(item_type=item_type, field_key=key)
+        row.visible = form.get(f"visible_{key}") == "on"
+        row.required = row.visible and form.get(f"required_{key}") == "on"
+        try:
+            row.sort_order = int(form.get(f"sort_order_{key}") or idx * 10)
+        except Exception:
+            row.sort_order = idx * 10
+        section = (form.get(f"section_{key}") or "").strip()
+        if section not in SECTION_CHOICES:
+            section = str(field.get("section_default") or "Identifikation")
+        row.section = section
+        row.help_text_de = (form.get(f"help_text_{key}") or "").strip() or None
+        if row.visible:
+            visible_after.add(key)
+        db.add(row)
+
+    required_visible = _minimum_visible_fields(item_type)
+    missing = [key for key in sorted(required_visible) if key not in visible_after]
+    if missing:
+        labels = ", ".join(_product_field_label(key) for key in missing)
+        _flash(request, f"Mindestens folgende Felder müssen sichtbar bleiben: {labels}.", "error")
+        return RedirectResponse(f"/stammdaten/formularregeln?item_type={item_type}", status_code=302)
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse(f"/stammdaten/formularregeln?item_type={item_type}", status_code=302)
+
+    _flash(request, "Formularregeln gespeichert.", "info")
+    return RedirectResponse(f"/stammdaten/formularregeln?item_type={item_type}", status_code=302)
+
+
+@app.get("/stammdaten/ui-layout", response_class=HTMLResponse)
+def stammdaten_ui_layout_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form_fields_by_item_type = _product_form_fields_by_item_type(db)
+    products_list_column_keys = _sanitize_table_column_keys(
+        _get_ui_pref_json(db, UI_PREF_KEY_PRODUCTS_LIST_COLUMNS),
+        PRODUCTS_LIST_COLUMN_SPECS,
+    )
+    stock_column_keys = _sanitize_table_column_keys(
+        _get_ui_pref_json(db, UI_PREF_KEY_STOCK_COLUMNS),
+        STOCK_COLUMN_SPECS,
+    )
+    return templates.TemplateResponse(
+        "stammdaten/ui_layout.html",
+        _ctx(
+            request,
+            user=user,
+            item_types=ITEM_TYPE_CHOICES,
+            item_type_labels=ITEM_TYPE_LABELS,
+            product_form_field_specs=PRODUCT_FORM_FIELD_SPECS,
+            form_fields_by_item_type=form_fields_by_item_type,
+            products_list_columns=_column_setting_rows(PRODUCTS_LIST_COLUMN_SPECS, products_list_column_keys),
+            stock_columns=_column_setting_rows(STOCK_COLUMN_SPECS, stock_column_keys),
+        ),
+    )
+
+
+@app.post("/stammdaten/ui-layout")
+async def stammdaten_ui_layout_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_fields_by_item_type: dict[str, list[str]] = {}
+    for item_type in ITEM_TYPE_CHOICES:
+        selected: list[str] = []
+        for spec in PRODUCT_FORM_FIELD_SPECS:
+            key = str(spec["key"])
+            if form.get(f"pf_{item_type}_{key}") == "on":
+                selected.append(key)
+        form_fields_by_item_type[item_type] = selected
+
+    product_columns = _parse_column_selection(form, PRODUCTS_LIST_COLUMN_SPECS, "pl")
+    stock_columns = _parse_column_selection(form, STOCK_COLUMN_SPECS, "st")
+
+    _set_ui_pref_json(
+        db,
+        UI_PREF_KEY_PRODUCT_FORM_FIELDS,
+        _sanitize_product_form_fields_by_item_type(form_fields_by_item_type),
+    )
+    _set_ui_pref_json(db, UI_PREF_KEY_PRODUCTS_LIST_COLUMNS, product_columns)
+    _set_ui_pref_json(db, UI_PREF_KEY_STOCK_COLUMNS, stock_columns)
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/ui-layout", status_code=302)
+
+    _flash(request, "UI-Stammdaten gespeichert.", "info")
+    return RedirectResponse("/stammdaten/ui-layout", status_code=302)
+
+
+# ---------------------------
+# Reparaturen
+# ---------------------------
+
+@app.get("/inventory/reparaturen", response_class=HTMLResponse)
+def repair_list(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    rows = (
+        db.query(RepairOrder)
+        .filter(RepairOrder.status.in_(("open", "in_repair", "returned")))
+        .order_by(RepairOrder.id.desc())
+        .limit(300)
+        .all()
+    )
+    suppliers = {s.id: s for s in db.query(Supplier).all()}
+    line_counts_raw = (
+        db.query(RepairOrderLine.repair_order_id, func.count(RepairOrderLine.id))
+        .group_by(RepairOrderLine.repair_order_id)
+        .all()
+    )
+    line_counts = {int(order_id): int(cnt) for order_id, cnt in line_counts_raw}
+    return templates.TemplateResponse(
+        "inventory/reparaturen_list.html",
+        _ctx(request, user=user, rows=rows, suppliers=suppliers, line_counts=line_counts),
+    )
+
+
+@app.get("/inventory/reparaturen/new", response_class=HTMLResponse)
+def repair_new_get(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc()).all()
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    return templates.TemplateResponse(
+        "inventory/reparatur_new.html",
+        _ctx(
+            request,
+            user=user,
+            suppliers=suppliers,
+            products=products,
+            warehouses=warehouses,
+            condition_defs=condition_defs,
+            default_condition_in="GEBRAUCHT",
+            default_condition_out="B_WARE",
+        ),
+    )
+
+
+@app.post("/inventory/reparaturen/new")
+async def repair_new_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    form = await request.form()
+    supplier_input = form.get("supplier_id")
+    supplier_id, _supplier = _parse_supplier_id(db, supplier_input, active_only=True)
+    if supplier_input and not supplier_id:
+        _flash(request, "Lieferant wurde nicht gefunden oder ist inaktiv.", "error")
+        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+
+    try:
+        product_id = int(form.get("product_id") or 0)
+    except Exception:
+        product_id = 0
+    try:
+        warehouse_from_id = int(form.get("warehouse_from_id") or 0)
+    except Exception:
+        warehouse_from_id = 0
+    try:
+        warehouse_to_id = int(form.get("warehouse_to_id") or 0) or None
+    except Exception:
+        warehouse_to_id = None
+    try:
+        qty = int(form.get("qty") or 0)
+    except Exception:
+        qty = 0
+    condition_in = _condition_code_from_input(form.get("condition_in"))
+    condition_out = _condition_code_from_input(form.get("condition_out"))
+
+    if not product_id or not db.get(Product, product_id):
+        _flash(request, "Produkt fehlt.", "error")
+        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+    if not warehouse_from_id or not db.get(Warehouse, warehouse_from_id):
+        _flash(request, "Quell-Lager fehlt.", "error")
+        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+    if warehouse_to_id and not db.get(Warehouse, warehouse_to_id):
+        _flash(request, "Ziellager wurde nicht gefunden.", "error")
+        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+    if qty <= 0:
+        _flash(request, "Menge muss größer 0 sein.", "error")
+        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+    if not _condition_exists(db, condition_in, active_only=False):
+        _flash(request, "Eingangs-Zustand ist ungültig.", "error")
+        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+    if not _condition_exists(db, condition_out, active_only=False):
+        _flash(request, "Ausgangs-Zustand ist ungültig.", "error")
+        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+
+    order = RepairOrder(
+        supplier_id=supplier_id,
+        status="open",
+        reference=(form.get("reference") or "").strip() or None,
+        note=(form.get("note") or "").strip() or None,
+    )
+    db.add(order)
+    db.flush()
+    db.add(
+        RepairOrderLine(
+            repair_order_id=order.id,
+            product_id=product_id,
+            qty=qty,
+            warehouse_from_id=warehouse_from_id,
+            warehouse_to_id=warehouse_to_id,
+            condition_in=condition_in,
+            condition_out=condition_out,
+        )
+    )
+    db.commit()
+    _flash(request, f"Reparaturauftrag #{order.id} angelegt.", "info")
+    return RedirectResponse(f"/inventory/reparaturen/{order.id}", status_code=302)
+
+
+@app.get("/inventory/reparaturen/{repair_id}", response_class=HTMLResponse)
+def repair_detail_get(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    lines = (
+        db.query(RepairOrderLine)
+        .filter(RepairOrderLine.repair_order_id == repair_id)
+        .order_by(RepairOrderLine.id.asc())
+        .all()
+    )
+    product_ids = sorted({int(line.product_id) for line in lines})
+    warehouse_ids = sorted({int(line.warehouse_from_id) for line in lines} | {int(line.warehouse_to_id or 0) for line in lines if line.warehouse_to_id})
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+    warehouses = {w.id: w for w in db.query(Warehouse).filter(Warehouse.id.in_(warehouse_ids)).all()} if warehouse_ids else {}
+    supplier = db.get(Supplier, order.supplier_id) if order.supplier_id else None
+    condition_labels = _condition_label_map(db)
+    return templates.TemplateResponse(
+        "inventory/reparatur_detail.html",
+        _ctx(
+            request,
+            user=user,
+            order=order,
+            lines=lines,
+            products=products,
+            warehouses=warehouses,
+            supplier=supplier,
+            condition_labels=condition_labels,
+        ),
+    )
+
+
+@app.post("/inventory/reparaturen/{repair_id}/in_repair")
+def repair_in_repair(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    if order.status != "open":
+        _flash(request, "Nur offene Reparaturaufträge können eingebucht werden.", "error")
+        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+    lines = db.query(RepairOrderLine).filter(RepairOrderLine.repair_order_id == repair_id).all()
+    if not lines:
+        _flash(request, "Reparaturauftrag enthält keine Positionen.", "error")
+        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+    repair_wh = _ensure_repair_warehouse(db)
+    if not _condition_exists(db, "IN_REPARATUR", active_only=False):
+        _flash(request, "Zustand IN_REPARATUR fehlt in den Stammdaten.", "error")
+        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+    try:
+        for line in lines:
+            qty = int(line.qty or 0)
+            if qty <= 0:
+                raise ValueError("Menge muss größer 0 sein.")
+            condition_in = _condition_code_from_input(line.condition_in)
+            if not _condition_exists(db, condition_in, active_only=False):
+                raise ValueError(f"Zustand fehlt: {condition_in}")
+            available = int(
+                db.query(func.coalesce(func.sum(StockBalance.quantity), 0))
+                .filter(
+                    StockBalance.product_id == line.product_id,
+                    StockBalance.warehouse_id == line.warehouse_from_id,
+                    StockBalance.condition == condition_in,
+                )
+                .scalar()
+                or 0
+            )
+            if available < qty:
+                product = db.get(Product, line.product_id)
+                raise ValueError(f"Nicht genug Bestand für {product.name if product else line.product_id}.")
+
+            ref = _repair_reference(order)
+            tx_out = InventoryTransaction(
+                tx_type="issue",
+                product_id=line.product_id,
+                warehouse_from_id=line.warehouse_from_id,
+                warehouse_to_id=None,
+                condition=condition_in,
+                quantity=qty,
+                serial_number=None,
+                reference=ref,
+                note=f"Reparaturauftrag #{order.id}: In Reparatur",
+            )
+            apply_transaction(db, tx_out, actor_user_id=user.id)
+
+            tx_in = InventoryTransaction(
+                tx_type="receipt",
+                product_id=line.product_id,
+                warehouse_from_id=None,
+                warehouse_to_id=repair_wh.id,
+                condition="IN_REPARATUR",
+                quantity=qty,
+                serial_number=None,
+                reference=ref,
+                note=f"Reparaturauftrag #{order.id}: Eingang Reparaturlager",
+            )
+            apply_transaction(db, tx_in, actor_user_id=user.id)
+
+        order.status = "in_repair"
+        db.add(order)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"In-Reparatur-Buchung fehlgeschlagen: {exc}", "error")
+        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+    _flash(request, "Reparaturauftrag eingebucht.", "info")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/return")
+def repair_return(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    if order.status != "in_repair":
+        _flash(request, "Nur Aufträge im Status 'In Reparatur' können zurückgebucht werden.", "error")
+        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+    lines = db.query(RepairOrderLine).filter(RepairOrderLine.repair_order_id == repair_id).all()
+    if not lines:
+        _flash(request, "Reparaturauftrag enthält keine Positionen.", "error")
+        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+    repair_wh = _ensure_repair_warehouse(db)
+    if not _condition_exists(db, "IN_REPARATUR", active_only=False):
+        _flash(request, "Zustand IN_REPARATUR fehlt in den Stammdaten.", "error")
+        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+    try:
+        for line in lines:
+            qty = int(line.qty or 0)
+            if qty <= 0:
+                raise ValueError("Menge muss größer 0 sein.")
+            target_warehouse = int(line.warehouse_to_id or line.warehouse_from_id)
+            condition_out = _condition_code_from_input(line.condition_out)
+            if not _condition_exists(db, condition_out, active_only=False):
+                raise ValueError(f"Zustand fehlt: {condition_out}")
+            available = int(
+                db.query(func.coalesce(func.sum(StockBalance.quantity), 0))
+                .filter(
+                    StockBalance.product_id == line.product_id,
+                    StockBalance.warehouse_id == repair_wh.id,
+                    StockBalance.condition == "IN_REPARATUR",
+                )
+                .scalar()
+                or 0
+            )
+            if available < qty:
+                product = db.get(Product, line.product_id)
+                raise ValueError(f"Nicht genug IN_REPARATUR-Bestand für {product.name if product else line.product_id}.")
+
+            ref = _repair_reference(order)
+            tx_out = InventoryTransaction(
+                tx_type="issue",
+                product_id=line.product_id,
+                warehouse_from_id=repair_wh.id,
+                warehouse_to_id=None,
+                condition="IN_REPARATUR",
+                quantity=qty,
+                serial_number=None,
+                reference=ref,
+                note=f"Reparaturauftrag #{order.id}: Rückbuchung aus Reparaturlager",
+            )
+            apply_transaction(db, tx_out, actor_user_id=user.id)
+
+            tx_in = InventoryTransaction(
+                tx_type="receipt",
+                product_id=line.product_id,
+                warehouse_from_id=None,
+                warehouse_to_id=target_warehouse,
+                condition=condition_out,
+                quantity=qty,
+                serial_number=None,
+                reference=ref,
+                note=f"Reparaturauftrag #{order.id}: Rückbuchung ins Ziel-Lager",
+            )
+            apply_transaction(db, tx_in, actor_user_id=user.id)
+
+        order.status = "returned"
+        db.add(order)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Rückbuchung fehlgeschlagen: {exc}", "error")
+        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+    _flash(request, "Reparaturauftrag zurückgebucht.", "info")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
 
 
 # ---------------------------
@@ -2090,6 +4405,7 @@ def stock_overview(
     request: Request,
     user=Depends(require_user),
     q: str = "",
+    item_type: str = "",
     warehouse_id: int = 0,
     bin_id: int = 0,
     only_low: int = 0,
@@ -2102,9 +4418,12 @@ def stock_overview(
     bins = bins_q.order_by(WarehouseBin.warehouse_id.asc(), WarehouseBin.code.asc()).all()
 
     products_q = db.query(Product).filter(Product.active == True)
-    if q:
-        like = f"%{q.strip()}%"
-        products_q = products_q.filter(or_(Product.name.ilike(like), Product.sku.ilike(like), Product.ean.ilike(like), Product.manufacturer.ilike(like)))
+    search_filter = build_product_search_filter(q, include_attribute_values=True)
+    if search_filter is not None:
+        products_q = products_q.filter(search_filter)
+    item_type = _normalize_item_type(item_type, fallback="")
+    if item_type:
+        products_q = products_q.filter(Product.item_type == item_type)
     products = products_q.order_by(Product.name.asc()).limit(200).all()
     product_ids = [p.id for p in products]
 
@@ -2116,36 +4435,21 @@ def stock_overview(
         bal_q = bal_q.filter(StockBalance.bin_id == bin_id)
     balances = bal_q.all()
 
-    # serial counts
-    serial_q = db.query(StockSerial).filter(StockSerial.product_id.in_(product_ids))
-    if warehouse_id:
-        serial_q = serial_q.filter(StockSerial.warehouse_id == warehouse_id)
-    if bin_id:
-        serial_q = serial_q.filter(StockSerial.bin_id == bin_id)
-    serials = serial_q.all()
-
     # build maps
     bal_map: dict[tuple[int, int, str], int] = {}
+    stock_total_map: dict[int, int] = {}
     for b in balances:
-        bal_map[(b.product_id, b.warehouse_id, b.condition)] = b.quantity
-
-    serial_count_map: dict[tuple[int, int, str], int] = {}
-    for s in serials:
-        if s.status != "in_stock":
-            continue
-        serial_count_map[(s.product_id, s.warehouse_id, s.condition)] = serial_count_map.get((s.product_id, s.warehouse_id, s.condition), 0) + 1
-
-    serial_rows = (
-        db.query(StockSerial)
-        .filter(StockSerial.status.in_(["in_stock", "reserved"]))
-        .order_by(StockSerial.id.desc())
-        .limit(250)
-        .all()
-    )
-    if warehouse_id:
-        serial_rows = [s for s in serial_rows if s.warehouse_id == warehouse_id]
-    if bin_id:
-        serial_rows = [s for s in serial_rows if s.bin_id == bin_id]
+        qty = int(b.quantity or 0)
+        key = (b.product_id, b.warehouse_id, b.condition)
+        bal_map[key] = bal_map.get(key, 0) + qty
+        stock_total_map[b.product_id] = stock_total_map.get(b.product_id, 0) + qty
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    condition_labels = _condition_label_map(db)
+    condition_codes = [c.code for c in condition_defs]
+    for _pid, _wid, code in bal_map.keys():
+        if code not in condition_codes:
+            condition_codes.append(code)
+        condition_labels.setdefault(code, de_label("condition", code))
 
     warnings = _collect_min_stock_warnings(
         db,
@@ -2158,6 +4462,7 @@ def stock_overview(
         warning_map.setdefault(int(row["product_id"]), []).append(row)
     if int(only_low or 0) == 1:
         products = [p for p in products if p.id in warning_map]
+    table_columns, table_grid = _stock_overview_columns(db)
 
     return templates.TemplateResponse(
         "inventory/stock.html",
@@ -2167,14 +4472,19 @@ def stock_overview(
             products=products,
             warehouses=warehouses,
             bal_map=bal_map,
-            serial_count_map=serial_count_map,
-            serial_rows=serial_rows,
+            condition_codes=condition_codes,
+            condition_labels=condition_labels,
             warning_map=warning_map,
             q=q,
+            item_type=item_type,
+            item_type_labels=ITEM_TYPE_LABELS,
             warehouse_id=warehouse_id,
             bin_id=bin_id,
             bins=bins,
             only_low=only_low,
+            table_columns=table_columns,
+            table_grid=table_grid,
+            stock_total_map=stock_total_map,
         ),
     )
 
@@ -2303,25 +4613,20 @@ def stocktake_close(stocktake_id: int, request: Request, user=Depends(require_la
         return RedirectResponse(f"/inventory/stocktakes/{stocktake_id}", status_code=302)
 
     qty_target: dict[int, int] = {}
-    serial_target: dict[int, set[str]] = {}
     for line in lines:
         product = db.get(Product, line.product_id)
         if not product:
             continue
-        if product.track_mode == "quantity":
-            qty_target[product.id] = qty_target.get(product.id, 0) + int(line.counted_qty or 0)
-        else:
-            serials = serial_target.setdefault(product.id, set())
-            if line.serial_number and int(line.counted_qty or 0) > 0:
-                serials.add(line.serial_number.strip())
+        qty_target[product.id] = qty_target.get(product.id, 0) + int(line.counted_qty or 0)
 
     created_tx = 0
+    min_stock_condition = _default_min_stock_condition(db)
     try:
         for product_id, counted_qty in qty_target.items():
             q = db.query(StockBalance).filter(
                 StockBalance.product_id == product_id,
                 StockBalance.warehouse_id == st.warehouse_id,
-                StockBalance.condition == "ok",
+                StockBalance.condition == min_stock_condition,
             )
             if st.bin_id:
                 q = q.filter(StockBalance.bin_id == st.bin_id)
@@ -2338,7 +4643,7 @@ def stocktake_close(stocktake_id: int, request: Request, user=Depends(require_la
                 warehouse_to_id=st.warehouse_id if delta > 0 else None,
                 bin_from_id=st.bin_id if delta < 0 else None,
                 bin_to_id=st.bin_id if delta > 0 else None,
-                condition="ok",
+                condition=min_stock_condition,
                 quantity=delta,
                 serial_number=None,
                 reference=f"INVENTUR-{st.id}",
@@ -2346,51 +4651,6 @@ def stocktake_close(stocktake_id: int, request: Request, user=Depends(require_la
             )
             apply_transaction(db, tx, actor_user_id=user.id)
             created_tx += 1
-
-        for product_id, counted_serials in serial_target.items():
-            q = db.query(StockSerial).filter(
-                StockSerial.product_id == product_id,
-                StockSerial.warehouse_id == st.warehouse_id,
-                StockSerial.status.in_(["in_stock", "reserved"]),
-            )
-            if st.bin_id:
-                q = q.filter(StockSerial.bin_id == st.bin_id)
-            existing = q.all()
-            existing_set = {s.serial_number for s in existing}
-
-            for serial_number in sorted(counted_serials - existing_set):
-                tx = InventoryTransaction(
-                    tx_type="receipt",
-                    product_id=product_id,
-                    warehouse_from_id=None,
-                    warehouse_to_id=st.warehouse_id,
-                    bin_from_id=None,
-                    bin_to_id=st.bin_id,
-                    condition="ok",
-                    quantity=1,
-                    serial_number=serial_number,
-                    reference=f"INVENTUR-{st.id}",
-                    note=f"Inventurzugang durch {user.email}",
-                )
-                apply_transaction(db, tx, actor_user_id=user.id)
-                created_tx += 1
-
-            for serial_number in sorted(existing_set - counted_serials):
-                tx = InventoryTransaction(
-                    tx_type="scrap",
-                    product_id=product_id,
-                    warehouse_from_id=st.warehouse_id,
-                    warehouse_to_id=None,
-                    bin_from_id=st.bin_id,
-                    bin_to_id=None,
-                    condition="ok",
-                    quantity=1,
-                    serial_number=serial_number,
-                    reference=f"INVENTUR-{st.id}",
-                    note=f"Inventurabgang durch {user.email}",
-                )
-                apply_transaction(db, tx, actor_user_id=user.id)
-                created_tx += 1
 
         st.status = "closed"
         st.closed_at = dt.datetime.utcnow().replace(tzinfo=None)
@@ -2419,6 +4679,8 @@ def tx_new_get(
 ):
     products = db.query(Product).order_by(Product.name.asc()).all()
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     bins = db.query(WarehouseBin).order_by(WarehouseBin.warehouse_id.asc(), WarehouseBin.code.asc()).all()
     bins_by_warehouse: dict[int, list[WarehouseBin]] = {}
     for b in bins:
@@ -2430,6 +4692,8 @@ def tx_new_get(
             user=user,
             products=products,
             warehouses=warehouses,
+            suppliers=suppliers,
+            condition_defs=condition_defs,
             bins_by_warehouse=bins_by_warehouse,
             selected_product_id=product_id,
             selected_tx_type=tx_type,
@@ -2441,23 +4705,44 @@ def tx_new_get(
 async def tx_new_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
     form = await request.form()
     tx_type = (form.get("tx_type") or "").strip()
+    if tx_type not in ("receipt", "issue", "transfer", "scrap", "adjust"):
+        _flash(request, "Ungültiger Buchungstyp.", "error")
+        return RedirectResponse("/inventory/transactions/new", status_code=302)
     product_id = int(form.get("product_id") or 0)
     product = db.get(Product, product_id)
     if not product:
         _flash(request, "Produkt fehlt.", "error")
         return RedirectResponse("/inventory/transactions/new", status_code=302)
 
-    condition = (form.get("condition") or "ok").strip()
+    condition = _condition_code_from_input(form.get("condition"))
+    if not _condition_exists(db, condition, active_only=True):
+        _flash(request, "Ungültiger oder inaktiver Zustand.", "error")
+        return RedirectResponse("/inventory/transactions/new", status_code=302)
     reference = (form.get("reference") or "").strip() or None
     note = (form.get("note") or "").strip() or None
+    supplier_id = None
+    delivery_note_no = None
+    if tx_type == "receipt":
+        supplier_input = form.get("supplier_id")
+        supplier_id, _supplier = _parse_supplier_id(db, supplier_input, active_only=True)
+        if supplier_input and not supplier_id:
+            _flash(request, "Lieferant wurde nicht gefunden oder ist inaktiv.", "error")
+            return RedirectResponse("/inventory/transactions/new", status_code=302)
+        delivery_note_no = (form.get("delivery_note_no") or "").strip() or None
 
     wh_from = int(form.get("warehouse_from_id") or 0) or None
     wh_to = int(form.get("warehouse_to_id") or 0) or None
     bin_from = int(form.get("bin_from_id") or 0) or None
     bin_to = int(form.get("bin_to_id") or 0) or None
 
-    qty = int(form.get("quantity") or 1)
-    serial_number = (form.get("serial_number") or "").strip() or None
+    qty = int(form.get("quantity") or 0)
+    if tx_type == "adjust":
+        if qty == 0:
+            _flash(request, "Korrekturmenge darf nicht 0 sein.", "error")
+            return RedirectResponse("/inventory/transactions/new", status_code=302)
+    elif qty <= 0:
+        _flash(request, "Menge muss größer 0 sein.", "error")
+        return RedirectResponse("/inventory/transactions/new", status_code=302)
 
     if bin_from:
         b = db.get(WarehouseBin, bin_from)
@@ -2477,9 +4762,11 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
         warehouse_to_id=wh_to,
         bin_from_id=bin_from,
         bin_to_id=bin_to,
+        supplier_id=supplier_id,
+        delivery_note_no=delivery_note_no,
         condition=condition,
         quantity=qty,
-        serial_number=serial_number,
+        serial_number=None,
         reference=reference,
         note=note,
     )
@@ -2521,12 +4808,9 @@ def reservations_new_get(
 ):
     products = db.query(Product).order_by(Product.name.asc()).all()
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     selected_warehouse_id = 0
-    if serial_number:
-        s = db.query(StockSerial).filter(StockSerial.serial_number == serial_number).one_or_none()
-        if s:
-            product_id = product_id or s.product_id
-            selected_warehouse_id = s.warehouse_id
+    _ = serial_number
     return templates.TemplateResponse(
         "inventory/reservation_form.html",
         _ctx(
@@ -2534,8 +4818,8 @@ def reservations_new_get(
             user=user,
             products=products,
             warehouses=warehouses,
+            condition_defs=condition_defs,
             selected_product_id=product_id,
-            selected_serial_number=serial_number,
             selected_warehouse_id=selected_warehouse_id,
         ),
     )
@@ -2546,42 +4830,47 @@ async def reservations_new_post(request: Request, user=Depends(require_reservati
     form = await request.form()
     product_id = int(form.get("product_id") or 0)
     warehouse_id = int(form.get("warehouse_id") or 0)
-    condition = (form.get("condition") or "ok").strip()
+    condition = _condition_code_from_input(form.get("condition"))
+    if not _condition_exists(db, condition, active_only=True):
+        _flash(request, "Ungültiger oder inaktiver Zustand.", "error")
+        return RedirectResponse("/inventory/reservations/new", status_code=302)
     reference = (form.get("reference") or "").strip() or None
     qty = int(form.get("qty") or 1)
-    serial_number = (form.get("serial_number") or "").strip() or None
 
     product = db.get(Product, product_id)
     if not product:
         _flash(request, "Produkt fehlt.", "error")
         return RedirectResponse("/inventory/reservations/new", status_code=302)
 
-    serial_id = None
-    if product.track_mode != "quantity":
-        if not serial_number:
-            _flash(request, "Seriennummer fehlt.", "error")
-            return RedirectResponse("/inventory/reservations/new", status_code=302)
-        s = db.query(StockSerial).filter(StockSerial.serial_number == serial_number).one_or_none()
-        if not s:
-            _flash(request, "Seriennummer nicht gefunden.", "error")
-            return RedirectResponse("/inventory/reservations/new", status_code=302)
-        if s.status != "in_stock":
-            _flash(request, "Seriennummer ist nicht verfügbar.", "error")
-            return RedirectResponse("/inventory/reservations/new", status_code=302)
-        if s.warehouse_id != warehouse_id:
-            _flash(request, "Seriennummer liegt nicht im ausgewählten Lager.", "error")
-            return RedirectResponse("/inventory/reservations/new", status_code=302)
-        s.status = "reserved"
-        db.add(s)
-        serial_id = s.id
-        qty = 1
+    if not warehouse_id:
+        _flash(request, "Lager fehlt.", "error")
+        return RedirectResponse("/inventory/reservations/new", status_code=302)
+    if qty <= 0:
+        _flash(request, "Menge muss größer 0 sein.", "error")
+        return RedirectResponse("/inventory/reservations/new", status_code=302)
+
+    available_q = db.query(func.coalesce(func.sum(StockBalance.quantity), 0)).filter(
+        StockBalance.product_id == product_id,
+        StockBalance.warehouse_id == warehouse_id,
+        StockBalance.condition == condition,
+    )
+    reserved_q = db.query(func.coalesce(func.sum(Reservation.qty), 0)).filter(
+        Reservation.product_id == product_id,
+        Reservation.warehouse_id == warehouse_id,
+        Reservation.condition == condition,
+        Reservation.status == "active",
+    )
+    available_qty = int(available_q.scalar() or 0) - int(reserved_q.scalar() or 0)
+    if qty > available_qty:
+        _flash(request, f"Nicht genug verfügbarer Bestand. Verfügbar: {max(0, available_qty)}.", "error")
+        return RedirectResponse("/inventory/reservations/new", status_code=302)
 
     r = Reservation(
         product_id=product_id,
         warehouse_id=warehouse_id,
         condition=condition,
         qty=qty,
-        serial_id=serial_id,
+        serial_id=None,
         reference=reference,
         status="active",
         created_by_user_id=user.id,
@@ -2816,6 +5105,9 @@ async def api_write_transactions(
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Produkt nicht gefunden.")
+    condition = _condition_code_from_input(str(payload.get("condition") or _default_condition_code()))
+    if not _condition_exists(db, condition, active_only=False):
+        raise HTTPException(status_code=400, detail="Ungültiger Zustand.")
 
     tx = InventoryTransaction(
         tx_type=tx_type,
@@ -2824,7 +5116,7 @@ async def api_write_transactions(
         warehouse_to_id=int(payload.get("warehouse_to_id") or 0) or None,
         bin_from_id=int(payload.get("bin_from_id") or 0) or None,
         bin_to_id=int(payload.get("bin_to_id") or 0) or None,
-        condition=str(payload.get("condition") or "ok"),
+        condition=condition,
         quantity=int(payload.get("quantity") or 1),
         serial_number=(payload.get("serial_number") or "").strip() or None,
         reference=(payload.get("reference") or "").strip() or None,
@@ -2864,38 +5156,40 @@ async def api_write_reservations(
     product_id = int(payload.get("product_id") or 0)
     warehouse_id = int(payload.get("warehouse_id") or 0)
     qty = int(payload.get("qty") or 1)
-    condition = str(payload.get("condition") or "ok")
-    serial_number = str(payload.get("serial_number") or "").strip() or None
+    condition = _condition_code_from_input(str(payload.get("condition") or _default_condition_code()))
     reference = str(payload.get("reference") or "").strip() or None
     if not product_id or not warehouse_id:
         raise HTTPException(status_code=400, detail="product_id und warehouse_id sind Pflichtfelder.")
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="qty muss größer 0 sein.")
 
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Produkt nicht gefunden.")
+    if not _condition_exists(db, condition, active_only=False):
+        raise HTTPException(status_code=400, detail="Ungültiger Zustand.")
 
-    serial_id = None
-    if product.track_mode != "quantity":
-        if not serial_number:
-            raise HTTPException(status_code=400, detail="Für Serienartikel ist serial_number erforderlich.")
-        s = db.query(StockSerial).filter(StockSerial.serial_number == serial_number).one_or_none()
-        if not s:
-            raise HTTPException(status_code=404, detail="Seriennummer nicht gefunden.")
-        if s.status != "in_stock":
-            raise HTTPException(status_code=400, detail="Seriennummer ist nicht verfügbar.")
-        if s.warehouse_id != warehouse_id:
-            raise HTTPException(status_code=400, detail="Seriennummer liegt nicht im ausgewählten Lager.")
-        s.status = "reserved"
-        db.add(s)
-        serial_id = s.id
-        qty = 1
+    available_q = db.query(func.coalesce(func.sum(StockBalance.quantity), 0)).filter(
+        StockBalance.product_id == product_id,
+        StockBalance.warehouse_id == warehouse_id,
+        StockBalance.condition == condition,
+    )
+    reserved_q = db.query(func.coalesce(func.sum(Reservation.qty), 0)).filter(
+        Reservation.product_id == product_id,
+        Reservation.warehouse_id == warehouse_id,
+        Reservation.condition == condition,
+        Reservation.status == "active",
+    )
+    available_qty = int(available_q.scalar() or 0) - int(reserved_q.scalar() or 0)
+    if qty > available_qty:
+        raise HTTPException(status_code=400, detail=f"Nicht genug verfügbarer Bestand. Verfügbar: {max(0, available_qty)}.")
 
     row = Reservation(
         product_id=product_id,
         warehouse_id=warehouse_id,
         condition=condition,
         qty=qty,
-        serial_id=serial_id,
+        serial_id=None,
         reference=reference,
         status="active",
         created_by_user_id=None,
@@ -2953,6 +5247,166 @@ async def api_write_reservation_release(
 # ---------------------------
 # Settings
 # ---------------------------
+
+def _system_setting_get(db: Session, key: str, default: str | None = None) -> str | None:
+    row = db.query(SystemSetting).filter(SystemSetting.key == key).one_or_none()
+    if not row:
+        return default
+    return row.value if row.value is not None else default
+
+
+def _system_setting_set(db: Session, key: str, value: str | None) -> None:
+    row = db.query(SystemSetting).filter(SystemSetting.key == key).one_or_none()
+    if row:
+        row.value = value
+        db.add(row)
+        return
+    db.add(SystemSetting(key=key, value=value))
+
+
+def _bool_from_setting(raw: str | None, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    v = str(raw).strip().lower()
+    if v in ("1", "true", "on", "yes", "ja"):
+        return True
+    if v in ("0", "false", "off", "no", "nein"):
+        return False
+    return default
+
+
+def _loadbee_secret_path() -> Path:
+    dirs = ensure_dirs()
+    return dirs["secrets"] / "loadbee_api_key.enc"
+
+
+def _read_loadbee_api_key() -> str:
+    secret_file = _loadbee_secret_path()
+    if secret_file.is_file():
+        try:
+            token = (secret_file.read_text(encoding="utf-8") or "").strip()
+            if token:
+                return get_fernet().decrypt(token.encode("utf-8")).decode("utf-8").strip()
+        except Exception:
+            pass
+    return (os.environ.get("LOADBEE_API_KEY") or "").strip()
+
+
+def _write_loadbee_api_key(api_key: str) -> None:
+    value = (api_key or "").strip()
+    if not value:
+        return
+    secret_file = _loadbee_secret_path()
+    token = get_fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+    secret_file.write_text(token, encoding="utf-8")
+    try:
+        os.chmod(secret_file, 0o600)
+    except Exception:
+        pass
+
+
+def _loadbee_settings(db: Session, include_secret: bool = False) -> dict[str, str | bool]:
+    enabled = _bool_from_setting(_system_setting_get(db, LOADBEE_SETTING_ENABLED, "0"), default=False)
+    locales = (_system_setting_get(db, LOADBEE_SETTING_LOCALES, "de_DE") or "de_DE").strip() or "de_DE"
+    load_mode = (_system_setting_get(db, LOADBEE_SETTING_LOAD_MODE, "on_demand") or "on_demand").strip().lower()
+    if load_mode not in ("on_demand", "auto"):
+        load_mode = "on_demand"
+    debug_mode = _bool_from_setting(_system_setting_get(db, LOADBEE_SETTING_DEBUG, "0"), default=False)
+    api_key = _read_loadbee_api_key()
+    return {
+        "enabled": enabled,
+        "api_key_set": bool(api_key),
+        "api_key": api_key if include_secret else "",
+        "locales": locales,
+        "load_mode": load_mode,
+        "debug": debug_mode,
+    }
+
+
+def _normalize_loadbee_gtin(raw: str | None) -> str | None:
+    cleaned = "".join(str(raw or "").split()).replace("-", "")
+    return cleaned or None
+
+
+@app.get("/system/loadbee", response_class=HTMLResponse)
+def system_loadbee_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _loadbee_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "system/loadbee.html",
+        _ctx(
+            request,
+            user=user,
+            loadbee_enabled=bool(settings["enabled"]),
+            loadbee_api_key_set=bool(settings["api_key_set"]),
+            loadbee_locales=str(settings["locales"] or "de_DE"),
+            loadbee_load_mode=str(settings["load_mode"] or "on_demand"),
+            loadbee_debug=bool(settings["debug"]),
+        ),
+    )
+
+
+@app.post("/system/loadbee")
+async def system_loadbee_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    loadbee_enabled = form.get("loadbee_enabled") == "on"
+    loadbee_locales = (form.get("loadbee_locales") or "").strip() or "de_DE"
+    loadbee_load_mode = (form.get("loadbee_load_mode") or "on_demand").strip().lower()
+    if loadbee_load_mode not in ("on_demand", "auto"):
+        loadbee_load_mode = "on_demand"
+    loadbee_debug = form.get("loadbee_debug") == "on"
+    loadbee_api_key = (form.get("loadbee_api_key") or "").strip()
+
+    _system_setting_set(db, LOADBEE_SETTING_ENABLED, "1" if loadbee_enabled else "0")
+    _system_setting_set(db, LOADBEE_SETTING_LOCALES, loadbee_locales)
+    _system_setting_set(db, LOADBEE_SETTING_LOAD_MODE, loadbee_load_mode)
+    _system_setting_set(db, LOADBEE_SETTING_DEBUG, "1" if loadbee_debug else "0")
+
+    try:
+        if loadbee_api_key:
+            _write_loadbee_api_key(loadbee_api_key)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"loadbee-Einstellungen konnten nicht gespeichert werden: {exc}", "error")
+        return RedirectResponse("/system/loadbee", status_code=302)
+
+    _flash(request, "loadbee-Einstellungen gespeichert.", "info")
+    return RedirectResponse("/system/loadbee", status_code=302)
+
+
+@app.get("/system/loadbee/test", response_class=HTMLResponse)
+def system_loadbee_test_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _loadbee_settings(db, include_secret=True)
+    return templates.TemplateResponse(
+        "system/loadbee_test.html",
+        _ctx(
+            request,
+            user=user,
+            loadbee_api_key=str(settings.get("api_key") or ""),
+            loadbee_api_key_set=bool(settings.get("api_key_set")),
+            loadbee_locales=str(settings.get("locales") or "de_DE"),
+            loadbee_test_gtin="",
+        ),
+    )
+
+
+@app.post("/system/loadbee/test", response_class=HTMLResponse)
+async def system_loadbee_test_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    settings = _loadbee_settings(db, include_secret=True)
+    test_gtin = _normalize_loadbee_gtin(form.get("gtin") or "")
+    return templates.TemplateResponse(
+        "system/loadbee_test.html",
+        _ctx(
+            request,
+            user=user,
+            loadbee_api_key=str(settings.get("api_key") or ""),
+            loadbee_api_key_set=bool(settings.get("api_key_set")),
+            loadbee_locales=str(settings.get("locales") or "de_DE"),
+            loadbee_test_gtin=test_gtin or "",
+        ),
+    )
+
 
 @app.get("/settings/company", response_class=HTMLResponse)
 def settings_company_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
@@ -3092,6 +5546,26 @@ def _encrypt_if_set(raw_password: str) -> str | None:
     return get_fernet().encrypt(pw.encode("utf-8")).decode("utf-8")
 
 
+def _friendly_db_write_error(exc: Exception) -> str:
+    msg = str(exc or "").strip()
+    low = msg.lower()
+    if "unique constraint failed" in low:
+        if "email_accounts.email" in low:
+            return "Diese E-Mail-Adresse ist bereits in Verwendung."
+        if "email_accounts.label" in low:
+            return "Dieses Label ist bereits in Verwendung."
+        if "manufacturers.name" in low:
+            return "Dieser Herstellername existiert bereits."
+        if "suppliers.name" in low:
+            return "Dieser Lieferantenname existiert bereits."
+        if "stock_condition_defs.code" in low:
+            return "Dieser Zustands-Code existiert bereits."
+        return "Ein Eintrag mit diesen Daten existiert bereits."
+    if "foreign key constraint failed" in low:
+        return "Datensatz kann wegen bestehender Verknüpfungen nicht gespeichert oder gelöscht werden."
+    return f"Speichern fehlgeschlagen: {msg or 'Unbekannter Datenbankfehler.'}"
+
+
 @app.post("/settings/email/add")
 async def settings_email_add(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     form = await request.form()
@@ -3160,7 +5634,12 @@ async def settings_email_edit(account_id: int, request: Request, user=Depends(re
         acc.imap_password_enc = imap_pw_enc
 
     db.add(acc)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/settings/email", status_code=302)
     _flash(request, f"Konto #{acc.id} aktualisiert.", "info")
     return RedirectResponse("/settings/email", status_code=302)
 
@@ -3207,12 +5686,15 @@ def settings_email_delete(account_id: int, request: Request, user=Depends(requir
     acc = db.get(EmailAccount, account_id)
     if not acc:
         raise HTTPException(status_code=404)
-    db.query(EmailOutbox).filter(EmailOutbox.account_id == acc.id, EmailOutbox.status == "queued").update(
-        {EmailOutbox.account_id: None}
-    )
+    db.query(EmailOutbox).filter(EmailOutbox.account_id == acc.id).update({EmailOutbox.account_id: None})
     db.query(EmailMessage).filter(EmailMessage.account_id == acc.id).delete()
     db.delete(acc)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/settings/email", status_code=302)
 
     if db.query(EmailAccount).filter(EmailAccount.is_default == True).count() == 0:
         replacement = (

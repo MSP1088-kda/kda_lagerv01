@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Passende Kombinationen</h1>
+  <div class="hint">
+    Produkt: <strong>{{ product.name }}</strong> ({{ item_type_labels.get(product.item_type, 'Material') }})
+  </div>
+  <div class="row">
+    <a class="btn" href="/catalog/products/{{ product.id }}">Zurück zum Produkt</a>
+    <a class="btn" href="/catalog/products">Zurück zur Produktliste</a>
+  </div>
+
+  <h2>Kompatible Geräte</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1.4fr 1fr 160px;">
+      <div>#</div>
+      <div>Produkt</div>
+      <div>Materialnummer</div>
+      <div>Aktion</div>
+    </div>
+    {% for p in compatible_products %}
+      <div class="tr" style="grid-template-columns: 80px 1.4fr 1fr 160px;">
+        <div>{{ p.id }}</div>
+        <div>{{ p.name }}</div>
+        <div>{{ p.material_no or "-" }}</div>
+        <div><a class="btn small" href="/catalog/products/{{ p.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not compatible_products %}
+      <div class="muted">Keine kompatiblen Geräte gefunden.</div>
+    {% endif %}
+  </div>
+
+  <h2>Sets mit diesem Gerät</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 160px;">
+      <div>#</div>
+      <div>Set-Nummer</div>
+      <div>Name</div>
+      <div>Aktion</div>
+    </div>
+    {% for s in set_rows %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1fr 160px;">
+        <div>{{ s.id }}</div>
+        <div>{{ s.set_number }}</div>
+        <div>{{ s.name or "-" }}</div>
+        <div><a class="btn small" href="/catalog/sets/{{ s.id }}">Set öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not set_rows %}
+      <div class="muted">Keine Sets mit diesem Gerät gefunden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Seite bündelt direkte Kompatibilitätsverknüpfungen und Set-Zugehörigkeiten.</li>
+  <li>Kompatibilitäten pflegst du in der Produkt-Detailseite.</li>
+  <li>Sets pflegst du in der Set-Verwaltung.</li>
+</ul>
+{% endblock %}

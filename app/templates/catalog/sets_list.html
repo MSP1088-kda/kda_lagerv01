@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Sets</h1>
+
+  <form method="get" action="/catalog/sets" class="form compact">
+    <div class="grid2">
+      <div>
+        <label>Suche</label>
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Set-Nummer, Set-Name, Hersteller oder enthaltenes Produkt">
+      </div>
+      <div class="row right">
+        <button class="btn primary" type="submit">Suchen</button>
+        <a class="btn" href="/catalog/sets">Zurücksetzen</a>
+        <a class="btn" href="/catalog/products">Produkte</a>
+      </div>
+    </div>
+  </form>
+
+  {% if user.role == "admin" %}
+  <form method="post" action="/catalog/sets/new" class="form compact" style="margin-top:10px;">
+    <div class="grid3">
+      <div>
+        <label>Set-Nummer</label>
+        <input type="text" name="set_number" required>
+      </div>
+      <div>
+        <label>Name (optional)</label>
+        <input type="text" name="name">
+      </div>
+      <div>
+        <label>Hersteller (optional)</label>
+        <input type="text" name="manufacturer">
+      </div>
+    </div>
+    <button class="btn primary" type="submit">Set anlegen</button>
+  </form>
+  {% endif %}
+
+  <div class="table" data-kbd-list="true">
+    <div class="tr th" style="grid-template-columns: 70px 1fr 1fr 1fr 120px 170px;">
+      <div>#</div>
+      <div>Set-Nummer</div>
+      <div>Name</div>
+      <div>Hersteller</div>
+      <div>Artikel</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 70px 1fr 1fr 1fr 120px 170px;" data-kbd-row="true" data-href="/catalog/sets/{{ row.id }}">
+        <div>{{ row.id }}</div>
+        <div>{{ row.set_number }}</div>
+        <div>{{ row.name or "-" }}</div>
+        <div>{{ row.manufacturer or "-" }}</div>
+        <div>{{ count_map.get(row.id, 0) }}</div>
+        <div><a class="btn small" href="/catalog/sets/{{ row.id }}">Details</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Keine Sets gefunden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Suche findet Set-Nummern und auch Produkte, die in Sets enthalten sind.</li>
+  <li>Über die Detailseite fügst du Produkte zu einem Set hinzu oder entfernst sie.</li>
+  <li>Kompatibilitäten zwischen einzelnen Geräten pflegst du in der Produkt-Detailseite.</li>
+</ul>
+{% endblock %}

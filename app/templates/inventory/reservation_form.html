@@ -5,9 +5,11 @@
 
   <form method="post" action="/inventory/reservations/new" class="form">
     <label>Produkt</label>
-    <select name="product_id" required>
+    <label for="reservation_product_filter">Produkt filtern</label>
+    <input id="reservation_product_filter" type="text" placeholder="Tippen zum Filtern... (Materialnummer/EAN/Bezeichnung)">
+    <select id="reservation_product_id" name="product_id" required>
       {% for p in products %}
-        <option value="{{ p.id }}" {% if selected_product_id==p.id %}selected{% endif %}>{{ p.name }}{% if p.sku %} (SKU: {{ p.sku }}){% endif %}{% if p.ean %} [EAN: {{ p.ean }}]{% endif %} [{{ p.track_mode|de_label('track_mode') }}]</option>
+        <option value="{{ p.id }}" {% if selected_product_id==p.id %}selected{% endif %}>{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.ean %} | EAN {{ p.ean }}{% endif %}{% if p.sales_name %} | {{ p.sales_name }}{% endif %}</option>
       {% endfor %}
     </select>
 
@@ -22,19 +24,14 @@
       <div>
         <label>Zustand</label>
         <select name="condition">
-          <option value="ok">{{ 'ok'|de_label('condition') }}</option>
-          <option value="used">{{ 'used'|de_label('condition') }}</option>
-          <option value="defect">{{ 'defect'|de_label('condition') }}</option>
-          <option value="bware">{{ 'bware'|de_label('condition') }}</option>
+          {% for c in condition_defs %}
+            <option value="{{ c.code }}" {% if c.code == 'A_WARE' %}selected{% endif %}>{{ c.label_de }}</option>
+          {% endfor %}
         </select>
       </div>
       <div>
-        <label>Menge (nur Mengenartikel)</label>
+        <label>Menge</label>
         <input type="number" name="qty" value="1" min="1">
-      </div>
-      <div>
-        <label>Seriennummer (nur Serienartikel)</label>
-        <input type="text" name="serial_number" value="{{ selected_serial_number or '' }}" placeholder="z. B. SN12345">
       </div>
     </div>
 
@@ -48,7 +45,7 @@
   </form>
 
   <div class="hint">
-    Seriennummer-Reservierungen setzen den Status auf "Reserviert".
+    Reservierungen sind mengengeführt.
   </div>
 </div>
 {% endblock %}
@@ -56,7 +53,7 @@
 {% block help %}
 <ul>
   <li>Reserviere hier Produkte für Aufträge oder interne Vorgänge.</li>
-  <li>Bei Seriennummern muss die konkrete Seriennummer angegeben werden.</li>
-  <li>Über die Reservierungsliste kannst du Reservierungen später freigeben.</li>
+  <li>Reservierungen funktionieren nur über Mengenangaben.</li>
+  <li>Der Zustand wird aus den gepflegten Stammdaten gewählt.</li>
 </ul>
 {% endblock %}

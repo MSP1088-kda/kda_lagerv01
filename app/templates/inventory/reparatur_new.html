@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Reparaturauftrag neu</h1>
+
+  <form method="post" action="/inventory/reparaturen/new" class="form">
+    <div class="grid2">
+      <div>
+        <label>Reparaturpartner (Lieferant)</label>
+        <select name="supplier_id">
+          <option value="0">Interne Werkstatt</option>
+          {% for s in suppliers %}
+            <option value="{{ s.id }}">{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Referenz (optional)</label>
+        <input type="text" name="reference" placeholder="z. B. REP-2026-0001">
+      </div>
+    </div>
+
+    <label>Notiz (optional)</label>
+    <textarea name="note" rows="2"></textarea>
+
+    <h2>Position</h2>
+    <label for="repair_product_filter">Produkt filtern</label>
+    <input id="repair_product_filter" type="text" placeholder="Tippen zum Filtern...">
+    <select id="repair_product_id" name="product_id" required>
+      {% for p in products %}
+        <option value="{{ p.id }}">{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.sales_name %} | {{ p.sales_name }}{% endif %}</option>
+      {% endfor %}
+    </select>
+
+    <div class="grid3">
+      <div>
+        <label>Menge</label>
+        <input type="number" name="qty" min="1" value="1" required>
+      </div>
+      <div>
+        <label>Quelle-Lager</label>
+        <select name="warehouse_from_id" required>
+          <option value="0">Bitte wählen</option>
+          {% for w in warehouses %}
+            <option value="{{ w.id }}">{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Ziel-Lager nach Rückkehr (optional)</label>
+        <select name="warehouse_to_id">
+          <option value="0">Quelle-Lager verwenden</option>
+          {% for w in warehouses %}
+            <option value="{{ w.id }}">{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <label>Eingangs-Zustand</label>
+        <select name="condition_in" required>
+          {% for c in condition_defs %}
+            <option value="{{ c.code }}" {% if c.code == default_condition_in %}selected{% endif %}>{{ c.label_de }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Ausgangs-Zustand</label>
+        <select name="condition_out" required>
+          {% for c in condition_defs %}
+            <option value="{{ c.code }}" {% if c.code == default_condition_out %}selected{% endif %}>{{ c.label_de }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Reparaturauftrag anlegen</button>
+      <a class="btn" href="/inventory/reparaturen">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der Auftrag wird zunächst als "open" angelegt.</li>
+  <li>Auf der Detailseite buchst du mit einem Klick "In Reparatur" und später "Zurückbuchen".</li>
+</ul>
+{% endblock %}

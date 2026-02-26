@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Set #{{ row.id }}</h1>
+  <div class="hint">
+    Set-Nummer: <strong>{{ row.set_number }}</strong>
+    {% if row.name %}| Name: {{ row.name }}{% endif %}
+    {% if row.manufacturer %}| Hersteller: {{ row.manufacturer }}{% endif %}
+  </div>
+
+  <div class="row">
+    <a class="btn" href="/catalog/sets">Zurück zur Set-Liste</a>
+  </div>
+
+  {% if user.role == "admin" %}
+  <form method="post" action="/catalog/sets/{{ row.id }}/items/add" class="form compact" style="margin-top:10px;">
+    <label for="set_item_product_filter">Produkt filtern</label>
+    <input id="set_item_product_filter" type="text" placeholder="Tippen zum Filtern… (Materialnummer/EAN/Bezeichnung)">
+    <label>Produkt hinzufügen</label>
+    <select id="set_item_product_id" name="product_id" required>
+      {% for p in candidates %}
+        {% set display_name = p.sales_name if p.item_type == 'appliance' and p.sales_name else p.name %}
+        <option value="{{ p.id }}">{{ display_name }}{% if p.name and display_name != p.name %} | {{ p.name }}{% endif %}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.ean %} | EAN {{ p.ean }}{% endif %}</option>
+      {% endfor %}
+    </select>
+    <button class="btn primary" type="submit">Zum Set hinzufügen</button>
+  </form>
+  {% endif %}
+
+  <h2>Set-Artikel</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 70px 1.4fr 1fr 150px;">
+      <div>#</div>
+      <div>Produkt</div>
+      <div>Materialnummer</div>
+      <div>Aktion</div>
+    </div>
+    {% for item in items %}
+      {% set p = products_map.get(item.product_id) %}
+      {% set display_name = p.sales_name if p and p.item_type == 'appliance' and p.sales_name else (p.name if p else '') %}
+      <div class="tr" style="grid-template-columns: 70px 1.4fr 1fr 150px;">
+        <div>{{ item.id }}</div>
+        <div>
+          {% if p %}
+            <a href="/catalog/products/{{ p.id }}">{{ display_name }}</a>
+          {% else %}
+            {{ item.product_id }}
+          {% endif %}
+        </div>
+        <div>{{ p.material_no if p and p.material_no else "-" }}</div>
+        <div>
+          {% if user.role == "admin" %}
+          <form method="post" action="/catalog/sets/{{ row.id }}/items/{{ item.id }}/delete" class="inline">
+            <button class="btn small" type="submit">Entfernen</button>
+          </form>
+          {% else %}
+          <span class="muted">-</span>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not items %}
+      <div class="muted">Dieses Set enthält noch keine Produkte.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Jedes Set hat eine Set-Nummer als zentrale Kennung.</li>
+  <li>Über "Produkt filtern" findest du Produkte ohne Maus direkt per Tastatur.</li>
+  <li>Die Produktauswahl zeigt Bezeichnung plus Nummern für schnelle Zuordnung.</li>
+</ul>
+{% endblock %}

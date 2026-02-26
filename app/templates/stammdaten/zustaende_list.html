@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Stammdaten: Zustände</h1>
+
+  <form method="post" action="/stammdaten/zustaende/add" class="form">
+    <div class="grid3">
+      <div>
+        <label>Code</label>
+        <input type="text" name="code" placeholder="A_WARE" required>
+      </div>
+      <div>
+        <label>Bezeichnung</label>
+        <input type="text" name="label_de" placeholder="A-Ware (Neu)" required>
+      </div>
+      <div>
+        <label>Sortierung</label>
+        <input type="number" name="sort_order" value="0">
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" name="active" checked> Aktiv</label>
+    <div class="row">
+      <button class="btn primary" type="submit">Zustand anlegen</button>
+      <a class="btn" href="/stammdaten/hersteller">Hersteller</a>
+      <a class="btn" href="/stammdaten/lieferanten">Lieferanten</a>
+      <a class="btn" href="/stammdaten/formularregeln">Formularregeln</a>
+      <a class="btn" href="/stammdaten/ui-layout">UI-Layout</a>
+    </div>
+  </form>
+
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1fr 1.4fr 120px 120px 220px;">
+      <div>Code</div>
+      <div>Bezeichnung</div>
+      <div>Sort</div>
+      <div>Status</div>
+      <div>Aktionen</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 1fr 1.4fr 120px 120px 220px;">
+        <div>{{ row.code }}</div>
+        <div>{{ row.label_de }}</div>
+        <div>{{ row.sort_order }}</div>
+        <div>{{ 'Aktiv' if row.active else 'Inaktiv' }}</div>
+        <div>
+          <a class="btn small" href="/stammdaten/zustaende/{{ row.code }}/edit">Bearbeiten</a>
+          <form method="post" action="/stammdaten/zustaende/{{ row.code }}/toggle" class="inline">
+            <button class="btn small" type="submit">{{ 'Deaktivieren' if row.active else 'Aktivieren' }}</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Noch keine Zustände vorhanden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Zustände steuern Wareneingang, Reservierung und Bestandsanzeige.</li>
+  <li>Code bleibt stabil, nur Label/Aktiv-Status wird im Alltag angepasst.</li>
+  <li>Bestehende Bewegungen behalten ihren Zustandscode.</li>
+</ul>
+{% endblock %}

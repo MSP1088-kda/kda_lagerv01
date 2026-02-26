@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Hersteller bearbeiten #{{ row.id }}</h1>
+
+  <form method="post" action="/stammdaten/hersteller/{{ row.id }}/edit" class="form">
+    <div class="grid2">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" value="{{ row.name }}" required>
+      </div>
+      <div>
+        <label>Website</label>
+        <input type="text" name="website" value="{{ row.website or '' }}">
+      </div>
+      <div>
+        <label>Telefon</label>
+        <input type="text" name="phone" value="{{ row.phone or '' }}">
+      </div>
+      <div>
+        <label>E-Mail</label>
+        <input type="email" name="email" value="{{ row.email or '' }}">
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" name="active" {% if row.active %}checked{% endif %}> Aktiv</label>
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/stammdaten/hersteller">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Herstellerdaten lassen sich ohne Löschen aktiv/inaktiv schalten.</li>
+  <li>Änderungen wirken sofort im Produktformular.</li>
+</ul>
+{% endblock %}
