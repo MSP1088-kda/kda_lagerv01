@@ -45,10 +45,10 @@ Das beinhaltet u.a.:
 
 ## Keyboard Shortcuts
 
-- `Alt+1` Dashboard
-- `Alt+2` Katalog
-- `Alt+3` Lager
-- `Alt+4` Einstellungen
+- `Alt+1` Übersicht
+- `Alt+2` Wareneingang
+- `Alt+3` Katalog
+- `Alt+9` Menü
 - `/` fokussiert das Suchfeld (falls vorhanden)
 - `Esc` verlässt ein Eingabefeld
 

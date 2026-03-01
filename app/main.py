@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 import csv
 import datetime as dt
+import html
 import io
 import json
 import os
 from pathlib import Path
+import re
 from typing import Optional
+from urllib.parse import quote, urlsplit
 import uuid
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.routing import APIRoute
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -23,6 +27,7 @@ from .ui_labels import de_label
 from .db import Base, get_engine, db_session, get_sessionmaker
 from .api_v1 import router as api_v1_router
 from .models import (
+    Attachment,
     Area,
     AttributeDef,
     AttributeScope,
@@ -37,13 +42,17 @@ from .models import (
     InstanceConfig,
     InventoryTransaction,
     ItemTypeFieldRule,
+    KindListAttribute,
     Manufacturer,
     MinStock,
     Product,
     ProductAttributeValue,
     ProductLink,
+    PriceRuleKind,
     ProductSet,
     ProductSetItem,
+    PurchaseOrder,
+    PurchaseOrderLine,
     RepairOrder,
     RepairOrderLine,
     Reservation,
@@ -94,6 +103,7 @@ from .services.email_service import (
     fetch_inbox_once,
 )
 from .utils import ensure_dirs, get_session_secret, get_fernet, slugify, normalize_ean
+from .nav import all_nav_paths, flatten_nav, get_nav_for_user
 
 import hashlib
 
@@ -130,7 +140,7 @@ def _compute_build_id() -> str:
             continue
     return h.hexdigest()[:10]
 
-APP_VERSION = os.environ.get("APP_VERSION", "0.1.1")
+APP_VERSION = os.environ.get("APP_VERSION", "0.1.3")
 _env_build = (os.environ.get("APP_BUILD") or "").strip()
 APP_BUILD = _env_build if _env_build and _env_build.lower() not in ("dev", "local") else _compute_build_id()
 GIT_SHA = os.environ.get("GIT_SHA", "local")
@@ -161,9 +171,82 @@ LOADBEE_SETTING_ENABLED = "loadbee_enabled"
 LOADBEE_SETTING_LOCALES = "loadbee_locales"
 LOADBEE_SETTING_LOAD_MODE = "loadbee_load_mode"
 LOADBEE_SETTING_DEBUG = "loadbee_debug"
+RECEIPT_DEFAULT_WAREHOUSE_ID = "receipt_default_warehouse_id"
+RECEIPT_DEFAULT_CONDITION = "receipt_default_condition"
+RECEIPT_DEFAULT_SUPPLIER_ID = "receipt_default_supplier_id"
+RECEIPT_DEFAULT_QTY = "receipt_default_qty"
+RECEIPT_LOCK_WAREHOUSE = "receipt_lock_warehouse"
+VAT_RATE_STANDARD = 0.19
+
+REPAIR_ATTACHMENT_ALLOWED_MIME = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+REPAIR_ATTACHMENT_MAX_BYTES = 6 * 1024 * 1024
+CUSTOMER_VIEW_TIMEOUT_SECONDS = 5 * 60
+SETS_ALLOWED_DEVICE_TYPE_TERMS = ("kochfeld", "backofen")
+SETS_ONLY_MESSAGE = "Kombi-/Set-Funktionen sind nur für Kochfeld und Backofen verfügbar."
+FORM_DRAFTS_SESSION_KEY = "form_drafts"
+FORM_DRAFT_TTL_SECONDS = 24 * 60 * 60
+FORM_DRAFT_SENSITIVE_TERMS = ("password", "secret", "api_key", "token")
+PRODUCT_FORM_FIELD_IDS = {
+    "name": "product_name",
+    "material_no": "product_material_no",
+    "manufacturer_id": "product_manufacturer_id",
+    "sku": "product_sku",
+    "sales_name": "product_sales_name",
+    "manufacturer_name": "product_manufacturer_name",
+    "ean": "product_ean",
+    "area_id": "product_area_id",
+    "device_kind_id": "product_device_kind_id",
+    "device_type_id": "product_device_type_id",
+    "description": "product_description",
+}
+PRODUCT_RECEIPT_FIELD_IDS = {
+    "receipt_quantity": "receipt_quantity",
+    "receipt_warehouse_to_id": "receipt_warehouse_to_id",
+    "receipt_condition": "receipt_condition",
+    "receipt_supplier_id": "receipt_supplier_id",
+    "receipt_delivery_note_no": "receipt_delivery_note_no",
+    "receipt_unit_cost": "receipt_unit_cost",
+}
+TX_FORM_FIELD_IDS = {
+    "tx_type": "tx_type",
+    "supplier_id": "tx_supplier_id",
+    "delivery_note_no": "tx_delivery_note_no",
+    "unit_cost": "tx_unit_cost",
+    "product_id": "tx_product_id",
+    "warehouse_from_id": "tx_warehouse_from_id",
+    "warehouse_to_id": "tx_warehouse_to_id",
+    "bin_from_id": "tx_bin_from_id",
+    "bin_to_id": "tx_bin_to_id",
+    "condition": "tx_condition",
+    "quantity": "tx_quantity",
+    "reference": "tx_reference",
+}
+REPAIR_FORM_FIELD_IDS = {
+    "supplier_id": "repair_supplier_id",
+    "reference": "repair_reference",
+    "product_id": "repair_product_id",
+    "new_product_name": "repair_new_product_name",
+    "new_product_material_no": "repair_new_product_material_no",
+    "new_product_ean": "repair_new_product_ean",
+    "qty": "repair_qty",
+    "warehouse_from_id": "repair_warehouse_from_id",
+    "warehouse_to_id": "repair_warehouse_to_id",
+    "condition_in": "repair_condition_in",
+    "condition_out": "repair_condition_out",
+}
+PO_RECEIVE_FIELD_IDS = {
+    "warehouse_to_id": "po_receive_warehouse_to_id",
+    "condition": "po_receive_condition",
+    "delivery_note_no": "po_receive_delivery_note_no",
+}
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["de_label"] = lambda value, kind: de_label(kind, value)
+templates.env.filters["eur_cents"] = lambda value: _format_eur(value)
 
 app = FastAPI(title="KDA Lager (Standalone Modul)")
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
@@ -187,6 +270,195 @@ def _pop_flash(request: Request) -> list[dict]:
     return fl
 
 
+def _to_int(value, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return default
+
+
+def _request_relative_path(request: Request) -> str:
+    path = str(request.url.path or "/").strip() or "/"
+    query = str(request.url.query or "").strip()
+    return f"{path}?{query}" if query else path
+
+
+def _safe_return_to_path(value: str, fallback: str = "") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return fallback
+    if not raw.startswith("/") or raw.startswith("//"):
+        return fallback
+    if "\\" in raw:
+        return fallback
+    lower = raw.lower()
+    if "http:" in lower or "https:" in lower or "javascript:" in lower or "data:" in lower:
+        return fallback
+    parsed = urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return fallback
+    return raw
+
+
+def _form_scalar(form_data: dict[str, str | list[str]], key: str, fallback: str = "") -> str:
+    raw = form_data.get(key, fallback)
+    if isinstance(raw, list):
+        if not raw:
+            return fallback
+        return str(raw[0])
+    return str(raw if raw is not None else fallback)
+
+
+def _extract_form_data(form) -> dict[str, str | list[str]]:
+    data: dict[str, str | list[str]] = {}
+    seen: set[str] = set()
+    for key in form.keys():
+        if key in seen:
+            continue
+        seen.add(key)
+        values: list[str] = []
+        for raw in form.getlist(key):
+            if isinstance(raw, UploadFile):
+                continue
+            if getattr(raw, "filename", None):
+                continue
+            values.append(str(raw))
+        if not values:
+            continue
+        data[key] = values if len(values) > 1 else values[0]
+    return data
+
+
+def _sanitize_draft_form_data(form_data: dict[str, str | list[str]]) -> dict[str, str | list[str]]:
+    clean: dict[str, str | list[str]] = {}
+    for key, raw in (form_data or {}).items():
+        lower = str(key or "").strip().lower()
+        if not lower:
+            continue
+        if any(term in lower for term in FORM_DRAFT_SENSITIVE_TERMS):
+            continue
+        if isinstance(raw, list):
+            items = [str(v)[:500] for v in raw if str(v).strip()]
+            if items:
+                clean[key] = items
+            continue
+        clean[key] = str(raw or "")[:2000]
+    return clean
+
+
+def _draft_get(request: Request, key: str) -> dict[str, str | list[str]] | None:
+    key = (key or "").strip()
+    if not key:
+        return None
+    store = request.session.get(FORM_DRAFTS_SESSION_KEY, {})
+    if not isinstance(store, dict):
+        request.session[FORM_DRAFTS_SESSION_KEY] = {}
+        return None
+    row = store.get(key)
+    if not isinstance(row, dict):
+        return None
+    ts_raw = str(row.get("ts") or "").strip()
+    if not ts_raw:
+        return None
+    try:
+        ts = dt.datetime.fromisoformat(ts_raw)
+    except Exception:
+        ts = None
+    now = dt.datetime.utcnow().replace(tzinfo=None)
+    if ts is None or (now - ts).total_seconds() > FORM_DRAFT_TTL_SECONDS:
+        store.pop(key, None)
+        request.session[FORM_DRAFTS_SESSION_KEY] = store
+        return None
+    data = row.get("form_data")
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _draft_set(request: Request, key: str, form_data: dict[str, str | list[str]]) -> None:
+    key = (key or "").strip()
+    if not key:
+        return
+    clean = _sanitize_draft_form_data(form_data)
+    store = request.session.get(FORM_DRAFTS_SESSION_KEY, {})
+    if not isinstance(store, dict):
+        store = {}
+    store[key] = {
+        "ts": dt.datetime.utcnow().replace(tzinfo=None).isoformat(),
+        "form_data": clean,
+    }
+    request.session[FORM_DRAFTS_SESSION_KEY] = store
+
+
+def _draft_clear(request: Request, key: str) -> None:
+    key = (key or "").strip()
+    if not key:
+        return
+    store = request.session.get(FORM_DRAFTS_SESSION_KEY, {})
+    if not isinstance(store, dict):
+        return
+    if key in store:
+        store.pop(key, None)
+        request.session[FORM_DRAFTS_SESSION_KEY] = store
+
+
+def _first_error_field_id(form_errors: dict[str, str], field_ids: dict[str, str]) -> str:
+    for field_key in form_errors.keys():
+        if field_key.startswith("attr_"):
+            suffix = field_key.split("_", 1)[1]
+            return f"attr_{suffix}"
+        field_id = field_ids.get(field_key)
+        if field_id:
+            return field_id
+    return ""
+
+
+def _apply_product_attribute_form_values(
+    attrs: list[AttributeDef],
+    val_map: dict[int, str],
+    val_multi_map: dict[int, list[str]],
+    form_data: dict[str, str | list[str]],
+) -> None:
+    if not form_data:
+        return
+    for attr in attrs:
+        key = f"attr_{int(attr.id)}"
+        if key not in form_data:
+            continue
+        raw = form_data.get(key)
+        if attr.value_type == "enum" and bool(attr.is_multi):
+            if isinstance(raw, list):
+                selected = [str(v).strip() for v in raw if str(v).strip()]
+            else:
+                selected = [str(raw).strip()] if str(raw or "").strip() else []
+            val_multi_map[attr.id] = selected
+            val_map[attr.id] = json.dumps(selected, ensure_ascii=False) if selected else ""
+            continue
+        if isinstance(raw, list):
+            raw = raw[0] if raw else ""
+        val_map[attr.id] = str(raw or "").strip()
+
+
+def _rerender_template_response(response):
+    template = getattr(response, "template", None)
+    context = getattr(response, "context", None)
+    if template is None or not isinstance(context, dict):
+        return response
+    content = template.render(context)
+    response.body = response.render(content)
+    response.headers["content-length"] = str(len(response.body))
+    return response
+
+
+def _can_view_costs(user) -> bool:
+    role = (getattr(user, "role", "") or "").strip().lower() if user is not None else ""
+    return role in ("admin", "einkauf")
+
+
+def _customer_view_enabled(request: Request) -> bool:
+    return bool(request.session.get("customer_view", True))
+
+
 def _ctx(request: Request, user=None, **kwargs):
     if user is None:
         user = None
@@ -195,6 +467,25 @@ def _ctx(request: Request, user=None, **kwargs):
             user = request.state.user
         except Exception:
             user = None
+    nav_groups = get_nav_for_user(user) if user is not None else []
+    nav_items = flatten_nav(nav_groups) if nav_groups else []
+    nav_top = [item for item in nav_items if bool(item.get("show_in_topnav"))]
+    nav_mobile = [item for item in nav_items if bool(item.get("show_in_mobile"))]
+    nav_commands = [
+        {
+            "group": str(item.get("group") or ""),
+            "label": str(item.get("label_de") or ""),
+            "url": str(item.get("path") or ""),
+            "aliases": str(item.get("aliases") or ""),
+            "hotkey": str(item.get("hotkey") or ""),
+        }
+        for item in nav_items
+    ]
+    nav_hotkeys = {
+        str(item.get("hotkey") or ""): str(item.get("path") or "")
+        for item in nav_items
+        if str(item.get("hotkey") or "").strip().upper().startswith("ALT+")
+    }
     return {
         "request": request,
         "user": user,
@@ -204,6 +495,14 @@ def _ctx(request: Request, user=None, **kwargs):
         "app_build": APP_BUILD,
         "git_sha": GIT_SHA,
         "build_date": BUILD_DATE,
+        "customer_view": _customer_view_enabled(request),
+        "can_view_costs": _can_view_costs(user),
+        "nav_groups": nav_groups,
+        "nav_items": nav_items,
+        "nav_top_items": nav_top,
+        "nav_mobile_items": nav_mobile,
+        "nav_commands": nav_commands,
+        "nav_hotkeys": nav_hotkeys,
         **kwargs,
     }
 
@@ -244,6 +543,7 @@ def startup():
     _ensure_extended_tables()
     _ensure_product_sets_schema()
     _ensure_prompt_pack5_schema()
+    _ensure_prompt_pack9_schema()
     _ensure_ui_preferences_schema()
     _ensure_system_settings_schema()
     _ensure_item_type_field_rules_schema()
@@ -305,10 +605,14 @@ def _ensure_products_extra_columns() -> None:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN manufacturer_name VARCHAR(200)")
         if "material_no" not in cols:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN material_no VARCHAR(120)")
+        if "active" not in cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN active BOOLEAN DEFAULT 1")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_material_no ON products(material_no)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_item_type ON products(item_type)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_active ON products(active)")
         conn.exec_driver_sql("UPDATE products SET item_type='material' WHERE item_type IS NULL OR TRIM(item_type)=''")
         conn.exec_driver_sql("UPDATE products SET track_mode='quantity' WHERE track_mode IS NULL OR track_mode!='quantity'")
+        conn.exec_driver_sql("UPDATE products SET active=1 WHERE active IS NULL")
 
 
 def _cleanup_products_ern_legacy() -> None:
@@ -577,6 +881,107 @@ def _ensure_prompt_pack5_schema() -> None:
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_order_line_order ON repair_order_lines(repair_order_id)")
 
 
+def _ensure_prompt_pack9_schema() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        p_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(products)").fetchall()}
+        if "sale_price_cents" not in p_cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN sale_price_cents INTEGER")
+        if "last_cost_cents" not in p_cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN last_cost_cents INTEGER")
+        if "price_source" not in p_cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN price_source VARCHAR(30) DEFAULT 'manuell'")
+        conn.exec_driver_sql("UPDATE products SET price_source='manuell' WHERE price_source IS NULL OR TRIM(price_source)=''")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_price_source ON products(price_source)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY,
+                entity_type VARCHAR(40) NOT NULL,
+                entity_id INTEGER NOT NULL,
+                filename VARCHAR(400) NOT NULL,
+                original_name VARCHAR(260),
+                mime_type VARCHAR(120),
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_attachment_entity ON attachments(entity_type, entity_id)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS price_rule_kinds (
+                id INTEGER PRIMARY KEY,
+                device_kind_id INTEGER NOT NULL,
+                markup_percent FLOAT NOT NULL DEFAULT 0,
+                markup_fixed_cents INTEGER NOT NULL DEFAULT 0,
+                rounding_mode VARCHAR(20) NOT NULL DEFAULT 'none',
+                active BOOLEAN NOT NULL DEFAULT 1,
+                FOREIGN KEY(device_kind_id) REFERENCES device_kinds(id)
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_price_rule_kind_device_kind ON price_rule_kinds(device_kind_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_price_rule_kind_active ON price_rule_kinds(active)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_orders (
+                id INTEGER PRIMARY KEY,
+                supplier_id INTEGER,
+                po_number VARCHAR(120) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'draft',
+                note TEXT,
+                created_at DATETIME,
+                sent_at DATETIME,
+                confirmed_at DATETIME,
+                FOREIGN KEY(supplier_id) REFERENCES suppliers(id)
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_purchase_orders_po_number ON purchase_orders(po_number)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_purchase_orders_status ON purchase_orders(status)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_order_lines (
+                id INTEGER PRIMARY KEY,
+                purchase_order_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                qty INTEGER NOT NULL DEFAULT 1,
+                expected_cost_cents INTEGER,
+                confirmed_cost_cents INTEGER,
+                FOREIGN KEY(purchase_order_id) REFERENCES purchase_orders(id),
+                FOREIGN KEY(product_id) REFERENCES products(id)
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_purchase_order_lines_order ON purchase_order_lines(purchase_order_id)")
+
+        tx_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(inventory_transactions)").fetchall()}
+        if "unit_cost" not in tx_cols:
+            conn.exec_driver_sql("ALTER TABLE inventory_transactions ADD COLUMN unit_cost INTEGER")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS kind_list_attributes (
+                id INTEGER PRIMARY KEY,
+                kind_id INTEGER NOT NULL,
+                slot INTEGER NOT NULL,
+                attribute_def_id INTEGER NOT NULL,
+                FOREIGN KEY(kind_id) REFERENCES device_kinds(id),
+                FOREIGN KEY(attribute_def_id) REFERENCES attribute_defs(id)
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_kind_list_attribute_slot ON kind_list_attributes(kind_id, slot)"
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_kind_list_attribute_kind ON kind_list_attributes(kind_id)")
+
+
 def _ensure_ui_preferences_schema() -> None:
     engine = get_engine()
     with engine.begin() as conn:
@@ -742,6 +1147,49 @@ def _repair_reference(order: RepairOrder) -> str:
     return (order.reference or "").strip() or f"REP-{order.id}"
 
 
+def _is_sets_device_type_name(name: str | None) -> bool:
+    value = (name or "").strip().lower()
+    if not value:
+        return False
+    return any(term in value for term in SETS_ALLOWED_DEVICE_TYPE_TERMS)
+
+
+def _sets_allowed_device_type_ids(db: Session) -> set[int]:
+    rows = db.query(DeviceType.id, DeviceType.name).all()
+    out: set[int] = set()
+    for type_id, name in rows:
+        if _is_sets_device_type_name(name):
+            out.add(int(type_id))
+    return out
+
+
+def _sets_allowed_device_kind_ids(db: Session) -> set[int]:
+    rows = db.query(DeviceKind.id, DeviceKind.name).all()
+    out: set[int] = set()
+    for kind_id, name in rows:
+        if _is_sets_device_type_name(name):
+            out.add(int(kind_id))
+    return out
+
+
+def _is_sets_product(
+    product: Product | None,
+    allowed_device_type_ids: set[int],
+    allowed_device_kind_ids: set[int],
+) -> bool:
+    if not product:
+        return False
+    if product.device_type_id and int(product.device_type_id) in allowed_device_type_ids:
+        return True
+    if product.device_kind_id and int(product.device_kind_id) in allowed_device_kind_ids:
+        return True
+    return False
+
+
+def _purchase_reference(order: PurchaseOrder) -> str:
+    return (order.po_number or "").strip() or f"PO-{order.id}"
+
+
 def _ensure_repair_warehouse(db: Session) -> Warehouse:
     warehouse = db.query(Warehouse).filter(func.lower(Warehouse.name) == "reparatur").one_or_none()
     if warehouse:
@@ -750,6 +1198,183 @@ def _ensure_repair_warehouse(db: Session) -> Warehouse:
     db.add(warehouse)
     db.flush()
     return warehouse
+
+
+def _format_eur(cents: int | None) -> str:
+    value = int(cents or 0)
+    sign = "-" if value < 0 else ""
+    abs_value = abs(value)
+    euros = abs_value // 100
+    rest = abs_value % 100
+    return f"{sign}{euros},{rest:02d} €"
+
+
+def _gross_cents_from_net(net_cents: int | None, vat_rate: float = VAT_RATE_STANDARD) -> int | None:
+    if net_cents is None:
+        return None
+    try:
+        net_value = int(net_cents)
+    except Exception:
+        return None
+    factor = 1.0 + float(vat_rate or 0.0)
+    return int(round(float(net_value) * factor))
+
+
+def _parse_eur_to_cents(raw: str | None, field_label: str) -> int | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("€", "").replace("eur", "").replace("EUR", "").strip()
+    normalized = normalized.replace(" ", "")
+    if "," in normalized and "." in normalized:
+        normalized = normalized.replace(".", "").replace(",", ".")
+    elif "," in normalized:
+        normalized = normalized.replace(",", ".")
+    try:
+        value = float(normalized)
+    except Exception:
+        raise ValueError(f"{field_label}: Ungültiger Betrag.")
+    return int(round(value * 100))
+
+
+def _direct_receipt_payload_from_form(db: Session, form) -> tuple[dict, dict[str, str]]:
+    errors: dict[str, str] = {}
+    try:
+        quantity = int(form.get("receipt_quantity") or 0)
+    except Exception:
+        quantity = 0
+    if quantity <= 0:
+        errors["receipt_quantity"] = "Einbuch-Menge muss größer 0 sein."
+
+    warehouse_to_id = _to_int(form.get("receipt_warehouse_to_id"), 0)
+    if not warehouse_to_id or not db.get(Warehouse, warehouse_to_id):
+        errors["receipt_warehouse_to_id"] = "Bitte ein Ziel-Lager für die Einbuchung wählen."
+
+    condition = _condition_code_from_input(form.get("receipt_condition"))
+    if not _condition_exists(db, condition, active_only=True):
+        errors["receipt_condition"] = "Bitte einen gültigen Zustand für die Einbuchung wählen."
+
+    supplier_id = _to_int(form.get("receipt_supplier_id"), 0)
+    if supplier_id:
+        supplier = db.get(Supplier, supplier_id)
+        if not supplier or not bool(supplier.active):
+            errors["receipt_supplier_id"] = "Lieferant wurde nicht gefunden oder ist inaktiv."
+
+    delivery_note_no = (form.get("receipt_delivery_note_no") or "").strip() or None
+    try:
+        unit_cost = _parse_eur_to_cents(form.get("receipt_unit_cost"), "Preis pro Stück (netto)")
+    except ValueError as exc:
+        unit_cost = None
+        errors["receipt_unit_cost"] = str(exc)
+
+    return (
+        {
+            "quantity": quantity,
+            "warehouse_to_id": warehouse_to_id,
+            "condition": condition,
+            "supplier_id": supplier_id or None,
+            "delivery_note_no": delivery_note_no,
+            "unit_cost": unit_cost,
+        },
+        errors,
+    )
+
+
+def _apply_direct_receipt(
+    db: Session,
+    product_id: int,
+    actor_user_id: int | None,
+    payload: dict,
+    reference: str,
+    note: str,
+) -> None:
+    tx = InventoryTransaction(
+        tx_type="receipt",
+        product_id=int(product_id),
+        warehouse_from_id=None,
+        warehouse_to_id=int(payload.get("warehouse_to_id") or 0),
+        bin_from_id=None,
+        bin_to_id=None,
+        supplier_id=(payload.get("supplier_id") or None),
+        delivery_note_no=(payload.get("delivery_note_no") or None),
+        condition=str(payload.get("condition") or _default_condition_code()),
+        quantity=int(payload.get("quantity") or 0),
+        serial_number=None,
+        reference=reference,
+        note=note,
+    )
+    if hasattr(tx, "unit_cost"):
+        tx.unit_cost = payload.get("unit_cost")
+    apply_transaction(db, tx, actor_user_id=actor_user_id)
+    unit_cost = payload.get("unit_cost")
+    if unit_cost is not None:
+        row = db.get(Product, int(product_id))
+        if row:
+            row.last_cost_cents = int(unit_cost)
+            row.price_source = "bestellung"
+            db.add(row)
+
+
+def _compute_recommended_sale_cents(last_cost_cents: int | None, rule: PriceRuleKind | None) -> int | None:
+    if last_cost_cents is None or not rule or not bool(rule.active):
+        return None
+    base = float(last_cost_cents)
+    value = base * (1.0 + float(rule.markup_percent or 0.0)) + float(rule.markup_fixed_cents or 0)
+    cents = int(round(value))
+    mode = (rule.rounding_mode or "none").strip().lower()
+    if mode == "100":
+        return int(round(cents / 100.0)) * 100
+    if mode == "099":
+        candidate = int((cents // 100) * 100 + 99)
+        if candidate < cents:
+            candidate += 100
+        return max(99, candidate)
+    return cents
+
+
+def _next_po_number(db: Session) -> str:
+    year = dt.datetime.utcnow().year
+    prefix = f"PO-{year}-"
+    rows = (
+        db.query(PurchaseOrder.po_number)
+        .filter(PurchaseOrder.po_number.like(f"{prefix}%"))
+        .order_by(PurchaseOrder.po_number.desc())
+        .limit(1)
+        .all()
+    )
+    seq = 1
+    if rows and rows[0][0]:
+        tail = str(rows[0][0]).replace(prefix, "", 1)
+        try:
+            seq = int(tail) + 1
+        except Exception:
+            seq = 1
+    return f"{prefix}{seq:04d}"
+
+
+def _purchase_status_label(status: str | None) -> str:
+    mapping = {
+        "draft": "Entwurf",
+        "sent": "Gesendet",
+        "confirmed": "Bestätigt",
+        "received": "Geliefert",
+    }
+    key = (status or "").strip().lower()
+    return mapping.get(key, status or "")
+
+
+_po_re = re.compile(r"PO-\d{4}-\d{4}", re.IGNORECASE)
+
+
+def _extract_po_numbers(text: str | None) -> list[str]:
+    raw = str(text or "")
+    found = _po_re.findall(raw)
+    out: list[str] = []
+    for f in found:
+        key = str(f).upper()
+        if key not in out:
+            out.append(key)
+    return out
 
 
 def _seed_item_type_field_rules(db: Session) -> None:
@@ -1009,6 +1634,29 @@ async def setup_and_auth_gate(request: Request, call_next):
     db = SessionLocal()
     try:
         request.state.user = get_current_user(request, db)
+        if request.state.user is not None:
+            now = dt.datetime.utcnow().replace(tzinfo=None)
+            if "customer_view" not in request.session:
+                request.session["customer_view"] = True
+            if bool(request.session.get("customer_view", True)):
+                request.session.pop("customer_view_until", None)
+            else:
+                until_raw = (request.session.get("customer_view_until") or "").strip()
+                until_dt = None
+                if until_raw:
+                    try:
+                        until_dt = dt.datetime.fromisoformat(until_raw)
+                    except Exception:
+                        until_dt = None
+                if until_dt is None:
+                    until_dt = now + dt.timedelta(seconds=CUSTOMER_VIEW_TIMEOUT_SECONDS)
+                    request.session["customer_view_until"] = until_dt.isoformat()
+                elif now >= until_dt:
+                    request.session["customer_view"] = True
+                    request.session.pop("customer_view_until", None)
+        else:
+            request.session.pop("customer_view", None)
+            request.session.pop("customer_view_until", None)
 
         path = request.url.path
         allow_setup_paths = (
@@ -1363,7 +2011,7 @@ def root(request: Request):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
-    products = db.query(Product).count()
+    products = db.query(Product).filter(Product.active == True).count()
     warehouses = db.query(Warehouse).count()
     serials_in_stock = db.query(StockSerial).filter(StockSerial.status == "in_stock").count()
     qty_lines = db.query(StockBalance).count()
@@ -1387,6 +2035,58 @@ def dashboard(request: Request, user=Depends(require_user), db: Session = Depend
             warnings=warnings,
         ),
     )
+
+
+@app.post("/ui/customer_view/toggle")
+async def ui_customer_view_toggle(request: Request, user=Depends(require_user)):
+    now = dt.datetime.utcnow().replace(tzinfo=None)
+    current = bool(request.session.get("customer_view", True))
+    next_value = not current
+    request.session["customer_view"] = next_value
+    if next_value:
+        request.session.pop("customer_view_until", None)
+    else:
+        request.session["customer_view_until"] = (now + dt.timedelta(seconds=CUSTOMER_VIEW_TIMEOUT_SECONDS)).isoformat()
+
+    accepts_json = "application/json" in (request.headers.get("accept") or "").lower()
+    if accepts_json:
+        return JSONResponse({"ok": True, "customer_view": next_value})
+
+    form = await request.form()
+    redirect_to = (form.get("next") or request.headers.get("referer") or "/dashboard").strip() or "/dashboard"
+    return RedirectResponse(redirect_to, status_code=302)
+
+
+@app.post("/ui/draft/clear")
+async def ui_draft_clear(request: Request, user=Depends(require_user)):
+    _ = user
+    form = await request.form()
+    key = (form.get("key") or request.query_params.get("key") or "").strip()
+    next_url = (form.get("next") or request.headers.get("referer") or "/dashboard").strip() or "/dashboard"
+    if key:
+        _draft_clear(request, key)
+        _flash(request, "Entwurf gelöscht.", "info")
+    return RedirectResponse(next_url, status_code=302)
+
+
+@app.get("/suche", response_class=HTMLResponse)
+def search_alias(request: Request, user=Depends(require_user)):
+    _ = user
+    query = (request.url.query or "").strip()
+    target = "/catalog/products"
+    if query:
+        target = f"{target}?{query}"
+    return RedirectResponse(target, status_code=302)
+
+
+@app.get("/schnell", response_class=HTMLResponse)
+def quick_index(request: Request, user=Depends(require_user)):
+    _ = user
+    query = (request.url.query or "").strip()
+    target = "/dashboard"
+    if query:
+        target = f"{target}?{query}"
+    return RedirectResponse(target, status_code=302)
 
 
 @app.get("/mobile/quick", response_class=HTMLResponse)
@@ -1442,6 +2142,15 @@ def mobile_quick(
             found_serial=found_serial,
             selected_product_id=selected_product_id,
         ),
+    )
+
+
+@app.get("/menu", response_class=HTMLResponse)
+def menu_page(request: Request, user=Depends(require_user)):
+    nav_groups = get_nav_for_user(user)
+    return templates.TemplateResponse(
+        "menu.html",
+        _ctx(request, user=user, menu_groups=nav_groups),
     )
 
 
@@ -2018,21 +2727,19 @@ PRODUCT_FORM_FIELD_KEYS = tuple(spec["key"] for spec in PRODUCT_FORM_FIELD_SPECS
 DEFAULT_PRODUCT_FORM_FIELDS_BY_ITEM_TYPE = {it: list(PRODUCT_FORM_FIELD_KEYS) for it in ITEM_TYPE_CHOICES}
 
 PRODUCTS_LIST_COLUMN_SPECS = (
-    {"key": "id", "label": "#", "width": "60px"},
-    {"key": "item_type", "label": "Artikelart", "width": "0.9fr"},
-    {"key": "name", "label": "Bezeichnung", "width": "1.4fr"},
-    {"key": "material_no", "label": "Materialnummer", "width": "1fr"},
-    {"key": "sales_name", "label": "Verkaufsbezeichnung", "width": "1fr"},
-    {"key": "manufacturer_name", "label": "Herstellerbezeichnung", "width": "1fr"},
+    {"key": "product", "label": "Artikel", "width": "1.7fr"},
+    {"key": "brand", "label": "Marke", "width": "1fr"},
+    {"key": "kind_type", "label": "Geräteart/Typ", "width": "1.2fr"},
+    {"key": "traits", "label": "Merkmale", "width": "1.8fr"},
+    {"key": "stock_total", "label": "Bestand gesamt", "width": "130px"},
     {"key": "actions", "label": "Aktion", "width": "220px"},
 )
 
 STOCK_COLUMN_SPECS = (
-    {"key": "id", "label": "#", "width": "60px"},
-    {"key": "item_type", "label": "Artikelart", "width": "0.9fr"},
-    {"key": "product", "label": "Produkt", "width": "1.4fr"},
-    {"key": "conditions", "label": "Bestände nach Zustand", "width": "1.6fr"},
-    {"key": "material_no", "label": "Materialnummer", "width": "0.9fr"},
+    {"key": "product", "label": "Artikel", "width": "1.6fr"},
+    {"key": "kind_type", "label": "Geräteart/Typ", "width": "1.1fr"},
+    {"key": "traits", "label": "Merkmale", "width": "1.6fr"},
+    {"key": "conditions", "label": "Bestände nach Zustand", "width": "1.5fr"},
     {"key": "warning", "label": "Warnung", "width": "1fr"},
 )
 
@@ -2110,12 +2817,42 @@ def _table_columns_from_keys(specs: tuple[dict, ...], keys: list[str]) -> tuple[
 
 
 def _products_list_columns(db: Session) -> tuple[list[dict], str]:
-    keys = _sanitize_table_column_keys(_get_ui_pref_json(db, UI_PREF_KEY_PRODUCTS_LIST_COLUMNS), PRODUCTS_LIST_COLUMN_SPECS)
+    raw = _get_ui_pref_json(db, UI_PREF_KEY_PRODUCTS_LIST_COLUMNS)
+    keys = _sanitize_table_column_keys(raw, PRODUCTS_LIST_COLUMN_SPECS)
+    spec_order = [str(spec["key"]) for spec in PRODUCTS_LIST_COLUMN_SPECS]
+    allowed_now = {str(spec["key"]) for spec in PRODUCTS_LIST_COLUMN_SPECS}
+    old_keys = {"id", "item_type", "name", "material_no", "sale_price", "sales_name", "manufacturer_name"}
+    if isinstance(raw, list):
+        raw_keys = {str(v) for v in raw}
+        has_old = len(raw_keys.intersection(old_keys)) > 0
+        has_new_content = len(raw_keys.intersection(allowed_now - {"actions"})) > 0
+        if has_old and (not has_new_content or set(keys) == {"actions"}):
+            keys = [str(spec["key"]) for spec in PRODUCTS_LIST_COLUMN_SPECS]
+    if "product" not in keys:
+        keys.insert(0, "product")
+    if "stock_total" not in keys:
+        if "actions" in keys:
+            actions_index = keys.index("actions")
+            keys.insert(actions_index, "stock_total")
+        else:
+            keys.append("stock_total")
+        keys = _sanitize_table_column_keys(keys, PRODUCTS_LIST_COLUMN_SPECS)
+    keys = [key for key in spec_order if key in set(keys)]
+    if not keys:
+        keys = list(spec_order)
     return _table_columns_from_keys(PRODUCTS_LIST_COLUMN_SPECS, keys)
 
 
 def _stock_overview_columns(db: Session) -> tuple[list[dict], str]:
-    keys = _sanitize_table_column_keys(_get_ui_pref_json(db, UI_PREF_KEY_STOCK_COLUMNS), STOCK_COLUMN_SPECS)
+    raw = _get_ui_pref_json(db, UI_PREF_KEY_STOCK_COLUMNS)
+    keys = _sanitize_table_column_keys(raw, STOCK_COLUMN_SPECS)
+    old_keys = {"id", "item_type", "material_no"}
+    if isinstance(raw, list):
+        raw_keys = {str(v) for v in raw}
+        has_old = len(raw_keys.intersection(old_keys)) > 0
+        has_new_traits_config = len(raw_keys.intersection({"kind_type", "traits"})) > 0
+        if has_old and not has_new_traits_config:
+            keys = [str(spec["key"]) for spec in STOCK_COLUMN_SPECS]
     return _table_columns_from_keys(STOCK_COLUMN_SPECS, keys)
 
 
@@ -2159,6 +2896,19 @@ def _normalize_item_type(raw: str | None, fallback: str = "material") -> str:
 def _item_type_label(raw: str | None) -> str:
     key = _normalize_item_type(raw, fallback="material")
     return ITEM_TYPE_LABELS.get(key, "Material")
+
+
+def _supplier_receipt_product_label(product: Product | None) -> str:
+    if not product:
+        return "-"
+    item_type = _normalize_item_type(getattr(product, "item_type", None), fallback="material")
+    if item_type == "appliance":
+        title = (product.sales_name or product.name or "").strip() or f"Produkt #{int(product.id)}"
+        brand = (product.manufacturer or product.manufacturer_name or "").strip()
+        if brand:
+            return f"{title} | {brand}"
+        return title
+    return (product.name or product.sales_name or "").strip() or f"Produkt #{int(product.id)}"
 
 
 def _parse_track_mode(raw: str, default_mode: str) -> str:
@@ -2383,6 +3133,146 @@ def _parse_product_attribute_values(form, attrs: list[AttributeDef]) -> tuple[di
     return values, errors
 
 
+def _format_list_attribute_value(attr: AttributeDef, raw_value: str | None) -> str:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return ""
+    if attr.value_type == "bool":
+        lowered = raw.lower()
+        if lowered == "true":
+            return "Ja"
+        if lowered == "false":
+            return "Nein"
+    if attr.value_type == "enum" and bool(attr.is_multi):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                items = [str(v).strip() for v in parsed if str(v).strip()]
+                return ", ".join(items)
+        except Exception:
+            return raw
+    return raw
+
+
+def _top_traits_for_products(db: Session, products: list[Product]) -> dict[int, list[str]]:
+    product_ids = [int(p.id) for p in products]
+    if not product_ids:
+        return {}
+    kind_ids = sorted({int(p.device_kind_id) for p in products if p.device_kind_id})
+    if not kind_ids:
+        return {}
+    rows = (
+        db.query(KindListAttribute)
+        .filter(KindListAttribute.kind_id.in_(kind_ids))
+        .order_by(KindListAttribute.kind_id.asc(), KindListAttribute.slot.asc())
+        .all()
+    )
+    if not rows:
+        return {}
+    attrs_by_kind: dict[int, list[int]] = {}
+    attr_ids: set[int] = set()
+    for row in rows:
+        slot = int(row.slot or 0)
+        if slot not in (1, 2, 3):
+            continue
+        kind_id = int(row.kind_id)
+        attr_id = int(row.attribute_def_id)
+        attrs_by_kind.setdefault(kind_id, []).append(attr_id)
+        attr_ids.add(attr_id)
+    if not attr_ids:
+        return {}
+    attr_defs = {int(a.id): a for a in db.query(AttributeDef).filter(AttributeDef.id.in_(sorted(attr_ids))).all()}
+    pav_rows = (
+        db.query(ProductAttributeValue)
+        .filter(
+            ProductAttributeValue.product_id.in_(product_ids),
+            ProductAttributeValue.attribute_id.in_(sorted(attr_ids)),
+        )
+        .all()
+    )
+    value_map = {
+        (int(v.product_id), int(v.attribute_id)): str(v.value_text or "")
+        for v in pav_rows
+    }
+    out: dict[int, list[str]] = {}
+    for product in products:
+        if _normalize_item_type(product.item_type, fallback="material") != "appliance":
+            continue
+        kind_id = int(product.device_kind_id or 0)
+        if kind_id <= 0:
+            continue
+        trait_list: list[str] = []
+        for attr_id in attrs_by_kind.get(kind_id, [])[:3]:
+            attr = attr_defs.get(int(attr_id))
+            if not attr:
+                continue
+            raw = value_map.get((int(product.id), int(attr.id)), "")
+            value = _format_list_attribute_value(attr, raw)
+            if not value:
+                continue
+            trait_list.append(f"{attr.name}: {value}")
+        out[int(product.id)] = trait_list
+    return out
+
+
+def _catalog_cascade_state(
+    db: Session,
+    selected_area_id: int = 0,
+    selected_kind_id: int = 0,
+    selected_type_id: int = 0,
+) -> tuple[list[Area], list[DeviceKind], list[DeviceType], int, int, int]:
+    areas = db.query(Area).order_by(Area.name.asc()).all()
+    selected_area_id = int(selected_area_id or 0)
+    selected_kind_id = int(selected_kind_id or 0)
+    selected_type_id = int(selected_type_id or 0)
+
+    area_row = db.get(Area, selected_area_id) if selected_area_id else None
+    if selected_area_id and not area_row:
+        selected_area_id = 0
+
+    kind_row = db.get(DeviceKind, selected_kind_id) if selected_kind_id else None
+    if selected_kind_id and not kind_row:
+        selected_kind_id = 0
+    elif selected_kind_id and selected_area_id and int(kind_row.area_id or 0) != selected_area_id:
+        selected_kind_id = 0
+
+    type_row = db.get(DeviceType, selected_type_id) if selected_type_id else None
+    if selected_type_id and not type_row:
+        selected_type_id = 0
+    elif selected_type_id and selected_kind_id and int(type_row.device_kind_id or 0) != selected_kind_id:
+        selected_type_id = 0
+    elif selected_type_id and not selected_kind_id:
+        if selected_area_id:
+            type_kind = db.get(DeviceKind, int(type_row.device_kind_id or 0))
+            if not type_kind or int(type_kind.area_id or 0) != selected_area_id:
+                selected_type_id = 0
+            else:
+                selected_kind_id = int(type_row.device_kind_id or 0)
+        else:
+            selected_kind_id = int(type_row.device_kind_id or 0)
+
+    kinds_q = db.query(DeviceKind)
+    if selected_area_id:
+        kinds_q = kinds_q.filter(DeviceKind.area_id == selected_area_id)
+    kinds = kinds_q.order_by(DeviceKind.name.asc()).all()
+    valid_kind_ids = {int(k.id) for k in kinds}
+    if selected_kind_id and selected_kind_id not in valid_kind_ids:
+        selected_kind_id = 0
+        selected_type_id = 0
+
+    types_q = db.query(DeviceType)
+    if selected_kind_id:
+        types_q = types_q.filter(DeviceType.device_kind_id == selected_kind_id)
+    elif selected_area_id:
+        types_q = types_q.join(DeviceKind, DeviceKind.id == DeviceType.device_kind_id).filter(DeviceKind.area_id == selected_area_id)
+    types = types_q.order_by(DeviceType.name.asc()).all()
+    valid_type_ids = {int(t.id) for t in types}
+    if selected_type_id and selected_type_id not in valid_type_ids:
+        selected_type_id = 0
+
+    return areas, kinds, types, selected_area_id, selected_kind_id, selected_type_id
+
+
 @app.get("/catalog/products", response_class=HTMLResponse)
 def products_list(
     request: Request,
@@ -2392,13 +3282,20 @@ def products_list(
     area_id: int = 0,
     kind_id: int = 0,
     type_id: int = 0,
+    show_inactive: int = 0,
     db: Session = Depends(db_session),
 ):
-    areas = db.query(Area).order_by(Area.name.asc()).all()
-    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
-    types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
+    areas, kinds, types, area_id, kind_id, type_id = _catalog_cascade_state(
+        db,
+        selected_area_id=int(area_id or 0),
+        selected_kind_id=int(kind_id or 0),
+        selected_type_id=int(type_id or 0),
+    )
 
-    query = db.query(Product).filter(Product.active == True)
+    include_inactive = int(show_inactive or 0) == 1 and (getattr(user, "role", "") or "").strip().lower() == "admin"
+    query = db.query(Product)
+    if not include_inactive:
+        query = query.filter(Product.active == True)
     search_filter = build_product_search_filter(q, include_attribute_values=True)
     if search_filter is not None:
         query = query.filter(search_filter)
@@ -2529,7 +3426,34 @@ def products_list(
         )
 
     products = query.order_by(Product.id.desc()).limit(200).all()
+    stock_total_map: dict[int, int] = {}
+    product_ids = [int(p.id) for p in products]
+    if product_ids:
+        stock_rows = (
+            db.query(
+                StockBalance.product_id,
+                func.coalesce(func.sum(StockBalance.quantity), 0).label("qty_sum"),
+            )
+            .filter(StockBalance.product_id.in_(product_ids))
+            .group_by(StockBalance.product_id)
+            .all()
+        )
+        for product_id, qty_sum in stock_rows:
+            stock_total_map[int(product_id)] = int(qty_sum or 0)
+    for p in products:
+        stock_total_map.setdefault(int(p.id), 0)
+
+    allowed_set_device_type_ids = _sets_allowed_device_type_ids(db)
+    allowed_set_device_kind_ids = _sets_allowed_device_kind_ids(db)
+    sets_enabled_product_ids = {
+        int(p.id) for p in products if _is_sets_product(p, allowed_set_device_type_ids, allowed_set_device_kind_ids)
+    }
+    kind_name_map = {int(k.id): str(k.name or "") for k in kinds}
+    type_name_map = {int(t.id): str(t.name or "") for t in types}
+    top_traits_map = _top_traits_for_products(db, products)
     table_columns, table_grid = _products_list_columns(db)
+    return_to = _request_relative_path(request)
+    return_to_q = quote(return_to, safe="")
     return templates.TemplateResponse(
         "catalog/products_list.html",
         _ctx(
@@ -2545,11 +3469,19 @@ def products_list(
             area_id=area_id,
             kind_id=kind_id,
             type_id=type_id,
+            show_inactive=(1 if include_inactive else 0),
             filter_attrs=filter_attrs,
             attr_filters=attr_filters,
             options_by_slug=options_by_slug,
+            sets_enabled_product_ids=sets_enabled_product_ids,
+            kind_name_map=kind_name_map,
+            type_name_map=type_name_map,
+            top_traits_map=top_traits_map,
+            stock_total_map=stock_total_map,
             table_columns=table_columns,
             table_grid=table_grid,
+            return_to=return_to,
+            return_to_q=return_to_q,
         ),
     )
 
@@ -2767,6 +3699,7 @@ def products_new_get(
     request: Request,
     user=Depends(require_admin),
     item_type: str = "",
+    area_id: int = 0,
     device_kind_id: int = 0,
     device_type_id: int = 0,
     db: Session = Depends(db_session),
@@ -2783,31 +3716,38 @@ def products_new_get(
             ),
         )
 
-    areas = db.query(Area).order_by(Area.name.asc()).all()
-    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
-    types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
-    manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc()).all()
-    selected_kind_id = int(device_kind_id or 0)
-    selected_type_id = int(device_type_id or 0)
-    if selected_kind_id and not db.get(DeviceKind, selected_kind_id):
-        selected_kind_id = 0
-    if selected_type_id:
-        selected_type = db.get(DeviceType, selected_type_id)
-        if not selected_type:
-            selected_type_id = 0
-        else:
-            if selected_kind_id and int(selected_type.device_kind_id or 0) != selected_kind_id:
-                selected_type_id = 0
-            elif not selected_kind_id:
-                selected_kind_id = int(selected_type.device_kind_id or 0)
+    draft_key = f"draft:/catalog/products/new:{selected_item_type}"
+    prefill_form_data: dict[str, str | list[str]] = {}
+    query_keys = {str(k) for k in request.query_params.keys()}
+    if query_keys.issubset({"item_type"}):
+        loaded = _draft_get(request, draft_key)
+        if isinstance(loaded, dict):
+            prefill_form_data = dict(loaded)
 
+    selected_area_id = int(area_id or _to_int(_form_scalar(prefill_form_data, "area_id"), 0) or 0)
+    selected_kind_id = int(device_kind_id or _to_int(_form_scalar(prefill_form_data, "device_kind_id"), 0) or 0)
+    selected_type_id = int(device_type_id or _to_int(_form_scalar(prefill_form_data, "device_type_id"), 0) or 0)
+    areas, kinds, types, selected_area_id, selected_kind_id, selected_type_id = _catalog_cascade_state(
+        db,
+        selected_area_id=selected_area_id,
+        selected_kind_id=selected_kind_id,
+        selected_type_id=selected_type_id,
+    )
+    manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc()).all()
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    receipt_defaults = _receipt_defaults(db)
     attrs = _applicable_attributes(db, selected_kind_id or None, selected_type_id or None)
     options_map: dict[int, list[str]] = {}
     grouped: dict[str, list[AttributeDef]] = {}
+    val_map: dict[int, str] = {}
+    val_multi_map: dict[int, list[str]] = {}
     for a in attrs:
         options_map[a.id] = _enum_options_from_json(a.enum_options_json)
         group_name = (a.group_name or "").strip() or "Ohne Gruppe"
         grouped.setdefault(group_name, []).append(a)
+    _apply_product_attribute_form_values(attrs, val_map, val_multi_map, prefill_form_data)
     attrs_grouped = sorted(grouped.items(), key=lambda item: (item[0] != "Ohne Gruppe", item[0].lower()))
     form_schema = _product_form_schema(db, selected_item_type)
     return templates.TemplateResponse(
@@ -2820,18 +3760,30 @@ def products_new_get(
             kinds=kinds,
             types=types,
             manufacturers=manufacturers,
+            warehouses=warehouses,
+            suppliers=suppliers,
+            condition_defs=condition_defs,
+            receipt_defaults=receipt_defaults,
             item_types=ITEM_TYPE_CHOICES,
             item_type_labels=ITEM_TYPE_LABELS,
             selected_item_type=selected_item_type,
             item_type_locked=True,
+            selected_area_id=selected_area_id,
             selected_kind_id=selected_kind_id,
             selected_type_id=selected_type_id,
             attrs=attrs,
             attrs_grouped=attrs_grouped,
-            val_map={},
-            val_multi_map={},
+            val_map=val_map,
+            val_multi_map=val_multi_map,
             options_map=options_map,
             form_schema=form_schema,
+            form_data=prefill_form_data,
+            form_errors={},
+            first_error_field_id="",
+            draft_key=draft_key,
+            show_receipt_block=True,
+            receipt_form_data={},
+            receipt_form_errors={},
         ),
     )
 
@@ -2843,35 +3795,45 @@ async def products_new_post(request: Request, user=Depends(require_admin), db: S
     if not item_type:
         _flash(request, "Bitte zuerst eine Artikelart wählen.", "error")
         return RedirectResponse("/catalog/products/new", status_code=302)
+    draft_key = f"draft:/catalog/products/new:{item_type}"
+    form_data = _extract_form_data(form)
+    form_data["item_type"] = item_type
+    action = (form.get("action") or "save").strip().lower()
+    wants_receipt = action == "save_and_receipt"
+    _draft_set(request, draft_key, form_data)
     visible_fields, required_fields = _product_form_key_sets(db, item_type)
 
     text_values: dict[str, str] = {}
     select_values: dict[str, int | None] = {}
-    errors: list[str] = []
+    form_errors: dict[str, str] = {}
+
+    def add_error(field_key: str, message: str) -> None:
+        if field_key not in form_errors:
+            form_errors[field_key] = message
 
     for key in visible_fields:
         if key in SELECT_FIELD_KEYS:
             value, exists = _parse_product_select_id(db, key, form.get(key))
             select_values[key] = value if exists else None
             if key in required_fields and not value:
-                errors.append(f"Feld '{_product_field_label(key)}' ist erforderlich.")
+                add_error(key, f"Feld '{_product_field_label(key)}' ist erforderlich.")
             elif value and not exists:
-                errors.append(f"Ungültiger Wert für Feld '{_product_field_label(key)}'.")
+                add_error(key, f"Ungültiger Wert für Feld '{_product_field_label(key)}'.")
             continue
         text_values[key] = (form.get(key) or "").strip()
         if key in required_fields and not text_values[key]:
-            errors.append(f"Feld '{_product_field_label(key)}' ist erforderlich.")
+            add_error(key, f"Feld '{_product_field_label(key)}' ist erforderlich.")
 
     name = text_values.get("name", "") if "name" in visible_fields else ""
     if item_type == "appliance" and (("name" not in visible_fields) or not name):
         name = text_values.get("sales_name", "") or text_values.get("material_no", "") or name
     if not name:
-        errors.append("Feld 'Bezeichnung' ist erforderlich.")
+        add_error("name", "Feld 'Bezeichnung' ist erforderlich.")
 
     manufacturer_id = select_values.get("manufacturer_id") if "manufacturer_id" in visible_fields else None
     manufacturer_row = db.get(Manufacturer, manufacturer_id) if manufacturer_id else None
     if item_type == "appliance" and "manufacturer_id" in visible_fields and not manufacturer_id:
-        errors.append("Für Großgeräte ist ein Hersteller Pflicht.")
+        add_error("manufacturer_id", "Für Großgeräte ist ein Hersteller Pflicht.")
 
     material_no = text_values.get("material_no") or None if "material_no" in visible_fields else None
     if material_no:
@@ -2881,14 +3843,14 @@ async def products_new_post(request: Request, user=Depends(require_admin), db: S
             .one_or_none()
         )
         if existing_material:
-            errors.append("Materialnummer existiert bereits.")
+            add_error("material_no", "Materialnummer existiert bereits.")
 
     ean = None
     try:
         if "ean" in visible_fields:
             ean = normalize_ean(text_values.get("ean"))
     except ValueError as e:
-        errors.append(f"Ungültige EAN: {e}")
+        add_error("ean", f"Ungültige EAN: {e}")
 
     area_id = select_values.get("area_id") if "area_id" in visible_fields else None
     device_kind_id = select_values.get("device_kind_id") if "device_kind_id" in visible_fields else None
@@ -2897,19 +3859,39 @@ async def products_new_post(request: Request, user=Depends(require_admin), db: S
     attrs = _applicable_attributes(db, device_kind_id, device_type_id)
     parsed_values, parse_errors = _parse_product_attribute_values(form, attrs)
     if parse_errors:
-        errors.extend(parse_errors)
+        attrs_by_name = {str(a.name or "").strip().lower(): a for a in attrs}
+        for msg in parse_errors:
+            after_colon = str(msg).split(":", 1)[1].strip().lower() if ":" in str(msg) else ""
+            attr = attrs_by_name.get(after_colon)
+            if attr:
+                add_error(f"attr_{int(attr.id)}", msg)
+            else:
+                add_error("__all__", msg)
 
-    redirect_params = [f"item_type={item_type}"]
-    if device_kind_id:
-        redirect_params.append(f"device_kind_id={int(device_kind_id)}")
-    if device_type_id:
-        redirect_params.append(f"device_type_id={int(device_type_id)}")
-    redirect_url = "/catalog/products/new?" + "&".join(redirect_params)
-
-    if errors:
-        for msg in errors[:5]:
+    if form_errors:
+        for msg in list(form_errors.values())[:5]:
             _flash(request, msg, "error")
-        return RedirectResponse(redirect_url, status_code=302)
+        selected_kind_id = _to_int(_form_scalar(form_data, "device_kind_id"), 0)
+        selected_type_id = _to_int(_form_scalar(form_data, "device_type_id"), 0)
+        response = products_new_get(
+            request,
+            user=user,
+            item_type=item_type,
+            area_id=_to_int(_form_scalar(form_data, "area_id"), 0),
+            device_kind_id=selected_kind_id,
+            device_type_id=selected_type_id,
+            db=db,
+        )
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, PRODUCT_FORM_FIELD_IDS)
+        _apply_product_attribute_form_values(
+            response.context.get("attrs", []),
+            response.context.get("val_map", {}),
+            response.context.get("val_multi_map", {}),
+            form_data,
+        )
+        return _rerender_template_response(response)
 
     sales_name = text_values.get("sales_name") or None if "sales_name" in visible_fields else None
     manufacturer_name = text_values.get("manufacturer_name") or None if "manufacturer_name" in visible_fields else None
@@ -2941,6 +3923,45 @@ async def products_new_post(request: Request, user=Depends(require_admin), db: S
             db.add(ProductAttributeValue(product_id=p.id, attribute_id=a.id, value_text=value_text))
     write_product_outbox_event(db, p, event_type="ProductCreated")
     db.commit()
+    _draft_clear(request, draft_key)
+
+    if wants_receipt:
+        payload, receipt_errors = _direct_receipt_payload_from_form(db, form)
+
+        if receipt_errors:
+            _flash(request, "Produkt wurde gespeichert. Einbuchung konnte nicht abgeschlossen werden.", "warn")
+            for msg in list(receipt_errors.values())[:5]:
+                _flash(request, msg, "error")
+            response = products_edit_get(product_id=int(p.id), request=request, user=user, db=db)
+            response.context["show_receipt_block"] = True
+            response.context["receipt_form_data"] = form_data
+            response.context["receipt_form_errors"] = receipt_errors
+            response.context["first_error_field_id"] = _first_error_field_id(receipt_errors, PRODUCT_RECEIPT_FIELD_IDS)
+            return _rerender_template_response(response)
+        try:
+            _apply_direct_receipt(
+                db=db,
+                product_id=int(p.id),
+                actor_user_id=user.id,
+                payload=payload,
+                reference=f"PRODUKT-{int(p.id)}",
+                note="Direkt-Einbuchung bei Produktanlage",
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            _flash(request, "Produkt wurde gespeichert. Einbuchung konnte nicht abgeschlossen werden.", "warn")
+            receipt_errors = {"__all__": f"Einbuchung fehlgeschlagen: {exc}"}
+            response = products_edit_get(product_id=int(p.id), request=request, user=user, db=db)
+            response.context["show_receipt_block"] = True
+            response.context["receipt_form_data"] = form_data
+            response.context["receipt_form_errors"] = receipt_errors
+            response.context["first_error_field_id"] = _first_error_field_id(receipt_errors, PRODUCT_RECEIPT_FIELD_IDS)
+            return _rerender_template_response(response)
+
+        _flash(request, "Produkt angelegt und direkt eingebucht.", "info")
+        return RedirectResponse(f"/catalog/products/{p.id}?receipt_saved=1", status_code=302)
+
     _flash(request, "Produkt angelegt.", "info")
     return RedirectResponse(f"/catalog/products/{p.id}/edit", status_code=302)
 
@@ -2950,9 +3971,22 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
     p = db.get(Product, product_id)
     if not p:
         raise HTTPException(status_code=404)
-    areas = db.query(Area).order_by(Area.name.asc()).all()
-    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
-    types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
+    draft_key = f"draft:/catalog/products/edit:{int(product_id)}"
+    prefill_form_data: dict[str, str | list[str]] = {}
+    if not request.query_params:
+        loaded = _draft_get(request, draft_key)
+        if isinstance(loaded, dict):
+            prefill_form_data = dict(loaded)
+
+    selected_area_id = _to_int(_form_scalar(prefill_form_data, "area_id"), int(p.area_id or 0))
+    selected_kind_id = _to_int(_form_scalar(prefill_form_data, "device_kind_id"), int(p.device_kind_id or 0))
+    selected_type_id = _to_int(_form_scalar(prefill_form_data, "device_type_id"), int(p.device_type_id or 0))
+    areas, kinds, types, selected_area_id, selected_kind_id, selected_type_id = _catalog_cascade_state(
+        db,
+        selected_area_id=selected_area_id,
+        selected_kind_id=selected_kind_id,
+        selected_type_id=selected_type_id,
+    )
     manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc()).all()
     if p.manufacturer_id and all(int(m.id) != int(p.manufacturer_id) for m in manufacturers):
         selected_manufacturer = db.get(Manufacturer, p.manufacturer_id)
@@ -2960,8 +3994,11 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
             manufacturers.append(selected_manufacturer)
             manufacturers = sorted(manufacturers, key=lambda m: (str(m.name or "").lower(), m.id))
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    receipt_defaults = _receipt_defaults(db)
 
-    attrs = _applicable_attributes(db, p.device_kind_id, p.device_type_id)
+    attrs = _applicable_attributes(db, selected_kind_id or None, selected_type_id or None)
     val_map = {v.attribute_id: v.value_text for v in p.attribute_values}
     val_multi_map: dict[int, list[str]] = {}
     options_map: dict[int, list[str]] = {}
@@ -2980,6 +4017,7 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
                 val_multi_map[a.id] = []
         group_name = (a.group_name or "").strip() or "Ohne Gruppe"
         grouped.setdefault(group_name, []).append(a)
+    _apply_product_attribute_form_values(attrs, val_map, val_multi_map, prefill_form_data)
     attrs_grouped = sorted(grouped.items(), key=lambda item: (item[0] != "Ohne Gruppe", item[0].lower()))
     min_rows = (
         db.query(MinStock)
@@ -3004,6 +4042,9 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
             item_types=ITEM_TYPE_CHOICES,
             item_type_labels=ITEM_TYPE_LABELS,
             warehouses=warehouses,
+            suppliers=suppliers,
+            condition_defs=condition_defs,
+            receipt_defaults=receipt_defaults,
             attrs=attrs,
             attrs_grouped=attrs_grouped,
             val_map=val_map,
@@ -3013,7 +4054,17 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
             bins=bins,
             selected_item_type=selected_item_type,
             item_type_locked=True,
+            selected_area_id=selected_area_id,
+            selected_kind_id=selected_kind_id,
+            selected_type_id=selected_type_id,
             form_schema=form_schema,
+            form_data=prefill_form_data,
+            form_errors={},
+            first_error_field_id="",
+            draft_key=draft_key,
+            show_receipt_block=False,
+            receipt_form_data={},
+            receipt_form_errors={},
         ),
     )
 
@@ -3024,36 +4075,46 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
     if not p:
         raise HTTPException(status_code=404)
     form = await request.form()
+    form_data = _extract_form_data(form)
+    action = (form.get("action") or "save").strip().lower()
+    wants_receipt = action == "save_and_receipt"
     item_type = _normalize_item_type(p.item_type, fallback="material")
+    form_data["item_type"] = item_type
+    draft_key = f"draft:/catalog/products/edit:{int(product_id)}"
+    _draft_set(request, draft_key, form_data)
     visible_fields, required_fields = _product_form_key_sets(db, item_type)
 
     text_values: dict[str, str] = {}
     select_values: dict[str, int | None] = {}
-    errors: list[str] = []
+    form_errors: dict[str, str] = {}
+
+    def add_error(field_key: str, message: str) -> None:
+        if field_key not in form_errors:
+            form_errors[field_key] = message
 
     for key in visible_fields:
         if key in SELECT_FIELD_KEYS:
             value, exists = _parse_product_select_id(db, key, form.get(key))
             select_values[key] = value if exists else None
             if key in required_fields and not value:
-                errors.append(f"Feld '{_product_field_label(key)}' ist erforderlich.")
+                add_error(key, f"Feld '{_product_field_label(key)}' ist erforderlich.")
             elif value and not exists:
-                errors.append(f"Ungültiger Wert für Feld '{_product_field_label(key)}'.")
+                add_error(key, f"Ungültiger Wert für Feld '{_product_field_label(key)}'.")
             continue
         text_values[key] = (form.get(key) or "").strip()
         if key in required_fields and not text_values[key]:
-            errors.append(f"Feld '{_product_field_label(key)}' ist erforderlich.")
+            add_error(key, f"Feld '{_product_field_label(key)}' ist erforderlich.")
 
     updated_name = text_values.get("name", "") if "name" in visible_fields else p.name
     if item_type == "appliance" and (("name" not in visible_fields) or not updated_name):
         updated_name = text_values.get("sales_name", "") or text_values.get("material_no", "") or (p.name or "")
     if not updated_name:
-        errors.append("Feld 'Bezeichnung' ist erforderlich.")
+        add_error("name", "Feld 'Bezeichnung' ist erforderlich.")
 
     manufacturer_id = select_values.get("manufacturer_id") if "manufacturer_id" in visible_fields else p.manufacturer_id
     manufacturer_row = db.get(Manufacturer, manufacturer_id) if manufacturer_id else None
     if item_type == "appliance" and "manufacturer_id" in visible_fields and not manufacturer_id:
-        errors.append("Für Großgeräte ist ein Hersteller Pflicht.")
+        add_error("manufacturer_id", "Für Großgeräte ist ein Hersteller Pflicht.")
 
     material_no = text_values.get("material_no") or None if "material_no" in visible_fields else p.material_no
     if "material_no" in visible_fields and material_no:
@@ -3063,19 +4124,32 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
             .one_or_none()
         )
         if existing_material:
-            errors.append("Materialnummer existiert bereits.")
+            add_error("material_no", "Materialnummer existiert bereits.")
 
     ean = p.ean
     if "ean" in visible_fields:
         try:
             ean = normalize_ean(text_values.get("ean"))
         except ValueError as e:
-            errors.append(f"Ungültige EAN: {e}")
+            add_error("ean", f"Ungültige EAN: {e}")
 
-    if errors:
-        for msg in errors[:5]:
+    if form_errors:
+        for msg in list(form_errors.values())[:5]:
             _flash(request, msg, "error")
-        return RedirectResponse(f"/catalog/products/{product_id}/edit", status_code=302)
+        response = products_edit_get(product_id=product_id, request=request, user=user, db=db)
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, PRODUCT_FORM_FIELD_IDS)
+        response.context["show_receipt_block"] = wants_receipt
+        response.context["receipt_form_data"] = form_data
+        response.context["receipt_form_errors"] = {}
+        _apply_product_attribute_form_values(
+            response.context.get("attrs", []),
+            response.context.get("val_map", {}),
+            response.context.get("val_multi_map", {}),
+            form_data,
+        )
+        return _rerender_template_response(response)
 
     p.name = updated_name
     if "manufacturer_id" in visible_fields:
@@ -3104,9 +4178,30 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
     attrs = _applicable_attributes(db, p.device_kind_id, p.device_type_id)
     parsed_values, parse_errors = _parse_product_attribute_values(form, attrs)
     if parse_errors:
-        for msg in parse_errors[:5]:
+        attrs_by_name = {str(a.name or "").strip().lower(): a for a in attrs}
+        for msg in parse_errors:
+            after_colon = str(msg).split(":", 1)[1].strip().lower() if ":" in str(msg) else ""
+            attr = attrs_by_name.get(after_colon)
+            if attr:
+                add_error(f"attr_{int(attr.id)}", msg)
+            else:
+                add_error("__all__", msg)
+        for msg in list(form_errors.values())[:5]:
             _flash(request, msg, "error")
-        return RedirectResponse(f"/catalog/products/{product_id}/edit", status_code=302)
+        response = products_edit_get(product_id=product_id, request=request, user=user, db=db)
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, PRODUCT_FORM_FIELD_IDS)
+        response.context["show_receipt_block"] = wants_receipt
+        response.context["receipt_form_data"] = form_data
+        response.context["receipt_form_errors"] = {}
+        _apply_product_attribute_form_values(
+            response.context.get("attrs", []),
+            response.context.get("val_map", {}),
+            response.context.get("val_multi_map", {}),
+            form_data,
+        )
+        return _rerender_template_response(response)
 
     # update attribute values for applicable attributes
     for a in attrs:
@@ -3129,18 +4224,59 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
     db.flush()
     write_product_outbox_event(db, p, event_type="ProductUpdated")
     db.commit()
+    _draft_clear(request, draft_key)
+
+    if wants_receipt:
+        payload, receipt_errors = _direct_receipt_payload_from_form(db, form)
+        if receipt_errors:
+            _flash(request, "Produkt wurde gespeichert. Einbuchung konnte nicht abgeschlossen werden.", "warn")
+            for msg in list(receipt_errors.values())[:5]:
+                _flash(request, msg, "error")
+            response = products_edit_get(product_id=product_id, request=request, user=user, db=db)
+            response.context["show_receipt_block"] = True
+            response.context["receipt_form_data"] = form_data
+            response.context["receipt_form_errors"] = receipt_errors
+            response.context["first_error_field_id"] = _first_error_field_id(receipt_errors, PRODUCT_RECEIPT_FIELD_IDS)
+            return _rerender_template_response(response)
+        try:
+            _apply_direct_receipt(
+                db=db,
+                product_id=int(p.id),
+                actor_user_id=user.id,
+                payload=payload,
+                reference=f"PRODUKT-{int(p.id)}",
+                note="Direkt-Einbuchung beim Produktspeichern",
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            _flash(request, "Produkt wurde gespeichert. Einbuchung konnte nicht abgeschlossen werden.", "warn")
+            receipt_errors = {"__all__": f"Einbuchung fehlgeschlagen: {exc}"}
+            response = products_edit_get(product_id=product_id, request=request, user=user, db=db)
+            response.context["show_receipt_block"] = True
+            response.context["receipt_form_data"] = form_data
+            response.context["receipt_form_errors"] = receipt_errors
+            response.context["first_error_field_id"] = _first_error_field_id(receipt_errors, PRODUCT_RECEIPT_FIELD_IDS)
+            return _rerender_template_response(response)
+        _flash(request, "Produkt gespeichert und eingebucht.", "info")
+        return RedirectResponse(f"/catalog/products/{p.id}?receipt_saved=1", status_code=302)
+
     _flash(request, "Produkt gespeichert.", "info")
     return RedirectResponse(f"/catalog/products/{p.id}/edit", status_code=302)
 
 
-@app.post("/catalog/products/{product_id}/delete")
-def product_delete(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+def _product_archive_action(product_id: int, request: Request, db: Session):
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404)
     if not bool(product.active):
-        _flash(request, "Produkt ist bereits gelöscht.", "info")
-        return RedirectResponse("/catalog/products", status_code=302)
+        product.active = True
+        db.add(product)
+        db.flush()
+        write_product_outbox_event(db, product, event_type="ProductUpdated")
+        db.commit()
+        _flash(request, "Produkt wurde reaktiviert.", "info")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
 
     non_zero_balances = (
         db.query(StockBalance)
@@ -3160,7 +4296,7 @@ def product_delete(product_id: int, request: Request, user=Depends(require_admin
     if non_zero_balances or serials_in_stock or active_reservations:
         _flash(
             request,
-            "Produkt kann nicht gelöscht werden: Bestand ist nicht 0 oder es gibt aktive Reservierungen.",
+            "Produkt kann nicht archiviert werden: Bestand ist nicht 0 oder es gibt aktive Reservierungen.",
             "error",
         )
         return RedirectResponse(f"/catalog/products/{product_id}/edit", status_code=302)
@@ -3170,8 +4306,20 @@ def product_delete(product_id: int, request: Request, user=Depends(require_admin
     db.flush()
     write_product_outbox_event(db, product, event_type="ProductDeleted")
     db.commit()
-    _flash(request, "Produkt aus dem Katalog gelöscht.", "info")
+    _flash(request, "Produkt wurde archiviert.", "info")
     return RedirectResponse("/catalog/products", status_code=302)
+
+
+@app.post("/catalog/products/{product_id}/archive")
+def product_archive(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ = user
+    return _product_archive_action(product_id, request, db)
+
+
+@app.post("/catalog/products/{product_id}/delete")
+def product_delete(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ = user
+    return _product_archive_action(product_id, request, db)
 
 
 @app.post("/catalog/products/{product_id}/min_stock/set")
@@ -3228,36 +4376,58 @@ def product_detail_get(
     request: Request,
     user=Depends(require_user),
     q: str = "",
+    receipt_saved: int = 0,
     db: Session = Depends(db_session),
 ):
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404)
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    order_draft_key = f"draft:/purchase/orders/from_product:{int(product_id)}"
+    order_form_data: dict[str, str | list[str]] = {}
+    if not request.query_params:
+        loaded = _draft_get(request, order_draft_key)
+        if isinstance(loaded, dict):
+            order_form_data = dict(loaded)
+    allowed_set_device_type_ids = _sets_allowed_device_type_ids(db)
+    allowed_set_device_kind_ids = _sets_allowed_device_kind_ids(db)
+    sets_enabled = _is_sets_product(product, allowed_set_device_type_ids, allowed_set_device_kind_ids)
 
-    links = (
-        db.query(ProductLink)
-        .filter(ProductLink.a_product_id == product_id, ProductLink.link_type == "kompatibel")
-        .order_by(ProductLink.id.desc())
-        .all()
-    )
-    linked_ids = [int(l.b_product_id) for l in links]
+    links: list[ProductLink] = []
     linked_products: dict[int, Product] = {}
-    if linked_ids:
-        linked_products = {p.id: p for p in db.query(Product).filter(Product.id.in_(linked_ids)).all()}
+    set_rows: list[ProductSet] = []
+    candidate_products: list[Product] = []
+    if sets_enabled:
+        links = (
+            db.query(ProductLink)
+            .filter(ProductLink.a_product_id == product_id, ProductLink.link_type == "kompatibel")
+            .order_by(ProductLink.id.desc())
+            .all()
+        )
+        linked_ids = [int(l.b_product_id) for l in links]
+        if linked_ids:
+            linked_products = {p.id: p for p in db.query(Product).filter(Product.id.in_(linked_ids)).all()}
 
-    set_rows = (
-        db.query(ProductSet)
-        .join(ProductSetItem, ProductSetItem.set_id == ProductSet.id)
-        .filter(ProductSetItem.product_id == product_id)
-        .order_by(ProductSet.id.desc())
-        .all()
-    )
+        set_rows = (
+            db.query(ProductSet)
+            .join(ProductSetItem, ProductSetItem.set_id == ProductSet.id)
+            .filter(ProductSetItem.product_id == product_id)
+            .order_by(ProductSet.id.desc())
+            .all()
+        )
 
-    candidates_q = db.query(Product).filter(Product.active == True, Product.id != product_id)
-    search_filter = build_product_search_filter(q)
-    if search_filter is not None:
-        candidates_q = candidates_q.filter(search_filter)
-    candidate_products = candidates_q.order_by(Product.name.asc()).limit(250).all()
+        candidates_q = db.query(Product).filter(
+            Product.active == True,
+            Product.id != product_id,
+            or_(
+                Product.device_type_id.in_(allowed_set_device_type_ids),
+                Product.device_kind_id.in_(allowed_set_device_kind_ids),
+            ),
+        )
+        search_filter = build_product_search_filter(q)
+        if search_filter is not None:
+            candidates_q = candidates_q.filter(search_filter)
+        candidate_products = candidates_q.order_by(Product.name.asc()).limit(250).all()
     loadbee = _loadbee_settings(db, include_secret=True)
     loadbee_api_key = str(loadbee.get("api_key") or "")
     loadbee_enabled = bool(loadbee.get("enabled")) and bool(loadbee_api_key)
@@ -3266,6 +4436,49 @@ def product_detail_get(
     loadbee_load_mode = str(loadbee.get("load_mode") or "on_demand")
     loadbee_auto_open = (request.query_params.get("show") or "").strip().lower() == "hersteller"
     loadbee_gtin = _normalize_loadbee_gtin(product.ean)
+    rule = None
+    if product.device_kind_id:
+        rule = (
+            db.query(PriceRuleKind)
+            .filter(PriceRuleKind.device_kind_id == product.device_kind_id)
+            .order_by(PriceRuleKind.active.desc(), PriceRuleKind.id.desc())
+            .first()
+        )
+    customer_view = _customer_view_enabled(request)
+    can_show_costs = _can_view_costs(user) and not customer_view
+    recommended_sale_cents = _compute_recommended_sale_cents(product.last_cost_cents, rule) if can_show_costs else None
+    last_cost_gross_cents = _gross_cents_from_net(product.last_cost_cents) if can_show_costs else None
+    margin_cents = None
+    if can_show_costs and product.sale_price_cents is not None and last_cost_gross_cents is not None:
+        margin_cents = int(product.sale_price_cents) - int(last_cost_gross_cents)
+    condition_labels = _condition_label_map(db)
+    stock_rows_raw = (
+        db.query(
+            Warehouse.name.label("warehouse_name"),
+            StockBalance.condition.label("condition_code"),
+            func.coalesce(func.sum(StockBalance.quantity), 0).label("qty_sum"),
+        )
+        .join(Warehouse, Warehouse.id == StockBalance.warehouse_id)
+        .filter(StockBalance.product_id == product_id)
+        .group_by(Warehouse.name, StockBalance.condition)
+        .having(func.coalesce(func.sum(StockBalance.quantity), 0) > 0)
+        .order_by(Warehouse.name.asc(), StockBalance.condition.asc())
+        .all()
+    )
+    stock_condition_rows = [
+        {
+            "warehouse_name": str(getattr(row, "warehouse_name", "") or "-"),
+            "condition_code": str(getattr(row, "condition_code", "") or ""),
+            "condition_label": condition_labels.get(
+                str(getattr(row, "condition_code", "") or ""),
+                str(getattr(row, "condition_code", "") or ""),
+            ),
+            "quantity": int(getattr(row, "qty_sum", 0) or 0),
+        }
+        for row in stock_rows_raw
+    ]
+    return_to = _request_relative_path(request)
+    return_to_q = quote(return_to, safe="")
 
     return templates.TemplateResponse(
         "catalog/product_detail.html",
@@ -3277,6 +4490,7 @@ def product_detail_get(
             linked_products=linked_products,
             set_rows=set_rows,
             candidate_products=candidate_products,
+            sets_enabled=sets_enabled,
             q=q,
             item_type_labels=ITEM_TYPE_LABELS,
             loadbee_enabled=loadbee_enabled,
@@ -3286,8 +4500,74 @@ def product_detail_get(
             loadbee_load_mode=loadbee_load_mode,
             loadbee_auto_open=loadbee_auto_open,
             loadbee_gtin=loadbee_gtin,
+            suppliers=suppliers,
+            order_form_data=order_form_data,
+            order_draft_key=order_draft_key,
+            price_rule=rule,
+            recommended_sale_cents=recommended_sale_cents,
+            can_show_costs=can_show_costs,
+            margin_cents=margin_cents,
+            last_cost_gross_cents=last_cost_gross_cents,
+            stock_condition_rows=stock_condition_rows,
+            purchase_status_label=_purchase_status_label,
+            return_to=return_to,
+            return_to_q=return_to_q,
+            receipt_saved=(int(receipt_saved or 0) == 1),
         ),
     )
+
+
+@app.post("/catalog/products/{product_id}/price")
+async def product_price_update(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    try:
+        sale_price_cents = _parse_eur_to_cents(form.get("sale_price"), "Verkaufspreis")
+        last_cost_cents = _parse_eur_to_cents(form.get("last_cost"), "Einkaufspreis (netto)")
+    except ValueError as exc:
+        _flash(request, str(exc), "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+    source = (form.get("price_source") or "").strip().lower() or "manuell"
+    if source not in ("csv", "regel", "manuell", "bestellung"):
+        source = "manuell"
+
+    product.sale_price_cents = sale_price_cents
+    if _can_view_costs(user):
+        product.last_cost_cents = last_cost_cents
+    product.price_source = source
+    db.add(product)
+    db.commit()
+    _flash(request, "Preis gespeichert.", "info")
+    return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+
+@app.post("/catalog/products/{product_id}/price/apply_rule")
+def product_price_apply_rule(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+    if not product.device_kind_id:
+        _flash(request, "Produkt hat keine Geräteart. Preisregel kann nicht angewendet werden.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    rule = (
+        db.query(PriceRuleKind)
+        .filter(PriceRuleKind.device_kind_id == product.device_kind_id, PriceRuleKind.active == True)
+        .order_by(PriceRuleKind.id.desc())
+        .first()
+    )
+    sale = _compute_recommended_sale_cents(product.last_cost_cents, rule)
+    if sale is None:
+        _flash(request, "Kein empfohlener Preis berechenbar (EK/Regel fehlt).", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    product.sale_price_cents = sale
+    product.price_source = "regel"
+    db.add(product)
+    db.commit()
+    _flash(request, "Empfohlener Preis angewendet.", "info")
+    return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
 
 
 @app.post("/catalog/products/{product_id}/links/add")
@@ -3295,6 +4575,11 @@ async def product_link_add(product_id: int, request: Request, user=Depends(requi
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404)
+    allowed_set_device_type_ids = _sets_allowed_device_type_ids(db)
+    allowed_set_device_kind_ids = _sets_allowed_device_kind_ids(db)
+    if not _is_sets_product(product, allowed_set_device_type_ids, allowed_set_device_kind_ids):
+        _flash(request, SETS_ONLY_MESSAGE, "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
     form = await request.form()
     target_id = int(form.get("b_product_id") or 0)
     note = (form.get("note") or "").strip() or None
@@ -3307,6 +4592,9 @@ async def product_link_add(product_id: int, request: Request, user=Depends(requi
     target = db.get(Product, target_id)
     if not target:
         _flash(request, "Produkt nicht gefunden.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    if not _is_sets_product(target, allowed_set_device_type_ids, allowed_set_device_kind_ids):
+        _flash(request, SETS_ONLY_MESSAGE, "error")
         return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
 
     inserted = 0
@@ -3348,6 +4636,14 @@ async def product_link_add(product_id: int, request: Request, user=Depends(requi
 
 @app.post("/catalog/products/{product_id}/links/{link_id}/delete")
 def product_link_delete(product_id: int, link_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+    allowed_set_device_type_ids = _sets_allowed_device_type_ids(db)
+    allowed_set_device_kind_ids = _sets_allowed_device_kind_ids(db)
+    if not _is_sets_product(product, allowed_set_device_type_ids, allowed_set_device_kind_ids):
+        _flash(request, SETS_ONLY_MESSAGE, "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
     link = db.get(ProductLink, link_id)
     if not link or link.a_product_id != product_id:
         raise HTTPException(status_code=404)
@@ -3369,6 +4665,11 @@ def product_matches_get(product_id: int, request: Request, user=Depends(require_
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404)
+    allowed_set_device_type_ids = _sets_allowed_device_type_ids(db)
+    allowed_set_device_kind_ids = _sets_allowed_device_kind_ids(db)
+    if not _is_sets_product(product, allowed_set_device_type_ids, allowed_set_device_kind_ids):
+        _flash(request, SETS_ONLY_MESSAGE, "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
 
     link_rows = (
         db.query(ProductLink)
@@ -3390,7 +4691,13 @@ def product_matches_get(product_id: int, request: Request, user=Depends(require_
     if compatible_ids:
         compatible_products = (
             db.query(Product)
-            .filter(Product.id.in_(compatible_ids))
+            .filter(
+                Product.id.in_(compatible_ids),
+                or_(
+                    Product.device_type_id.in_(allowed_set_device_type_ids),
+                    Product.device_kind_id.in_(allowed_set_device_kind_ids),
+                ),
+            )
             .order_by(Product.name.asc())
             .all()
         )
@@ -3486,7 +4793,15 @@ def set_detail_get(set_id: int, request: Request, user=Depends(require_user), q:
     if product_ids:
         products_map = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()}
 
-    candidates_q = db.query(Product).filter(Product.active == True)
+    allowed_set_device_type_ids = _sets_allowed_device_type_ids(db)
+    allowed_set_device_kind_ids = _sets_allowed_device_kind_ids(db)
+    candidates_q = db.query(Product).filter(
+        Product.active == True,
+        or_(
+            Product.device_type_id.in_(allowed_set_device_type_ids),
+            Product.device_kind_id.in_(allowed_set_device_kind_ids),
+        ),
+    )
     search_filter = build_product_search_filter(q)
     if search_filter is not None:
         candidates_q = candidates_q.filter(search_filter)
@@ -3520,6 +4835,11 @@ async def set_item_add(set_id: int, request: Request, user=Depends(require_admin
     product = db.get(Product, product_id)
     if not product:
         _flash(request, "Produkt nicht gefunden.", "error")
+        return RedirectResponse(f"/catalog/sets/{set_id}", status_code=302)
+    allowed_set_device_type_ids = _sets_allowed_device_type_ids(db)
+    allowed_set_device_kind_ids = _sets_allowed_device_kind_ids(db)
+    if not _is_sets_product(product, allowed_set_device_type_ids, allowed_set_device_kind_ids):
+        _flash(request, SETS_ONLY_MESSAGE, "error")
         return RedirectResponse(f"/catalog/sets/{set_id}", status_code=302)
 
     exists_item = (
@@ -3643,6 +4963,30 @@ def manufacturer_toggle(manufacturer_id: int, request: Request, user=Depends(req
     return RedirectResponse("/stammdaten/hersteller", status_code=302)
 
 
+@app.post("/stammdaten/hersteller/{manufacturer_id}/delete")
+def manufacturer_delete(manufacturer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Manufacturer, manufacturer_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    usage_products = db.query(Product).filter(Product.manufacturer_id == manufacturer_id).count()
+    if usage_products:
+        _flash(
+            request,
+            f"Hersteller kann nicht gelöscht werden: noch {usage_products} Produkt(e) zugeordnet.",
+            "error",
+        )
+        return RedirectResponse("/stammdaten/hersteller", status_code=302)
+    db.delete(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/hersteller", status_code=302)
+    _flash(request, "Hersteller gelöscht.", "info")
+    return RedirectResponse("/stammdaten/hersteller", status_code=302)
+
+
 @app.get("/stammdaten/lieferanten", response_class=HTMLResponse)
 def supplier_list(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     rows = db.query(Supplier).order_by(Supplier.active.desc(), Supplier.name.asc()).all()
@@ -3685,7 +5029,16 @@ def supplier_edit_get(supplier_id: int, request: Request, user=Depends(require_a
     row = db.get(Supplier, supplier_id)
     if not row:
         raise HTTPException(status_code=404)
-    return templates.TemplateResponse("stammdaten/lieferanten_edit.html", _ctx(request, user=user, row=row))
+    return templates.TemplateResponse(
+        "stammdaten/lieferanten_edit.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            form_data={},
+            form_errors={},
+        ),
+    )
 
 
 @app.post("/stammdaten/lieferanten/{supplier_id}/edit")
@@ -3694,14 +5047,30 @@ async def supplier_edit_post(supplier_id: int, request: Request, user=Depends(re
     if not row:
         raise HTTPException(status_code=404)
     form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        _flash(request, message, "error")
+        return templates.TemplateResponse(
+            "stammdaten/lieferanten_edit.html",
+            _ctx(
+                request,
+                user=user,
+                row=row,
+                form_data=form_data,
+                form_errors=form_errors,
+            ),
+        )
+
     name = (form.get("name") or "").strip()
     if not name:
-        _flash(request, "Lieferantenname ist Pflicht.", "error")
-        return RedirectResponse(f"/stammdaten/lieferanten/{supplier_id}/edit", status_code=302)
+        return render_error("name", "Lieferantenname ist Pflicht.")
     exists = db.query(Supplier).filter(func.lower(Supplier.name) == name.lower(), Supplier.id != supplier_id).count() > 0
     if exists:
-        _flash(request, "Lieferant existiert bereits.", "error")
-        return RedirectResponse(f"/stammdaten/lieferanten/{supplier_id}/edit", status_code=302)
+        return render_error("name", "Lieferant existiert bereits.")
     row.name = name
     row.address = (form.get("address") or "").strip() or None
     row.phone = (form.get("phone") or "").strip() or None
@@ -3714,8 +5083,7 @@ async def supplier_edit_post(supplier_id: int, request: Request, user=Depends(re
         db.commit()
     except Exception as exc:
         db.rollback()
-        _flash(request, _friendly_db_write_error(exc), "error")
-        return RedirectResponse(f"/stammdaten/lieferanten/{supplier_id}/edit", status_code=302)
+        return render_error("__all__", _friendly_db_write_error(exc))
     _flash(request, "Lieferant gespeichert.", "info")
     return RedirectResponse("/stammdaten/lieferanten", status_code=302)
 
@@ -3732,6 +5100,51 @@ def supplier_toggle(supplier_id: int, request: Request, user=Depends(require_adm
     return RedirectResponse("/stammdaten/lieferanten", status_code=302)
 
 
+@app.post("/stammdaten/lieferanten/{supplier_id}/delete")
+def supplier_delete(supplier_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Supplier, supplier_id)
+    if not row:
+        raise HTTPException(status_code=404)
+
+    usage_tx = db.query(InventoryTransaction).filter(InventoryTransaction.supplier_id == supplier_id).count()
+    usage_repairs = db.query(RepairOrder).filter(RepairOrder.supplier_id == supplier_id).count()
+    usage_orders = db.query(PurchaseOrder).filter(PurchaseOrder.supplier_id == supplier_id).count()
+    if usage_tx or usage_repairs or usage_orders:
+        usage_parts: list[str] = []
+        if usage_tx:
+            usage_parts.append(f"{usage_tx} Buchung(en)")
+        if usage_repairs:
+            usage_parts.append(f"{usage_repairs} Reparaturauftrag/-aufträge")
+        if usage_orders:
+            usage_parts.append(f"{usage_orders} Bestellung(en)")
+        _flash(
+            request,
+            f"Lieferant kann nicht gelöscht werden: noch verwendet in {', '.join(usage_parts)}.",
+            "error",
+        )
+        return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+
+    setting = db.query(SystemSetting).filter(SystemSetting.key == RECEIPT_DEFAULT_SUPPLIER_ID).one_or_none()
+    if setting:
+        try:
+            current_supplier_id = int((setting.value or "0").strip() or "0")
+        except Exception:
+            current_supplier_id = 0
+        if current_supplier_id == int(supplier_id):
+            setting.value = "0"
+            db.add(setting)
+
+    db.delete(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+    _flash(request, "Lieferant gelöscht.", "info")
+    return RedirectResponse("/stammdaten/lieferanten", status_code=302)
+
+
 @app.get("/stammdaten/lieferanten/{supplier_id}", response_class=HTMLResponse)
 def supplier_detail(supplier_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     row = db.get(Supplier, supplier_id)
@@ -3741,38 +5154,74 @@ def supplier_detail(supplier_id: int, request: Request, user=Depends(require_adm
         db.query(InventoryTransaction)
         .filter(InventoryTransaction.tx_type == "receipt", InventoryTransaction.supplier_id == supplier_id)
         .order_by(InventoryTransaction.created_at.desc(), InventoryTransaction.id.desc())
-        .limit(200)
+        .limit(400)
         .all()
     )
     product_ids = sorted({int(t.product_id) for t in tx_rows})
     products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
-    warehouses = {w.id: w for w in db.query(Warehouse).all()}
     condition_labels = _condition_label_map(db)
-    top_products_raw = (
-        db.query(InventoryTransaction.product_id, func.count(InventoryTransaction.id).label("cnt"))
-        .filter(InventoryTransaction.tx_type == "receipt", InventoryTransaction.supplier_id == supplier_id)
-        .group_by(InventoryTransaction.product_id)
-        .order_by(func.count(InventoryTransaction.id).desc())
-        .limit(50)
-        .all()
+    grouped: dict[str, dict] = {}
+    total_qty = 0
+    total_value_cents = 0
+    total_value_known = False
+    for tx in tx_rows:
+        delivery_note_no = (tx.delivery_note_no or "").strip()
+        group_key = delivery_note_no or "__ohne"
+        group = grouped.get(group_key)
+        if not group:
+            group = {
+                "delivery_note_no": delivery_note_no or None,
+                "rows": [],
+                "qty_total": 0,
+                "sum_cents": 0,
+                "sum_known": False,
+                "latest_at": tx.created_at,
+            }
+            grouped[group_key] = group
+        product = products.get(int(tx.product_id))
+        quantity = int(tx.quantity or 0)
+        unit_cost = getattr(tx, "unit_cost", None)
+        line_sum_cents = (int(unit_cost) * quantity) if unit_cost is not None else None
+        group["rows"].append(
+            {
+                "tx": tx,
+                "product_label": _supplier_receipt_product_label(product),
+                "quantity": quantity,
+                "unit_cost": unit_cost,
+                "line_sum_cents": line_sum_cents,
+                "condition_label": condition_labels.get(tx.condition, tx.condition),
+            }
+        )
+        group["qty_total"] = int(group["qty_total"]) + quantity
+        if tx.created_at and (group["latest_at"] is None or tx.created_at > group["latest_at"]):
+            group["latest_at"] = tx.created_at
+        if line_sum_cents is not None:
+            group["sum_known"] = True
+            group["sum_cents"] = int(group["sum_cents"]) + int(line_sum_cents)
+            total_value_known = True
+            total_value_cents += int(line_sum_cents)
+        total_qty += quantity
+
+    orders = sorted(
+        grouped.values(),
+        key=lambda row: (
+            row.get("latest_at") is None,
+            row.get("latest_at"),
+            str(row.get("delivery_note_no") or "").lower(),
+        ),
+        reverse=True,
     )
-    top_products: list[dict] = []
-    for product_id, cnt in top_products_raw:
-        product = products.get(int(product_id))
-        if not product:
-            continue
-        top_products.append({"product": product, "count": int(cnt or 0)})
     return templates.TemplateResponse(
         "stammdaten/lieferant_detail.html",
         _ctx(
             request,
             user=user,
             row=row,
+            orders=orders,
             tx_rows=tx_rows,
-            products=products,
-            warehouses=warehouses,
-            condition_labels=condition_labels,
-            top_products=top_products,
+            total_qty=total_qty,
+            total_value_known=total_value_known,
+            total_value_cents=total_value_cents,
         ),
     )
 
@@ -3850,6 +5299,58 @@ def condition_toggle(code: str, request: Request, user=Depends(require_admin), d
     db.add(row)
     db.commit()
     _flash(request, f"Zustand {'aktiviert' if row.active else 'deaktiviert'}.", "info")
+    return RedirectResponse("/stammdaten/zustaende", status_code=302)
+
+
+@app.post("/stammdaten/zustaende/{code}/delete")
+def condition_delete(code: str, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(StockConditionDef, code)
+    if not row:
+        raise HTTPException(status_code=404)
+    if code == _default_condition_code():
+        _flash(request, "Der Standardzustand A_WARE kann nicht gelöscht werden.", "error")
+        return RedirectResponse("/stammdaten/zustaende", status_code=302)
+
+    usage_balances = db.query(StockBalance).filter(StockBalance.condition == code).count()
+    usage_serials = db.query(StockSerial).filter(StockSerial.condition == code).count()
+    usage_tx = db.query(InventoryTransaction).filter(InventoryTransaction.condition == code).count()
+    usage_reservations = db.query(Reservation).filter(Reservation.condition == code).count()
+    usage_repair_in = db.query(RepairOrderLine).filter(RepairOrderLine.condition_in == code).count()
+    usage_repair_out = db.query(RepairOrderLine).filter(RepairOrderLine.condition_out == code).count()
+    if usage_balances or usage_serials or usage_tx or usage_reservations or usage_repair_in or usage_repair_out:
+        usage_parts: list[str] = []
+        if usage_balances:
+            usage_parts.append(f"{usage_balances} Bestandszeile(n)")
+        if usage_serials:
+            usage_parts.append(f"{usage_serials} Seriennummer(n)")
+        if usage_tx:
+            usage_parts.append(f"{usage_tx} Buchung(en)")
+        if usage_reservations:
+            usage_parts.append(f"{usage_reservations} Reservierung(en)")
+        if usage_repair_in:
+            usage_parts.append(f"{usage_repair_in} Reparatur-Eingang(e)")
+        if usage_repair_out:
+            usage_parts.append(f"{usage_repair_out} Reparatur-Ausgang(e)")
+        _flash(
+            request,
+            f"Zustand kann nicht gelöscht werden: noch verwendet in {', '.join(usage_parts)}.",
+            "error",
+        )
+        return RedirectResponse("/stammdaten/zustaende", status_code=302)
+
+    setting = db.query(SystemSetting).filter(SystemSetting.key == RECEIPT_DEFAULT_CONDITION).one_or_none()
+    if setting and _condition_code_from_input(setting.value) == code:
+        setting.value = _default_condition_code()
+        db.add(setting)
+
+    db.delete(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/zustaende", status_code=302)
+    _flash(request, "Zustand gelöscht.", "info")
     return RedirectResponse("/stammdaten/zustaende", status_code=302)
 
 
@@ -4000,6 +5501,169 @@ async def stammdaten_ui_layout_post(request: Request, user=Depends(require_admin
 
 
 # ---------------------------
+# Stammdaten: Preisregeln
+# ---------------------------
+
+@app.get("/stammdaten/preisregeln", response_class=HTMLResponse)
+def price_rules_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
+    areas = {a.id: a for a in db.query(Area).all()}
+    rules = db.query(PriceRuleKind).order_by(PriceRuleKind.device_kind_id.asc()).all()
+    rules_by_kind = {int(r.device_kind_id): r for r in rules}
+    return templates.TemplateResponse(
+        "stammdaten/preisregeln.html",
+        _ctx(request, user=user, kinds=kinds, areas=areas, rules_by_kind=rules_by_kind),
+    )
+
+
+@app.post("/stammdaten/preisregeln")
+async def price_rules_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.id.asc()).all()
+    changed = 0
+    for kind in kinds:
+        key = int(kind.id)
+        active = form.get(f"active_{key}") == "on"
+        percent_raw = (form.get(f"percent_{key}") or "").strip()
+        fixed_raw = (form.get(f"fixed_{key}") or "").strip()
+        rounding_mode = (form.get(f"rounding_{key}") or "none").strip().lower()
+        if rounding_mode not in ("099", "100", "none"):
+            rounding_mode = "none"
+
+        try:
+            percent_value = float(percent_raw.replace(",", ".")) if percent_raw else 0.0
+        except Exception:
+            _flash(request, f"Ungültiger Prozentwert bei Geräteart '{kind.name}'.", "error")
+            return RedirectResponse("/stammdaten/preisregeln", status_code=302)
+        try:
+            fixed_cents = _parse_eur_to_cents(fixed_raw, f"Fixbetrag ({kind.name})") if fixed_raw else 0
+            fixed_cents = int(fixed_cents or 0)
+        except ValueError as exc:
+            _flash(request, str(exc), "error")
+            return RedirectResponse("/stammdaten/preisregeln", status_code=302)
+
+        row = db.query(PriceRuleKind).filter(PriceRuleKind.device_kind_id == key).one_or_none()
+        has_input = bool(percent_raw or fixed_raw or active)
+        if not has_input and row is None:
+            continue
+        markup_percent = float(percent_value / 100.0)
+        if row is None:
+            row = PriceRuleKind(
+                device_kind_id=key,
+                markup_percent=markup_percent,
+                markup_fixed_cents=fixed_cents,
+                rounding_mode=rounding_mode,
+                active=active,
+            )
+        else:
+            row.markup_percent = markup_percent
+            row.markup_fixed_cents = fixed_cents
+            row.rounding_mode = rounding_mode
+            row.active = active
+        db.add(row)
+        changed += 1
+
+    db.commit()
+    _flash(request, f"Preisregeln gespeichert ({changed}).", "info")
+    return RedirectResponse("/stammdaten/preisregeln", status_code=302)
+
+
+def _listenansicht_state(db: Session, selected_kind_id: int) -> tuple[list[DeviceKind], int, list[AttributeDef], dict[int, int]]:
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
+    valid_kind_ids = {int(k.id) for k in kinds}
+    if selected_kind_id not in valid_kind_ids:
+        selected_kind_id = int(kinds[0].id) if kinds else 0
+    attrs = _applicable_attributes(db, selected_kind_id or None, None) if selected_kind_id else []
+    slots = {1: 0, 2: 0, 3: 0}
+    if selected_kind_id:
+        rows = (
+            db.query(KindListAttribute)
+            .filter(KindListAttribute.kind_id == selected_kind_id)
+            .order_by(KindListAttribute.slot.asc())
+            .all()
+        )
+        for row in rows:
+            slot = int(row.slot or 0)
+            if slot in (1, 2, 3):
+                slots[slot] = int(row.attribute_def_id or 0)
+    return kinds, int(selected_kind_id or 0), attrs, slots
+
+
+@app.get("/stammdaten/listenansicht", response_class=HTMLResponse)
+def listenansicht_get(
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    kinds, selected_kind_id, attrs, slots = _listenansicht_state(db, int(kind_id or 0))
+    return templates.TemplateResponse(
+        "stammdaten/listenansicht.html",
+        _ctx(
+            request,
+            user=user,
+            kinds=kinds,
+            attrs=attrs,
+            selected_kind_id=selected_kind_id,
+            slot_values=slots,
+            form_data={},
+            form_errors={},
+        ),
+    )
+
+
+@app.post("/stammdaten/listenansicht")
+async def listenansicht_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    selected_kind_id = _to_int(form.get("kind_id"), 0)
+    kinds, selected_kind_id, attrs, slots = _listenansicht_state(db, selected_kind_id)
+    allowed_attr_ids = {int(a.id) for a in attrs}
+    selected_ids: dict[int, int] = {}
+    for slot in (1, 2, 3):
+        value = _to_int(form.get(f"slot_{slot}"), 0)
+        if value and value not in allowed_attr_ids:
+            form_errors[f"slot_{slot}"] = "Attribut passt nicht zur ausgewählten Geräteart."
+            value = 0
+        selected_ids[slot] = int(value or 0)
+
+    chosen = [attr_id for attr_id in selected_ids.values() if attr_id]
+    if len(chosen) != len(set(chosen)):
+        form_errors["__all__"] = "Ein Attribut darf nur einmal gewählt werden."
+
+    if selected_kind_id <= 0:
+        form_errors["kind_id"] = "Bitte eine Geräteart wählen."
+
+    if form_errors:
+        for msg in list(form_errors.values())[:5]:
+            _flash(request, msg, "error")
+        return templates.TemplateResponse(
+            "stammdaten/listenansicht.html",
+            _ctx(
+                request,
+                user=user,
+                kinds=kinds,
+                attrs=attrs,
+                selected_kind_id=selected_kind_id,
+                slot_values=slots,
+                form_data=form_data,
+                form_errors=form_errors,
+            ),
+        )
+
+    db.query(KindListAttribute).filter(KindListAttribute.kind_id == selected_kind_id).delete()
+    for slot in (1, 2, 3):
+        attr_id = int(selected_ids[slot] or 0)
+        if attr_id <= 0:
+            continue
+        db.add(KindListAttribute(kind_id=selected_kind_id, slot=slot, attribute_def_id=attr_id))
+    db.commit()
+    _flash(request, "Listenansicht-Merkmale gespeichert.", "info")
+    return RedirectResponse(f"/stammdaten/listenansicht?kind_id={selected_kind_id}", status_code=302)
+
+
+# ---------------------------
 # Reparaturen
 # ---------------------------
 
@@ -4027,8 +5691,20 @@ def repair_list(request: Request, user=Depends(require_lager_access), db: Sessio
 
 @app.get("/inventory/reparaturen/new", response_class=HTMLResponse)
 def repair_new_get(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    draft_key = "draft:/inventory/reparaturen/new"
+    prefill_form_data: dict[str, str | list[str]] = {}
+    if not request.query_params:
+        loaded = _draft_get(request, draft_key)
+        if isinstance(loaded, dict):
+            prefill_form_data = dict(loaded)
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
     products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc()).all()
+    selected_product_id = _to_int(_form_scalar(prefill_form_data, "product_id"), 0)
+    if selected_product_id and all(int(p.id) != int(selected_product_id) for p in products):
+        selected_product = db.get(Product, selected_product_id)
+        if selected_product:
+            products.append(selected_product)
+            products = sorted(products, key=lambda row: (str(row.name or "").lower(), int(row.id)))
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     return templates.TemplateResponse(
@@ -4042,6 +5718,10 @@ def repair_new_get(request: Request, user=Depends(require_lager_access), db: Ses
             condition_defs=condition_defs,
             default_condition_in="GEBRAUCHT",
             default_condition_out="B_WARE",
+            form_data=prefill_form_data,
+            form_errors={},
+            first_error_field_id="",
+            draft_key=draft_key,
         ),
     )
 
@@ -4049,16 +5729,96 @@ def repair_new_get(request: Request, user=Depends(require_lager_access), db: Ses
 @app.post("/inventory/reparaturen/new")
 async def repair_new_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
     form = await request.form()
+    form_data = _extract_form_data(form)
+    draft_key = "draft:/inventory/reparaturen/new"
+    _draft_set(request, draft_key, form_data)
+    form_errors: dict[str, str] = {}
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        _flash(request, message, "error")
+        response = repair_new_get(request, user=user, db=db)
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, REPAIR_FORM_FIELD_IDS)
+        return _rerender_template_response(response)
+
+    create_product = (form.get("create_product") or "").strip() == "1"
     supplier_input = form.get("supplier_id")
     supplier_id, _supplier = _parse_supplier_id(db, supplier_input, active_only=True)
     if supplier_input and not supplier_id:
-        _flash(request, "Lieferant wurde nicht gefunden oder ist inaktiv.", "error")
-        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+        return render_error("supplier_id", "Lieferant wurde nicht gefunden oder ist inaktiv.")
 
-    try:
-        product_id = int(form.get("product_id") or 0)
-    except Exception:
-        product_id = 0
+    product_id = 0
+    created_product_id = None
+    if create_product:
+        product_name = (form.get("new_product_name") or "").strip()
+        material_no = (form.get("new_product_material_no") or "").strip()
+        manufacturer_name = (form.get("new_product_manufacturer") or "").strip() or None
+        description = (form.get("new_product_description") or "").strip() or None
+        if not product_name:
+            return render_error("new_product_name", "Bezeichnung für neues Ersatzteil fehlt.")
+        if not material_no:
+            return render_error("new_product_material_no", "Materialnummer für neues Ersatzteil fehlt.")
+        existing = (
+            db.query(Product)
+            .filter(func.lower(Product.material_no) == material_no.lower())
+            .one_or_none()
+        )
+        if existing:
+            return render_error("new_product_material_no", "Materialnummer existiert bereits.")
+        try:
+            ean = normalize_ean(form.get("new_product_ean"))
+        except ValueError as exc:
+            return render_error("new_product_ean", f"Ungültige EAN: {exc}")
+        manufacturer_row = None
+        if manufacturer_name:
+            manufacturer_row = (
+                db.query(Manufacturer)
+                .filter(func.lower(Manufacturer.name) == manufacturer_name.lower())
+                .one_or_none()
+            )
+        product = Product(
+            name=product_name,
+            item_type="spare_part",
+            material_no=material_no,
+            manufacturer_name=manufacturer_name,
+            manufacturer=manufacturer_name,
+            manufacturer_id=manufacturer_row.id if manufacturer_row else None,
+            ean=ean,
+            description=description,
+            track_mode="quantity",
+            active=True,
+        )
+        db.add(product)
+        db.flush()
+        product_id = int(product.id)
+        created_product_id = int(product.id)
+    else:
+        try:
+            product_id = int(form.get("product_id") or 0)
+        except Exception:
+            product_id = 0
+
+    upload: UploadFile = form.get("photo")  # type: ignore
+    photo_bytes = None
+    photo_mime = None
+    photo_ext = None
+    photo_original_name = None
+    if upload and getattr(upload, "filename", ""):
+        photo_original_name = str(upload.filename or "").strip()
+        photo_mime = (getattr(upload, "content_type", "") or "").strip().lower()
+        if photo_mime not in REPAIR_ATTACHMENT_ALLOWED_MIME:
+            return render_error("__all__", "Foto-Upload: nur JPG, PNG oder WEBP ist erlaubt.")
+        photo_ext = REPAIR_ATTACHMENT_ALLOWED_MIME.get(photo_mime)
+        raw = await upload.read()
+        if not raw:
+            return render_error("__all__", "Foto-Upload: Datei ist leer.")
+        if len(raw) > REPAIR_ATTACHMENT_MAX_BYTES:
+            return render_error("__all__", "Foto-Upload: Datei ist zu groß (max. 6 MB).")
+        photo_bytes = raw
+
     try:
         warehouse_from_id = int(form.get("warehouse_from_id") or 0)
     except Exception:
@@ -4074,45 +5834,68 @@ async def repair_new_post(request: Request, user=Depends(require_lager_access), 
     condition_in = _condition_code_from_input(form.get("condition_in"))
     condition_out = _condition_code_from_input(form.get("condition_out"))
 
-    if not product_id or not db.get(Product, product_id):
-        _flash(request, "Produkt fehlt.", "error")
-        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+    selected_product = db.get(Product, product_id) if product_id else None
+    if not selected_product:
+        return render_error("product_id", "Produkt fehlt.")
+    if not bool(selected_product.active):
+        return render_error("product_id", "Archiviertes Produkt kann nicht neu in Reparatur angelegt werden.")
     if not warehouse_from_id or not db.get(Warehouse, warehouse_from_id):
-        _flash(request, "Quell-Lager fehlt.", "error")
-        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+        return render_error("warehouse_from_id", "Quell-Lager fehlt.")
     if warehouse_to_id and not db.get(Warehouse, warehouse_to_id):
-        _flash(request, "Ziellager wurde nicht gefunden.", "error")
-        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+        return render_error("warehouse_to_id", "Ziellager wurde nicht gefunden.")
     if qty <= 0:
-        _flash(request, "Menge muss größer 0 sein.", "error")
-        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+        return render_error("qty", "Menge muss größer 0 sein.")
     if not _condition_exists(db, condition_in, active_only=False):
-        _flash(request, "Eingangs-Zustand ist ungültig.", "error")
-        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+        return render_error("condition_in", "Eingangs-Zustand ist ungültig.")
     if not _condition_exists(db, condition_out, active_only=False):
-        _flash(request, "Ausgangs-Zustand ist ungültig.", "error")
-        return RedirectResponse("/inventory/reparaturen/new", status_code=302)
+        return render_error("condition_out", "Ausgangs-Zustand ist ungültig.")
 
-    order = RepairOrder(
-        supplier_id=supplier_id,
-        status="open",
-        reference=(form.get("reference") or "").strip() or None,
-        note=(form.get("note") or "").strip() or None,
-    )
-    db.add(order)
-    db.flush()
-    db.add(
-        RepairOrderLine(
-            repair_order_id=order.id,
-            product_id=product_id,
-            qty=qty,
-            warehouse_from_id=warehouse_from_id,
-            warehouse_to_id=warehouse_to_id,
-            condition_in=condition_in,
-            condition_out=condition_out,
+    try:
+        order = RepairOrder(
+            supplier_id=supplier_id,
+            status="open",
+            reference=(form.get("reference") or "").strip() or None,
+            note=(form.get("note") or "").strip() or None,
         )
-    )
-    db.commit()
+        db.add(order)
+        db.flush()
+        db.add(
+            RepairOrderLine(
+                repair_order_id=order.id,
+                product_id=product_id,
+                qty=qty,
+                warehouse_from_id=warehouse_from_id,
+                warehouse_to_id=warehouse_to_id,
+                condition_in=condition_in,
+                condition_out=condition_out,
+            )
+        )
+        if photo_bytes is not None and photo_ext:
+            dirs = ensure_dirs()
+            photo_dir = dirs["uploads"] / "repairs" / str(order.id)
+            photo_dir.mkdir(parents=True, exist_ok=True)
+            file_name = f"{uuid.uuid4().hex}{photo_ext}"
+            abs_path = photo_dir / file_name
+            abs_path.write_bytes(photo_bytes)
+            rel_path = str(Path("repairs") / str(order.id) / file_name)
+            db.add(
+                Attachment(
+                    entity_type="repair",
+                    entity_id=order.id,
+                    filename=rel_path,
+                    original_name=photo_original_name or None,
+                    mime_type=photo_mime or None,
+                    size_bytes=len(photo_bytes),
+                )
+            )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return render_error("__all__", f"Reparaturauftrag konnte nicht gespeichert werden: {exc}")
+
+    _draft_clear(request, draft_key)
+    if created_product_id:
+        _flash(request, f"Ersatzteil #{created_product_id} wurde angelegt und übernommen.", "info")
     _flash(request, f"Reparaturauftrag #{order.id} angelegt.", "info")
     return RedirectResponse(f"/inventory/reparaturen/{order.id}", status_code=302)
 
@@ -4134,6 +5917,12 @@ def repair_detail_get(repair_id: int, request: Request, user=Depends(require_lag
     warehouses = {w.id: w for w in db.query(Warehouse).filter(Warehouse.id.in_(warehouse_ids)).all()} if warehouse_ids else {}
     supplier = db.get(Supplier, order.supplier_id) if order.supplier_id else None
     condition_labels = _condition_label_map(db)
+    attachments = (
+        db.query(Attachment)
+        .filter(Attachment.entity_type == "repair", Attachment.entity_id == repair_id)
+        .order_by(Attachment.id.asc())
+        .all()
+    )
     return templates.TemplateResponse(
         "inventory/reparatur_detail.html",
         _ctx(
@@ -4145,8 +5934,40 @@ def repair_detail_get(repair_id: int, request: Request, user=Depends(require_lag
             warehouses=warehouses,
             supplier=supplier,
             condition_labels=condition_labels,
+            attachments=attachments,
+            repair_status_label={"open": "Offen", "in_repair": "In Reparatur", "returned": "Zurück", "closed": "Abgeschlossen"},
         ),
     )
+
+
+@app.get("/inventory/reparaturen/{repair_id}/attachments/{attachment_id}")
+def repair_attachment_get(
+    repair_id: int,
+    attachment_id: int,
+    request: Request,
+    user=Depends(require_lager_access),
+    db: Session = Depends(db_session),
+):
+    _ = request
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    att = db.get(Attachment, attachment_id)
+    if not att or att.entity_type != "repair" or int(att.entity_id) != int(repair_id):
+        raise HTTPException(status_code=404)
+    abs_path = ensure_dirs()["uploads"] / str(att.filename or "")
+    if not abs_path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(
+        path=str(abs_path),
+        media_type=(att.mime_type or "application/octet-stream"),
+        filename=(att.original_name or abs_path.name),
+    )
+
+
+@app.post("/inventory/reparaturen/{repair_id}/send")
+def repair_send(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    return repair_in_repair(repair_id=repair_id, request=request, user=user, db=db)
 
 
 @app.post("/inventory/reparaturen/{repair_id}/in_repair")
@@ -4186,7 +6007,9 @@ def repair_in_repair(repair_id: int, request: Request, user=Depends(require_lage
             )
             if available < qty:
                 product = db.get(Product, line.product_id)
-                raise ValueError(f"Nicht genug Bestand für {product.name if product else line.product_id}.")
+                raise ValueError(
+                    f"Nicht genug Bestand in Zustand {condition_in} für {product.name if product else line.product_id}."
+                )
 
             ref = _repair_reference(order)
             tx_out = InventoryTransaction(
@@ -4265,7 +6088,9 @@ def repair_return(repair_id: int, request: Request, user=Depends(require_lager_a
             )
             if available < qty:
                 product = db.get(Product, line.product_id)
-                raise ValueError(f"Nicht genug IN_REPARATUR-Bestand für {product.name if product else line.product_id}.")
+                raise ValueError(
+                    f"Nicht genug Bestand in Zustand IN_REPARATUR für {product.name if product else line.product_id}."
+                )
 
             ref = _repair_reference(order)
             tx_out = InventoryTransaction(
@@ -4304,6 +6129,394 @@ def repair_return(repair_id: int, request: Request, user=Depends(require_lager_a
 
     _flash(request, "Reparaturauftrag zurückgebucht.", "info")
     return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+# ---------------------------
+# Einkauf: Bestellungen
+# ---------------------------
+
+@app.get("/purchase/orders", response_class=HTMLResponse)
+def purchase_orders_list(
+    request: Request,
+    user=Depends(require_admin),
+    status: str = "",
+    q: str = "",
+    db: Session = Depends(db_session),
+):
+    query = db.query(PurchaseOrder)
+    status = (status or "").strip().lower()
+    if status in ("draft", "sent", "confirmed", "received"):
+        query = query.filter(PurchaseOrder.status == status)
+    q = (q or "").strip()
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(PurchaseOrder.po_number.ilike(like), PurchaseOrder.note.ilike(like)))
+    rows = query.order_by(PurchaseOrder.id.desc()).limit(300).all()
+    suppliers = {s.id: s for s in db.query(Supplier).all()}
+    line_counts_raw = (
+        db.query(PurchaseOrderLine.purchase_order_id, func.count(PurchaseOrderLine.id))
+        .group_by(PurchaseOrderLine.purchase_order_id)
+        .all()
+    )
+    line_counts = {int(order_id): int(cnt) for order_id, cnt in line_counts_raw}
+    return templates.TemplateResponse(
+        "purchase/orders_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            suppliers=suppliers,
+            line_counts=line_counts,
+            status=status,
+            q=q,
+            purchase_status_label=_purchase_status_label,
+        ),
+    )
+
+
+@app.post("/purchase/orders/from_product")
+async def purchase_order_from_product(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    try:
+        product_id = int(form.get("product_id") or 0)
+    except Exception:
+        product_id = 0
+    draft_key = f"draft:/purchase/orders/from_product:{int(product_id or 0)}"
+    _draft_set(request, draft_key, form_data)
+    try:
+        supplier_id = int(form.get("supplier_id") or 0)
+    except Exception:
+        supplier_id = 0
+    try:
+        qty = int(form.get("qty") or 0)
+    except Exception:
+        qty = 0
+    product = db.get(Product, product_id) if product_id else None
+    if not product:
+        _flash(request, "Produkt fehlt.", "error")
+        return RedirectResponse("/purchase/orders", status_code=302)
+    if not bool(product.active):
+        _flash(request, "Archivierte Produkte können nicht neu bestellt werden.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    supplier = db.get(Supplier, supplier_id) if supplier_id else None
+    if not supplier or not supplier.active:
+        _flash(request, "Lieferant fehlt oder ist inaktiv.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    if qty <= 0:
+        _flash(request, "Menge muss größer 0 sein.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    try:
+        expected_cost_cents = _parse_eur_to_cents(form.get("expected_cost"), "Erwarteter EK (netto)")
+    except ValueError as exc:
+        _flash(request, str(exc), "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+    order = PurchaseOrder(
+        supplier_id=supplier_id,
+        po_number=_next_po_number(db),
+        status="draft",
+        note=(form.get("note") or "").strip() or None,
+    )
+    db.add(order)
+    db.flush()
+    db.add(
+        PurchaseOrderLine(
+            purchase_order_id=order.id,
+            product_id=product_id,
+            qty=qty,
+            expected_cost_cents=expected_cost_cents,
+            confirmed_cost_cents=None,
+        )
+    )
+    db.commit()
+    _draft_clear(request, draft_key)
+    _flash(request, f"Bestellung {order.po_number} angelegt.", "info")
+    return RedirectResponse(f"/purchase/orders/{order.id}", status_code=302)
+
+
+@app.get("/purchase/orders/{order_id}", response_class=HTMLResponse)
+def purchase_order_detail(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    order = db.get(PurchaseOrder, order_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    lines = (
+        db.query(PurchaseOrderLine)
+        .filter(PurchaseOrderLine.purchase_order_id == order_id)
+        .order_by(PurchaseOrderLine.id.asc())
+        .all()
+    )
+    product_ids = sorted({int(line.product_id) for line in lines})
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+    supplier = db.get(Supplier, order.supplier_id) if order.supplier_id else None
+    linked_messages = []
+    if order.po_number:
+        like = f"%{order.po_number}%"
+        linked_messages = (
+            db.query(EmailMessage)
+            .filter(or_(EmailMessage.subject.ilike(like), EmailMessage.snippet.ilike(like), EmailMessage.body_text.ilike(like)))
+            .order_by(EmailMessage.id.desc())
+            .limit(80)
+            .all()
+        )
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    return templates.TemplateResponse(
+        "purchase/order_detail.html",
+        _ctx(
+            request,
+            user=user,
+            order=order,
+            lines=lines,
+            products=products,
+            supplier=supplier,
+            linked_messages=linked_messages,
+            warehouses=warehouses,
+            condition_defs=condition_defs,
+            purchase_status_label=_purchase_status_label,
+            receive_form_data={},
+            receive_form_errors={},
+            first_error_field_id="",
+        ),
+    )
+
+
+@app.post("/purchase/orders/{order_id}/send")
+def purchase_order_send(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ = user
+    order = db.get(PurchaseOrder, order_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    if order.status == "received":
+        _flash(request, "Bereits als geliefert markiert.", "info")
+        return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+    supplier = db.get(Supplier, order.supplier_id) if order.supplier_id else None
+    if not supplier or not (supplier.email or "").strip():
+        _flash(request, "Lieferant oder Lieferanten-E-Mail fehlt.", "error")
+        return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+    lines = (
+        db.query(PurchaseOrderLine)
+        .filter(PurchaseOrderLine.purchase_order_id == order_id)
+        .order_by(PurchaseOrderLine.id.asc())
+        .all()
+    )
+    if not lines:
+        _flash(request, "Bestellung hat keine Positionen.", "error")
+        return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+    products = {p.id: p for p in db.query(Product).filter(Product.id.in_([int(l.product_id) for l in lines])).all()}
+    body_lines = [
+        f"Bestellung {order.po_number}",
+        "",
+        f"Lieferant: {supplier.name}",
+        "",
+        "Positionen:",
+    ]
+    for line in lines:
+        product = products.get(line.product_id)
+        name = product.name if product else str(line.product_id)
+        material = product.material_no if product and product.material_no else "-"
+        body_lines.append(f"- {name} | Materialnummer: {material} | Menge: {line.qty}")
+    if order.note:
+        body_lines.extend(["", f"Notiz: {order.note}"])
+    body = "\n".join(body_lines)
+
+    out = EmailOutbox(
+        account_id=None,
+        to_email=(supplier.email or "").strip(),
+        subject=f"Bestellung {order.po_number}",
+        body_text=body,
+        status="queued",
+        attempts=0,
+    )
+    db.add(out)
+    db.flush()
+    for _ in range(3):
+        result = send_outbox_once(db, batch_size=50)
+        db.flush()
+        db.refresh(out)
+        if out.status != "queued":
+            break
+        if int(result.get("processed", 0)) <= 0:
+            break
+    if out.status == "sent":
+        order.status = "sent"
+        order.sent_at = dt.datetime.utcnow().replace(tzinfo=None)
+        db.add(order)
+        db.commit()
+        _flash(request, "Bestellung per E-Mail gesendet.", "info")
+    else:
+        db.commit()
+        _flash(request, "E-Mail konnte nicht direkt gesendet werden. Nachricht liegt im Postausgang/Entwurf.", "warn")
+    return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+
+
+@app.post("/purchase/orders/{order_id}/confirm")
+def purchase_order_confirm(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ = user
+    order = db.get(PurchaseOrder, order_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    if order.status == "received":
+        _flash(request, "Bestellung ist bereits geliefert.", "info")
+        return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+    order.status = "confirmed"
+    order.confirmed_at = dt.datetime.utcnow().replace(tzinfo=None)
+    db.add(order)
+    db.commit()
+    _flash(request, "Bestellung als bestätigt markiert.", "info")
+    return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+
+
+@app.post("/purchase/orders/{order_id}/lines/{line_id}/cost")
+async def purchase_order_line_cost_set(
+    order_id: int,
+    line_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    db: Session = Depends(db_session),
+):
+    _ = user
+    line = db.get(PurchaseOrderLine, line_id)
+    if not line or int(line.purchase_order_id) != int(order_id):
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    try:
+        expected = _parse_eur_to_cents(form.get("expected_cost"), "Erwarteter EK (netto)")
+        confirmed = _parse_eur_to_cents(form.get("confirmed_cost"), "Bestätigter EK")
+    except ValueError as exc:
+        _flash(request, str(exc), "error")
+        return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+    line.expected_cost_cents = expected
+    line.confirmed_cost_cents = confirmed
+    db.add(line)
+    if confirmed is not None:
+        product = db.get(Product, line.product_id)
+        if product:
+            product.last_cost_cents = confirmed
+            product.price_source = "bestellung"
+            db.add(product)
+    db.commit()
+    _flash(request, "EK-Daten gespeichert.", "info")
+    return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+
+
+@app.post("/purchase/orders/{order_id}/receive")
+async def purchase_order_receive(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    order = db.get(PurchaseOrder, order_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    if order.status == "received":
+        _flash(request, "Wareneingang wurde bereits gebucht.", "info")
+        return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        _flash(request, message, "error")
+        response = purchase_order_detail(order_id=order_id, request=request, user=user, db=db)
+        response.context["receive_form_data"] = form_data
+        response.context["receive_form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, PO_RECEIVE_FIELD_IDS)
+        return _rerender_template_response(response)
+
+    warehouse_to_id = _to_int(form.get("warehouse_to_id"), 0)
+    condition = _condition_code_from_input(form.get("condition"))
+    delivery_note_no = (form.get("delivery_note_no") or "").strip() or None
+    if not warehouse_to_id or not db.get(Warehouse, warehouse_to_id):
+        return render_error("warehouse_to_id", "Bitte ein Ziel-Lager auswählen.")
+    if not _condition_exists(db, condition, active_only=False):
+        return render_error("condition", "Ungültiger Zustand.")
+
+    lines = (
+        db.query(PurchaseOrderLine)
+        .filter(PurchaseOrderLine.purchase_order_id == order_id)
+        .order_by(PurchaseOrderLine.id.asc())
+        .all()
+    )
+    if not lines:
+        return render_error("__all__", "Bestellung hat keine Positionen.")
+
+    try:
+        for line in lines:
+            qty = int(line.qty or 0)
+            if qty <= 0:
+                continue
+            chosen_cost = line.confirmed_cost_cents if line.confirmed_cost_cents is not None else line.expected_cost_cents
+            tx = InventoryTransaction(
+                tx_type="receipt",
+                product_id=line.product_id,
+                warehouse_from_id=None,
+                warehouse_to_id=warehouse_to_id,
+                bin_from_id=None,
+                bin_to_id=None,
+                supplier_id=order.supplier_id,
+                delivery_note_no=delivery_note_no,
+                unit_cost=chosen_cost,
+                condition=condition,
+                quantity=qty,
+                serial_number=None,
+                reference=_purchase_reference(order),
+                note=f"Wareneingang aus Bestellung {order.po_number}",
+            )
+            apply_transaction(db, tx, actor_user_id=user.id)
+
+            product = db.get(Product, line.product_id)
+            if product:
+                if chosen_cost is not None:
+                    product.last_cost_cents = int(chosen_cost)
+                    product.price_source = "bestellung"
+                    db.add(product)
+
+        order.status = "received"
+        db.add(order)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return render_error("__all__", f"Wareneingang fehlgeschlagen: {exc}")
+
+    _flash(request, "Wareneingang aus Bestellung wurde gebucht.", "info")
+    return RedirectResponse(f"/purchase/orders/{order_id}", status_code=302)
+
+
+@app.get("/purchase/inbox", response_class=HTMLResponse)
+def purchase_inbox(
+    request: Request,
+    user=Depends(require_admin),
+    q: str = "PO-",
+    db: Session = Depends(db_session),
+):
+    query = db.query(EmailMessage)
+    q = (q or "").strip()
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(EmailMessage.subject.ilike(like), EmailMessage.snippet.ilike(like), EmailMessage.body_text.ilike(like)))
+    rows = query.order_by(EmailMessage.id.desc()).limit(300).all()
+
+    row_data = []
+    po_numbers: list[str] = []
+    for row in rows:
+        text = " ".join(
+            [
+                str(row.subject or ""),
+                str(row.snippet or ""),
+                str(row.body_text or ""),
+            ]
+        )
+        pos = _extract_po_numbers(text)
+        row_data.append({"msg": row, "po_numbers": pos})
+        for po in pos:
+            if po not in po_numbers:
+                po_numbers.append(po)
+    orders = {}
+    if po_numbers:
+        orders = {o.po_number: o for o in db.query(PurchaseOrder).filter(PurchaseOrder.po_number.in_(po_numbers)).all()}
+    return templates.TemplateResponse(
+        "purchase/order_inbox.html",
+        _ctx(request, user=user, rows=row_data, orders_by_po=orders, q=q),
+    )
 
 
 # ---------------------------
@@ -4412,12 +6625,19 @@ def stock_overview(
     db: Session = Depends(db_session),
 ):
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
+    types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
     bins_q = db.query(WarehouseBin)
     if warehouse_id:
         bins_q = bins_q.filter(WarehouseBin.warehouse_id == warehouse_id)
     bins = bins_q.order_by(WarehouseBin.warehouse_id.asc(), WarehouseBin.code.asc()).all()
 
-    products_q = db.query(Product).filter(Product.active == True)
+    products_q = db.query(Product).filter(
+        or_(
+            Product.active == True,
+            exists().where(and_(StockBalance.product_id == Product.id, StockBalance.quantity != 0)),
+        )
+    )
     search_filter = build_product_search_filter(q, include_attribute_values=True)
     if search_filter is not None:
         products_q = products_q.filter(search_filter)
@@ -4426,6 +6646,7 @@ def stock_overview(
         products_q = products_q.filter(Product.item_type == item_type)
     products = products_q.order_by(Product.name.asc()).limit(200).all()
     product_ids = [p.id for p in products]
+    top_traits_map = _top_traits_for_products(db, products)
 
     # quantity balances
     bal_q = db.query(StockBalance).filter(StockBalance.product_id.in_(product_ids))
@@ -4485,8 +6706,62 @@ def stock_overview(
             table_columns=table_columns,
             table_grid=table_grid,
             stock_total_map=stock_total_map,
+            kind_name_map={int(k.id): str(k.name or "") for k in kinds},
+            type_name_map={int(t.id): str(t.name or "") for t in types},
+            top_traits_map=top_traits_map,
         ),
     )
+
+
+@app.get("/admin/report/archiviert_mit_bestand", response_class=HTMLResponse)
+def admin_report_archived_with_stock(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ = request
+    _ = user
+    qty_sum = func.coalesce(func.sum(StockBalance.quantity), 0)
+    rows = (
+        db.query(Product.id, Product.name, Product.sales_name, Product.material_no, qty_sum.label("qty"))
+        .join(StockBalance, StockBalance.product_id == Product.id)
+        .filter(Product.active == False)
+        .group_by(Product.id)
+        .having(qty_sum > 0)
+        .order_by(qty_sum.desc(), Product.id.desc())
+        .all()
+    )
+    html_rows: list[str] = []
+    for product_id, name, sales_name, material_no, qty in rows:
+        display_name = str(sales_name or "").strip() or str(name or "").strip() or f"Produkt #{product_id}"
+        html_rows.append(
+            "<tr>"
+            f"<td>{int(product_id)}</td>"
+            f"<td>{html.escape(display_name)}</td>"
+            f"<td>{html.escape(str(material_no or '-'))}</td>"
+            f"<td>{int(qty or 0)}</td>"
+            f"<td><a href=\"/catalog/products/{int(product_id)}\">Öffnen</a></td>"
+            "</tr>"
+        )
+    if not html_rows:
+        html_rows.append("<tr><td colspan=\"5\">Keine archivierten Produkte mit Bestand &gt; 0 gefunden.</td></tr>")
+
+    content = (
+        "<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>Report: Archiviert mit Bestand</title>"
+        "<link rel=\"stylesheet\" href=\"/static/dos.css\">"
+        "</head><body><div class=\"screen\"><main class=\"content\"><div class=\"panel\">"
+        "<h1>Archivierte Produkte mit Bestand &gt; 0</h1>"
+        "<div class=\"row\"><a class=\"btn\" href=\"/inventory/stock\">Zurück zum Bestand</a></div>"
+        "<table style=\"width:100%;border-collapse:collapse;\">"
+        "<thead><tr>"
+        "<th style=\"text-align:left;padding:6px;\">ID</th>"
+        "<th style=\"text-align:left;padding:6px;\">Produkt</th>"
+        "<th style=\"text-align:left;padding:6px;\">Materialnummer</th>"
+        "<th style=\"text-align:left;padding:6px;\">Bestand</th>"
+        "<th style=\"text-align:left;padding:6px;\">Aktion</th>"
+        "</tr></thead><tbody>"
+        + "".join(html_rows)
+        + "</tbody></table></div></main></div></body></html>"
+    )
+    return HTMLResponse(content=content)
 
 
 # ---------------------------
@@ -4675,9 +6950,52 @@ def tx_new_get(
     user=Depends(require_lager_access),
     product_id: int = 0,
     tx_type: str = "",
+    return_to: str = "",
     db: Session = Depends(db_session),
 ):
-    products = db.query(Product).order_by(Product.name.asc()).all()
+    draft_key = "draft:/inventory/transactions/new"
+    prefill_form_data: dict[str, str | list[str]] = {}
+    if not request.query_params:
+        loaded = _draft_get(request, draft_key)
+        if isinstance(loaded, dict):
+            prefill_form_data = dict(loaded)
+
+    query_type = (request.query_params.get("type") or "").strip()
+    query_tx_type = (request.query_params.get("tx_type") or "").strip()
+    requested_return_to = return_to or (request.query_params.get("return_to") or "")
+    safe_return_to = _safe_return_to_path(str(requested_return_to or ""), fallback="")
+    selected_product_id = int(product_id or _to_int(_form_scalar(prefill_form_data, "product_id"), 0) or 0)
+    selected_tx_type = (tx_type or query_tx_type or query_type or _form_scalar(prefill_form_data, "tx_type")).strip()
+    if selected_tx_type not in ("receipt", "issue", "transfer", "scrap", "adjust"):
+        selected_tx_type = "receipt"
+    lock_tx_type = query_tx_type == "receipt" or query_type == "receipt"
+    receipt_defaults = _receipt_defaults(db)
+    if selected_tx_type == "receipt":
+        if not _form_scalar(prefill_form_data, "warehouse_to_id"):
+            if int(receipt_defaults["warehouse_id"] or 0) > 0:
+                prefill_form_data["warehouse_to_id"] = str(int(receipt_defaults["warehouse_id"]))
+        if not _form_scalar(prefill_form_data, "condition"):
+            prefill_form_data["condition"] = str(receipt_defaults["condition"] or _default_condition_code())
+        if not _form_scalar(prefill_form_data, "supplier_id"):
+            supplier_id = int(receipt_defaults["supplier_id"] or 0)
+            if supplier_id > 0:
+                prefill_form_data["supplier_id"] = str(supplier_id)
+        if not _form_scalar(prefill_form_data, "quantity"):
+            prefill_form_data["quantity"] = str(int(receipt_defaults["quantity"] or 1))
+    lock_warehouse = (
+        bool(receipt_defaults["lock_warehouse"])
+        and bool(lock_tx_type)
+        and selected_tx_type == "receipt"
+        and int(receipt_defaults["warehouse_id"] or 0) > 0
+    )
+    if lock_warehouse:
+        prefill_form_data["warehouse_to_id"] = str(int(receipt_defaults["warehouse_id"]))
+
+    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc()).all()
+    selected_product = db.get(Product, selected_product_id) if selected_product_id else None
+    if selected_product and all(int(p.id) != int(selected_product_id) for p in products):
+        products.append(selected_product)
+        products = sorted(products, key=lambda row: (str(row.name or "").lower(), int(row.id)))
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
@@ -4695,8 +7013,16 @@ def tx_new_get(
             suppliers=suppliers,
             condition_defs=condition_defs,
             bins_by_warehouse=bins_by_warehouse,
-            selected_product_id=product_id,
-            selected_tx_type=tx_type,
+            selected_product_id=selected_product_id,
+            selected_tx_type=selected_tx_type,
+            form_data=prefill_form_data,
+            form_errors={},
+            first_error_field_id="",
+            draft_key=draft_key,
+            selected_product=selected_product,
+            return_to=safe_return_to,
+            lock_tx_type=lock_tx_type,
+            receipt_lock_warehouse=lock_warehouse,
         ),
     )
 
@@ -4704,56 +7030,137 @@ def tx_new_get(
 @app.post("/inventory/transactions/new")
 async def tx_new_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
     form = await request.form()
+    form_data = _extract_form_data(form)
+    draft_key = "draft:/inventory/transactions/new"
+    _draft_set(request, draft_key, form_data)
+    return_to = _safe_return_to_path(str(form.get("return_to") or "").strip(), fallback="")
+    form_errors: dict[str, str] = {}
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        _flash(request, message, "error")
+        selected_product_id = _to_int(_form_scalar(form_data, "product_id"), 0)
+        selected_tx_type = _form_scalar(form_data, "tx_type")
+        response = tx_new_get(
+            request,
+            user=user,
+            product_id=selected_product_id,
+            tx_type=selected_tx_type,
+            return_to=return_to,
+            db=db,
+        )
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, TX_FORM_FIELD_IDS)
+        return _rerender_template_response(response)
+
     tx_type = (form.get("tx_type") or "").strip()
     if tx_type not in ("receipt", "issue", "transfer", "scrap", "adjust"):
-        _flash(request, "Ungültiger Buchungstyp.", "error")
-        return RedirectResponse("/inventory/transactions/new", status_code=302)
-    product_id = int(form.get("product_id") or 0)
+        return render_error("tx_type", "Ungültiger Buchungstyp.")
+    try:
+        product_id = int(form.get("product_id") or 0)
+    except Exception:
+        product_id = 0
     product = db.get(Product, product_id)
     if not product:
-        _flash(request, "Produkt fehlt.", "error")
-        return RedirectResponse("/inventory/transactions/new", status_code=302)
+        return render_error("product_id", "Produkt fehlt.")
+    if not bool(product.active):
+        return render_error("product_id", "Archiviertes Produkt kann nicht neu gebucht werden.")
 
-    condition = _condition_code_from_input(form.get("condition"))
-    if not _condition_exists(db, condition, active_only=True):
-        _flash(request, "Ungültiger oder inaktiver Zustand.", "error")
-        return RedirectResponse("/inventory/transactions/new", status_code=302)
     reference = (form.get("reference") or "").strip() or None
     note = (form.get("note") or "").strip() or None
     supplier_id = None
     delivery_note_no = None
+    unit_cost = None
     if tx_type == "receipt":
         supplier_input = form.get("supplier_id")
         supplier_id, _supplier = _parse_supplier_id(db, supplier_input, active_only=True)
         if supplier_input and not supplier_id:
-            _flash(request, "Lieferant wurde nicht gefunden oder ist inaktiv.", "error")
-            return RedirectResponse("/inventory/transactions/new", status_code=302)
+            return render_error("supplier_id", "Lieferant wurde nicht gefunden oder ist inaktiv.")
         delivery_note_no = (form.get("delivery_note_no") or "").strip() or None
+        try:
+            unit_cost = _parse_eur_to_cents(form.get("unit_cost"), "Preis pro Stück (netto)")
+        except ValueError as exc:
+            return render_error("unit_cost", str(exc))
 
-    wh_from = int(form.get("warehouse_from_id") or 0) or None
-    wh_to = int(form.get("warehouse_to_id") or 0) or None
-    bin_from = int(form.get("bin_from_id") or 0) or None
-    bin_to = int(form.get("bin_to_id") or 0) or None
+    wh_from = _to_int(form.get("warehouse_from_id"), 0) or None
+    wh_to = _to_int(form.get("warehouse_to_id"), 0) or None
+    bin_from = _to_int(form.get("bin_from_id"), 0) or None
+    bin_to = _to_int(form.get("bin_to_id"), 0) or None
+    if tx_type == "receipt" and (form.get("receipt_lock_warehouse") or "").strip() == "1":
+        locked_defaults = _receipt_defaults(db)
+        locked_wh = int(locked_defaults["warehouse_id"] or 0)
+        if locked_wh > 0:
+            wh_to = locked_wh
+    set_to_zero = tx_type == "adjust" and (form.get("set_to_zero") or "").strip() == "1"
 
-    qty = int(form.get("quantity") or 0)
+    if set_to_zero:
+        rows = (
+            db.query(StockBalance)
+            .filter(StockBalance.product_id == product_id, StockBalance.quantity != 0)
+            .all()
+        )
+        if not rows:
+            _flash(request, "Bestand ist bereits in allen Lagern/Fächern auf 0.", "info")
+            _draft_clear(request, draft_key)
+            return RedirectResponse("/inventory/transactions/new", status_code=302)
+
+        created = 0
+        auto_note = "Schnellaktion: Bestand in allen Lagern/Fächern auf 0 gesetzt."
+        tx_note = f"{auto_note} {note}".strip() if note else auto_note
+        try:
+            for row in rows:
+                qty = -int(row.quantity or 0)
+                if qty == 0:
+                    continue
+                tx = InventoryTransaction(
+                    tx_type="adjust",
+                    product_id=product_id,
+                    warehouse_from_id=row.warehouse_id,
+                    warehouse_to_id=row.warehouse_id,
+                    bin_from_id=row.bin_id,
+                    bin_to_id=row.bin_id,
+                    supplier_id=None,
+                    delivery_note_no=None,
+                    condition=row.condition,
+                    quantity=qty,
+                    serial_number=None,
+                    reference=reference,
+                    note=tx_note,
+                )
+                apply_transaction(db, tx, actor_user_id=user.id)
+                created += 1
+            db.commit()
+            _draft_clear(request, draft_key)
+            _flash(request, f"Bestand in allen Lagern/Fächern auf 0 gesetzt. Buchungen: {created}.", "info")
+        except Exception as e:
+            db.rollback()
+            return render_error("__all__", f"Fehler: {e}")
+        return RedirectResponse(return_to or "/inventory/stock", status_code=302)
+
+    condition = _condition_code_from_input(form.get("condition"))
+    if not _condition_exists(db, condition, active_only=True):
+        return render_error("condition", "Ungültiger oder inaktiver Zustand.")
+
+    try:
+        qty = int(form.get("quantity") or 0)
+    except Exception:
+        qty = 0
     if tx_type == "adjust":
         if qty == 0:
-            _flash(request, "Korrekturmenge darf nicht 0 sein.", "error")
-            return RedirectResponse("/inventory/transactions/new", status_code=302)
+            return render_error("quantity", "Korrekturmenge darf nicht 0 sein.")
     elif qty <= 0:
-        _flash(request, "Menge muss größer 0 sein.", "error")
-        return RedirectResponse("/inventory/transactions/new", status_code=302)
+        return render_error("quantity", "Menge muss größer 0 sein.")
 
     if bin_from:
         b = db.get(WarehouseBin, bin_from)
         if not b or not wh_from or b.warehouse_id != wh_from:
-            _flash(request, "Quell-Fach passt nicht zum Quell-Lager.", "error")
-            return RedirectResponse("/inventory/transactions/new", status_code=302)
+            return render_error("bin_from_id", "Quell-Fach passt nicht zum Quell-Lager.")
     if bin_to:
         b = db.get(WarehouseBin, bin_to)
         if not b or not wh_to or b.warehouse_id != wh_to:
-            _flash(request, "Zielfach passt nicht zum Ziel-Lager.", "error")
-            return RedirectResponse("/inventory/transactions/new", status_code=302)
+            return render_error("bin_to_id", "Zielfach passt nicht zum Ziel-Lager.")
 
     tx = InventoryTransaction(
         tx_type=tx_type,
@@ -4764,6 +7171,7 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
         bin_to_id=bin_to,
         supplier_id=supplier_id,
         delivery_note_no=delivery_note_no,
+        unit_cost=unit_cost,
         condition=condition,
         quantity=qty,
         serial_number=None,
@@ -4772,14 +7180,18 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
     )
     try:
         apply_transaction(db, tx, actor_user_id=user.id)
+        if tx_type == "receipt" and unit_cost is not None:
+            product.last_cost_cents = int(unit_cost)
+            product.price_source = "bestellung"
+            db.add(product)
         db.commit()
+        _draft_clear(request, draft_key)
         _flash(request, "Buchung durchgeführt.", "info")
     except Exception as e:
         db.rollback()
-        _flash(request, f"Fehler: {e}", "error")
-        return RedirectResponse("/inventory/transactions/new", status_code=302)
+        return render_error("__all__", f"Fehler: {e}")
 
-    return RedirectResponse("/inventory/stock", status_code=302)
+    return RedirectResponse(return_to or "/inventory/stock", status_code=302)
 
 
 # ---------------------------
@@ -4806,7 +7218,12 @@ def reservations_new_get(
     serial_number: str = "",
     db: Session = Depends(db_session),
 ):
-    products = db.query(Product).order_by(Product.name.asc()).all()
+    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc()).all()
+    if product_id and all(int(p.id) != int(product_id) for p in products):
+        selected_product = db.get(Product, product_id)
+        if selected_product:
+            products.append(selected_product)
+            products = sorted(products, key=lambda row: (str(row.name or "").lower(), int(row.id)))
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     selected_warehouse_id = 0
@@ -4840,6 +7257,9 @@ async def reservations_new_post(request: Request, user=Depends(require_reservati
     product = db.get(Product, product_id)
     if not product:
         _flash(request, "Produkt fehlt.", "error")
+        return RedirectResponse("/inventory/reservations/new", status_code=302)
+    if not bool(product.active):
+        _flash(request, "Archivierte Produkte können nicht neu reserviert werden.", "error")
         return RedirectResponse("/inventory/reservations/new", status_code=302)
 
     if not warehouse_id:
@@ -5248,6 +7668,61 @@ async def api_write_reservation_release(
 # Settings
 # ---------------------------
 
+NAV_AUDIT_IGNORE_PREFIXES = (
+    "/static",
+    "/setup",
+    "/api/",
+    "/health",
+    "/meta/",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+)
+NAV_AUDIT_IGNORE_EXACT = {
+    "/",
+    "/login",
+    "/logout",
+    "/schnell",
+}
+
+
+def _is_nav_audit_ignored(path: str) -> bool:
+    value = str(path or "").strip() or "/"
+    if value in NAV_AUDIT_IGNORE_EXACT:
+        return True
+    for prefix in NAV_AUDIT_IGNORE_PREFIXES:
+        if value.startswith(prefix):
+            return True
+    return False
+
+
+def _is_html_route(route: APIRoute) -> bool:
+    response_class = route.response_class or app.default_response_class
+    try:
+        return bool(response_class and issubclass(response_class, HTMLResponse))
+    except Exception:
+        return False
+
+
+def _collect_ui_get_routes() -> list[str]:
+    ui_paths: set[str] = set()
+    for route in app.router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        methods = {m.upper() for m in (route.methods or set())}
+        if "GET" not in methods:
+            continue
+        path = str(route.path or "").strip() or "/"
+        if "{" in path or "}" in path:
+            continue
+        if _is_nav_audit_ignored(path):
+            continue
+        if not _is_html_route(route):
+            continue
+        ui_paths.add(path)
+    return sorted(ui_paths)
+
+
 def _system_setting_get(db: Session, key: str, default: str | None = None) -> str | None:
     row = db.query(SystemSetting).filter(SystemSetting.key == key).one_or_none()
     if not row:
@@ -5273,6 +7748,45 @@ def _bool_from_setting(raw: str | None, default: bool = False) -> bool:
     if v in ("0", "false", "off", "no", "nein"):
         return False
     return default
+
+
+def _int_from_setting(raw: str | None, default: int = 0, minimum: int = 0) -> int:
+    try:
+        value = int(str(raw or "").strip() or default)
+    except Exception:
+        value = int(default)
+    return max(minimum, value)
+
+
+def _receipt_defaults(db: Session) -> dict[str, int | str | bool]:
+    warehouse_id = _int_from_setting(_system_setting_get(db, RECEIPT_DEFAULT_WAREHOUSE_ID, "0"), default=0, minimum=0)
+    if warehouse_id and not db.get(Warehouse, warehouse_id):
+        warehouse_id = 0
+    if warehouse_id == 0:
+        preferred = db.query(Warehouse).filter(func.lower(Warehouse.name) == "kleinmachnow").one_or_none()
+        if preferred:
+            warehouse_id = int(preferred.id)
+
+    condition = (_system_setting_get(db, RECEIPT_DEFAULT_CONDITION, _default_condition_code()) or _default_condition_code()).strip()
+    condition = _condition_code_from_input(condition)
+    if not _condition_exists(db, condition, active_only=True):
+        condition = _default_condition_code()
+
+    supplier_id = _int_from_setting(_system_setting_get(db, RECEIPT_DEFAULT_SUPPLIER_ID, "0"), default=0, minimum=0)
+    if supplier_id:
+        supplier = db.get(Supplier, supplier_id)
+        if not supplier or not bool(supplier.active):
+            supplier_id = 0
+
+    quantity = _int_from_setting(_system_setting_get(db, RECEIPT_DEFAULT_QTY, "1"), default=1, minimum=1)
+    lock_warehouse = _bool_from_setting(_system_setting_get(db, RECEIPT_LOCK_WAREHOUSE, "0"), default=False)
+    return {
+        "warehouse_id": int(warehouse_id),
+        "condition": condition,
+        "supplier_id": int(supplier_id),
+        "quantity": int(quantity),
+        "lock_warehouse": bool(lock_warehouse),
+    }
 
 
 def _loadbee_secret_path() -> Path:
@@ -5404,6 +7918,106 @@ async def system_loadbee_test_post(request: Request, user=Depends(require_admin)
             loadbee_api_key_set=bool(settings.get("api_key_set")),
             loadbee_locales=str(settings.get("locales") or "de_DE"),
             loadbee_test_gtin=test_gtin or "",
+        ),
+    )
+
+
+@app.get("/system/standards", response_class=HTMLResponse)
+def system_standards_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    defaults = _receipt_defaults(db)
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    return templates.TemplateResponse(
+        "system/standards.html",
+        _ctx(
+            request,
+            user=user,
+            warehouses=warehouses,
+            suppliers=suppliers,
+            condition_defs=condition_defs,
+            receipt_defaults=defaults,
+            form_data={},
+            form_errors={},
+        ),
+    )
+
+
+@app.post("/system/standards")
+async def system_standards_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+
+    def render_with_errors():
+        for msg in list(form_errors.values())[:5]:
+            _flash(request, msg, "error")
+        return templates.TemplateResponse(
+            "system/standards.html",
+            _ctx(
+                request,
+                user=user,
+                warehouses=warehouses,
+                suppliers=suppliers,
+                condition_defs=condition_defs,
+                receipt_defaults=_receipt_defaults(db),
+                form_data=form_data,
+                form_errors=form_errors,
+            ),
+        )
+
+    warehouse_id = _to_int(form.get("warehouse_id"), 0)
+    if not warehouse_id or not db.get(Warehouse, warehouse_id):
+        form_errors["warehouse_id"] = "Standard-Lager ist erforderlich."
+
+    condition = _condition_code_from_input(form.get("condition"))
+    if not _condition_exists(db, condition, active_only=True):
+        form_errors["condition"] = "Standard-Zustand ist erforderlich."
+
+    supplier_id = _to_int(form.get("supplier_id"), 0)
+    if supplier_id:
+        supplier = db.get(Supplier, supplier_id)
+        if not supplier or not bool(supplier.active):
+            form_errors["supplier_id"] = "Standard-Lieferant wurde nicht gefunden oder ist inaktiv."
+
+    quantity = _to_int(form.get("quantity"), 0)
+    if quantity <= 0:
+        form_errors["quantity"] = "Standard-Menge muss mindestens 1 sein."
+
+    lock_warehouse = form.get("lock_warehouse") == "on"
+
+    if form_errors:
+        return render_with_errors()
+
+    _system_setting_set(db, RECEIPT_DEFAULT_WAREHOUSE_ID, str(int(warehouse_id)))
+    _system_setting_set(db, RECEIPT_DEFAULT_CONDITION, condition)
+    _system_setting_set(db, RECEIPT_DEFAULT_SUPPLIER_ID, str(int(supplier_id or 0)))
+    _system_setting_set(db, RECEIPT_DEFAULT_QTY, str(int(quantity)))
+    _system_setting_set(db, RECEIPT_LOCK_WAREHOUSE, "1" if lock_warehouse else "0")
+    db.commit()
+    _flash(request, "Standards gespeichert.", "info")
+    return RedirectResponse("/system/standards", status_code=302)
+
+
+@app.get("/system/nav-audit", response_class=HTMLResponse)
+def system_nav_audit(request: Request, user=Depends(require_admin)):
+    nav_paths = all_nav_paths()
+    ui_paths = _collect_ui_get_routes()
+    ui_path_set = set(ui_paths)
+    missing_in_nav = [path for path in ui_paths if path not in nav_paths]
+    nav_without_route = sorted(path for path in nav_paths if path not in ui_path_set)
+    return templates.TemplateResponse(
+        "system/nav_audit.html",
+        _ctx(
+            request,
+            user=user,
+            nav_registry_paths=sorted(nav_paths),
+            ui_paths=ui_paths,
+            missing_in_nav=missing_in_nav,
+            nav_without_route=nav_without_route,
         ),
     )
 

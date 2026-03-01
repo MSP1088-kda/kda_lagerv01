@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -238,6 +239,9 @@ class Product(Base):
     manufacturer_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     material_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sale_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price_source: Mapped[str] = mapped_column(String(30), nullable=False, default="manuell")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     manufacturer_ref = relationship("Manufacturer")
@@ -248,8 +252,27 @@ class Product(Base):
         Index("ix_products_sku", "sku"),
         Index("ix_products_ean", "ean"),
         Index("ix_products_material_no", "material_no"),
+        Index("ix_products_active", "active"),
         Index("ix_products_item_type", "item_type"),
+        Index("ix_products_active_item_type", "active", "item_type"),
+        Index("ix_products_area_kind_type", "area_id", "device_kind_id", "device_type_id"),
         Index("ix_products_manufacturer_id", "manufacturer_id"),
+        Index("ix_products_price_source", "price_source"),
+    )
+
+
+class PriceRuleKind(Base):
+    __tablename__ = "price_rule_kinds"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_kind_id: Mapped[int] = mapped_column(ForeignKey("device_kinds.id"), nullable=False)
+    markup_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    markup_fixed_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rounding_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="none")  # 099|100|none
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        UniqueConstraint("device_kind_id", name="uq_price_rule_kind_device_kind"),
+        Index("ix_price_rule_kind_active", "active"),
     )
 
 
@@ -302,6 +325,19 @@ class ProductAttributeValue(Base):
     product = relationship("Product", back_populates="attribute_values")
 
     __table_args__ = (UniqueConstraint("product_id", "attribute_id", name="uq_product_attr"),)
+
+
+class KindListAttribute(Base):
+    __tablename__ = "kind_list_attributes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind_id: Mapped[int] = mapped_column(ForeignKey("device_kinds.id"), nullable=False)
+    slot: Mapped[int] = mapped_column(Integer, nullable=False)
+    attribute_def_id: Mapped[int] = mapped_column(ForeignKey("attribute_defs.id"), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("kind_id", "slot", name="uq_kind_list_attribute_slot"),
+        Index("ix_kind_list_attribute_kind", "kind_id"),
+    )
 
 
 class ItemTypeFieldRule(Base):
@@ -404,6 +440,7 @@ class InventoryTransaction(Base):
     bin_to_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
     delivery_note_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    unit_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)
     condition: Mapped[str] = mapped_column(String(30), nullable=False, default="ok")
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -453,6 +490,20 @@ class Reservation(Base):
     __table_args__ = (Index("ix_res_status", "status"),)
 
 
+class Attachment(Base):
+    __tablename__ = "attachments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)  # repair
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    filename: Mapped[str] = mapped_column(String(400), nullable=False)
+    original_name: Mapped[str | None] = mapped_column(String(260), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_attachment_entity", "entity_type", "entity_id"),)
+
+
 class RepairOrder(Base):
     __tablename__ = "repair_orders"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -479,6 +530,37 @@ class RepairOrderLine(Base):
     condition_out: Mapped[str] = mapped_column(String(40), nullable=False, default="B_WARE")
 
     __table_args__ = (Index("ix_repair_order_line_order", "repair_order_id"),)
+
+
+class PurchaseOrder(Base):
+    __tablename__ = "purchase_orders"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    po_number: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")  # draft|sent|confirmed|received
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    supplier = relationship("Supplier")
+
+    __table_args__ = (
+        UniqueConstraint("po_number", name="uq_purchase_orders_po_number"),
+        Index("ix_purchase_orders_status", "status"),
+    )
+
+
+class PurchaseOrderLine(Base):
+    __tablename__ = "purchase_order_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    purchase_order_id: Mapped[int] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    expected_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confirmed_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (Index("ix_purchase_order_lines_order", "purchase_order_id"),)
 
 
 class Stocktake(Base):
