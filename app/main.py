@@ -141,7 +141,7 @@ def _compute_build_id() -> str:
             continue
     return h.hexdigest()[:10]
 
-APP_VERSION = os.environ.get("APP_VERSION", "0.1.6")
+APP_VERSION = os.environ.get("APP_VERSION", "0.1.7")
 _env_build = (os.environ.get("APP_BUILD") or "").strip()
 APP_BUILD = _env_build if _env_build and _env_build.lower() not in ("dev", "local") else _compute_build_id()
 GIT_SHA = os.environ.get("GIT_SHA", "local")
@@ -3127,10 +3127,19 @@ def build_product_search_filter(q: str, include_attribute_values: bool = False):
     return or_(*conds)
 
 
-def _parse_active(raw: str, default_value: bool = True) -> bool:
+def _parse_active(
+    raw: str,
+    default_value: bool = True,
+    true_values: set[str] | None = None,
+    false_values: set[str] | None = None,
+) -> bool:
     v = (raw or "").strip().lower()
     if not v:
         return default_value
+    if true_values and v in true_values:
+        return True
+    if false_values and v in false_values:
+        return False
     if v in ("ja", "j", "true", "1", "aktiv", "x"):
         return True
     if v in ("nein", "n", "false", "0", "inaktiv"):
@@ -3156,6 +3165,9 @@ def _resolve_catalog_refs(
     kind_name: str,
     type_name: str,
     auto_create: bool,
+    fallback_area: Area | None = None,
+    fallback_kind: DeviceKind | None = None,
+    fallback_type: DeviceType | None = None,
 ) -> tuple[Area | None, DeviceKind | None, DeviceType | None]:
     area_name = area_name.strip()
     kind_name = kind_name.strip()
@@ -3176,52 +3188,87 @@ def _resolve_catalog_refs(
 
     if area_name:
         area = _find_area(area_name)
+        if not area and fallback_area:
+            area = fallback_area
         if not area and auto_create:
             area = Area(name=area_name)
             db.add(area)
             db.flush()
         if not area:
             raise ValueError(f"Bereich nicht gefunden: {area_name}")
+    elif fallback_area:
+        area = fallback_area
 
     if kind_name:
         if not area:
-            if not auto_create:
-                raise ValueError("Geräteart ohne gültigen Bereich.")
-            area = _find_area("Unbekannt")
+            if fallback_kind:
+                area = db.get(Area, int(fallback_kind.area_id or 0))
             if not area:
-                area = Area(name="Unbekannt")
-                db.add(area)
-                db.flush()
+                if not auto_create:
+                    raise ValueError("Geräteart ohne gültigen Bereich.")
+                area = _find_area("Unbekannt")
+                if not area:
+                    area = Area(name="Unbekannt")
+                    db.add(area)
+                    db.flush()
         kind = _find_kind(area.id, kind_name)
+        if not kind and fallback_kind:
+            kind = fallback_kind
+            area = db.get(Area, int(kind.area_id or 0)) if kind and kind.area_id else area
         if not kind and auto_create:
             kind = DeviceKind(area_id=area.id, name=kind_name)
             db.add(kind)
             db.flush()
         if not kind:
             raise ValueError(f"Geräteart nicht gefunden: {kind_name}")
+    elif fallback_kind:
+        kind = fallback_kind
+        if not area:
+            area = db.get(Area, int(kind.area_id or 0))
 
     if type_name:
         if not kind:
-            if not auto_create:
-                raise ValueError("Gerätetyp ohne gültige Geräteart.")
-            if not area:
-                area = _find_area("Unbekannt")
-                if not area:
-                    area = Area(name="Unbekannt")
-                    db.add(area)
-                    db.flush()
-            kind = _find_kind(area.id, "Unbekannt")
+            if fallback_type:
+                kind = db.get(DeviceKind, int(fallback_type.device_kind_id or 0))
+                if kind and not area:
+                    area = db.get(Area, int(kind.area_id or 0))
             if not kind:
-                kind = DeviceKind(area_id=area.id, name="Unbekannt")
-                db.add(kind)
-                db.flush()
+                if not auto_create:
+                    raise ValueError("Gerätetyp ohne gültige Geräteart.")
+                if not area:
+                    area = _find_area("Unbekannt")
+                    if not area:
+                        area = Area(name="Unbekannt")
+                        db.add(area)
+                        db.flush()
+                kind = _find_kind(area.id, "Unbekannt")
+                if not kind:
+                    kind = DeviceKind(area_id=area.id, name="Unbekannt")
+                    db.add(kind)
+                    db.flush()
         dtype = _find_type(kind.id, type_name)
+        if not dtype and fallback_type:
+            dtype = fallback_type
+            kind = db.get(DeviceKind, int(dtype.device_kind_id or 0)) if dtype and dtype.device_kind_id else kind
+            if kind and not area:
+                area = db.get(Area, int(kind.area_id or 0))
         if not dtype and auto_create:
             dtype = DeviceType(device_kind_id=kind.id, name=type_name)
             db.add(dtype)
             db.flush()
         if not dtype:
             raise ValueError(f"Gerätetyp nicht gefunden: {type_name}")
+    elif fallback_type:
+        dtype = fallback_type
+        if not kind:
+            kind = db.get(DeviceKind, int(dtype.device_kind_id or 0))
+        if kind and not area:
+            area = db.get(Area, int(kind.area_id or 0))
+
+    if kind and area and int(kind.area_id or 0) != int(area.id):
+        raise ValueError("Geräteart passt nicht zum Bereich.")
+    if dtype and kind and int(dtype.device_kind_id or 0) != int(kind.id):
+        raise ValueError("Gerätetyp passt nicht zur Geräteart.")
 
     return area, kind, dtype
 
@@ -3463,6 +3510,10 @@ def products_list(
 
     include_inactive = int(show_inactive or 0) == 1 and (getattr(user, "role", "") or "").strip().lower() == "admin"
     manufacturers = db.query(Manufacturer).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
+    all_kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    all_types = db.query(DeviceType).order_by(DeviceType.name.asc(), DeviceType.id.asc()).all()
+    kind_area_map = {int(k.id): int(k.area_id or 0) for k in all_kinds}
+    type_area_map = {int(t.id): int(kind_area_map.get(int(t.device_kind_id or 0), 0) or 0) for t in all_types}
     valid_manufacturer_ids = {int(m.id) for m in manufacturers}
     manufacturer_id = int(manufacturer_id or 0)
     if manufacturer_id and manufacturer_id not in valid_manufacturer_ids:
@@ -3643,6 +3694,9 @@ def products_list(
             areas=areas,
             kinds=kinds,
             types=types,
+            all_kinds=all_kinds,
+            all_types=all_types,
+            type_area_map=type_area_map,
             area_id=area_id,
             kind_id=kind_id,
             type_id=type_id,
@@ -3731,6 +3785,11 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
                 f"foto_url_{idx}",
             ),
         )
+    areas = db.query(Area).order_by(Area.name.asc(), Area.id.asc()).all()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    types = db.query(DeviceType).order_by(DeviceType.name.asc(), DeviceType.id.asc()).all()
+    kind_area_map = {int(k.id): int(k.area_id or 0) for k in kinds}
+    type_area_map = {int(t.id): int(kind_area_map.get(int(t.device_kind_id or 0), 0) or 0) for t in types}
     manufacturers = db.query(Manufacturer).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
 
     request.session["csv_import_state"] = {
@@ -3750,6 +3809,10 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
             total_rows=len(rows),
             delimiter=delimiter,
             has_header=has_header,
+            areas=areas,
+            kinds=kinds,
+            types=types,
+            type_area_map=type_area_map,
             manufacturers=manufacturers,
         ),
     )
@@ -3810,15 +3873,50 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
         _flash(request, "Ungültiger Hersteller für den manuellen Standardwert.", "error")
         return RedirectResponse("/catalog/products/import", status_code=302)
 
+    manual_area_id = _to_int(form.get("manual_area_id"), 0)
+    manual_kind_id = _to_int(form.get("manual_kind_id"), 0)
+    manual_type_id = _to_int(form.get("manual_type_id"), 0)
+    manual_area_row = db.get(Area, manual_area_id) if manual_area_id else None
+    manual_kind_row = db.get(DeviceKind, manual_kind_id) if manual_kind_id else None
+    manual_type_row = db.get(DeviceType, manual_type_id) if manual_type_id else None
+    if manual_area_id and not manual_area_row:
+        _flash(request, "Ungültiger Bereich für den manuellen Standardwert.", "error")
+        return RedirectResponse("/catalog/products/import", status_code=302)
+    if manual_kind_id and not manual_kind_row:
+        _flash(request, "Ungültige Geräteart für den manuellen Standardwert.", "error")
+        return RedirectResponse("/catalog/products/import", status_code=302)
+    if manual_type_id and not manual_type_row:
+        _flash(request, "Ungültiger Gerätetyp für den manuellen Standardwert.", "error")
+        return RedirectResponse("/catalog/products/import", status_code=302)
+
+    if manual_type_row and not manual_kind_row:
+        manual_kind_row = db.get(DeviceKind, int(manual_type_row.device_kind_id or 0))
+    if manual_kind_row and not manual_area_row:
+        manual_area_row = db.get(Area, int(manual_kind_row.area_id or 0))
+    if manual_kind_row and manual_area_row and int(manual_kind_row.area_id or 0) != int(manual_area_row.id):
+        _flash(request, "Manueller Bereich passt nicht zur gewählten Geräteart.", "error")
+        return RedirectResponse("/catalog/products/import", status_code=302)
+    if manual_type_row and manual_kind_row and int(manual_type_row.device_kind_id or 0) != int(manual_kind_row.id):
+        _flash(request, "Manueller Gerätetyp passt nicht zur gewählten Geräteart.", "error")
+        return RedirectResponse("/catalog/products/import", status_code=302)
+
+    def _token_set(raw: str) -> set[str]:
+        out: set[str] = set()
+        for part in re.split(r"[,\n;|]+", str(raw or "")):
+            token = str(part or "").strip().lower()
+            if token:
+                out.add(token)
+        return out
+
+    active_true_values = _token_set((form.get("active_true_values") or "").strip())
+    active_false_values = _token_set((form.get("active_false_values") or "").strip())
+
     manual_values: dict[str, str] = {
         "sales_name": (form.get("manual_sales_name") or "").strip(),
         "material_no": (form.get("manual_material_no") or "").strip(),
         "sku": (form.get("manual_sku") or "").strip(),
         "ean": (form.get("manual_ean") or "").strip(),
         "item_type": (form.get("manual_item_type") or "").strip(),
-        "area": (form.get("manual_area") or "").strip(),
-        "kind": (form.get("manual_kind") or "").strip(),
-        "type": (form.get("manual_type") or "").strip(),
         "tracking": (form.get("manual_tracking") or "").strip(),
         "description": (form.get("manual_description") or "").strip(),
         "active": (form.get("manual_active") or "").strip(),
@@ -3856,6 +3954,12 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             source_has = {key: bool(mapping.get(key)) or bool(manual_values.get(key)) for key in mapping.keys()}
             if not mapping.get("manufacturer"):
                 source_has["manufacturer"] = bool(manual_manufacturer_id)
+            if not mapping.get("area"):
+                source_has["area"] = bool(manual_area_row)
+            if not mapping.get("kind"):
+                source_has["kind"] = bool(manual_kind_row)
+            if not mapping.get("type"):
+                source_has["type"] = bool(manual_type_row)
 
             def picked_value(field_key: str) -> str:
                 mapped_col = mapping.get(field_key)
@@ -3873,6 +3977,12 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             area_name = picked_value("area")
             kind_name = picked_value("kind")
             type_name = picked_value("type")
+            if not area_name and not mapping.get("area") and manual_area_row:
+                area_name = str(manual_area_row.name or "").strip()
+            if not kind_name and not mapping.get("kind") and manual_kind_row:
+                kind_name = str(manual_kind_row.name or "").strip()
+            if not type_name and not mapping.get("type") and manual_type_row:
+                type_name = str(manual_type_row.name or "").strip()
             tracking_raw = picked_value("tracking")
             description = picked_value("description")
             active_raw = picked_value("active")
@@ -3900,6 +4010,9 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 kind_name=kind_name,
                 type_name=type_name,
                 auto_create=auto_create,
+                fallback_area=manual_area_row,
+                fallback_kind=manual_kind_row,
+                fallback_type=manual_type_row,
             )
 
             if duplicate_mode == "update" and existing:
@@ -3962,7 +4075,12 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                     setattr(product, key, image_urls.get(key))
 
             if (not product.id) or source_has.get("active", False):
-                product.active = _parse_active(active_raw, default_value=default_active)
+                product.active = _parse_active(
+                    active_raw,
+                    default_value=default_active,
+                    true_values=active_true_values,
+                    false_values=active_false_values,
+                )
             db.add(product)
             db.commit()
         except Exception as e:

@@ -20,7 +20,7 @@
   {% endif %}
 
   <h2>Zuordnung</h2>
-  <form method="post" action="/catalog/products/import/run" class="form">
+  <form method="post" action="/catalog/products/import/run" class="form" data-import-map-form="1">
     <div class="hint">
       Für jedes Feld: CSV-Spalte zuordnen oder (falls keine passende Spalte existiert) einen manuellen Wert für alle Datensätze setzen.
     </div>
@@ -148,7 +148,14 @@
             {% endfor %}
           </select>
         </div>
-        <div><input type="text" name="manual_area" placeholder="z. B. Küche"></div>
+        <div>
+          <select name="manual_area_id">
+            <option value="">Keine Vorgabe</option>
+            {% for a in areas %}
+              <option value="{{ a.id }}">{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
 
       <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
@@ -161,7 +168,14 @@
             {% endfor %}
           </select>
         </div>
-        <div><input type="text" name="manual_kind" placeholder="z. B. Geschirrspüler"></div>
+        <div>
+          <select name="manual_kind_id">
+            <option value="">Keine Vorgabe</option>
+            {% for k in kinds %}
+              <option value="{{ k.id }}" data-area-id="{{ k.area_id }}">{{ k.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
 
       <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
@@ -174,7 +188,14 @@
             {% endfor %}
           </select>
         </div>
-        <div><input type="text" name="manual_type" placeholder="Optional"></div>
+        <div>
+          <select name="manual_type_id">
+            <option value="">Keine Vorgabe</option>
+            {% for t in types %}
+              <option value="{{ t.id }}" data-kind-id="{{ t.device_kind_id }}" data-area-id="{{ type_area_map.get(t.id, 0) }}">{{ t.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
 
       <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
@@ -252,6 +273,17 @@
       <label class="radio"><input type="radio" name="duplicate_mode" value="update"> Duplikate anhand SKU oder EAN aktualisieren</label>
     </div>
 
+    <div class="grid2">
+      <div>
+        <label>Aktiv-Werte (optional, kommagetrennt)</label>
+        <input type="text" name="active_true_values" placeholder="z. B. On market, live, im sortiment">
+      </div>
+      <div>
+        <label>Inaktiv-Werte (optional, kommagetrennt)</label>
+        <input type="text" name="active_false_values" placeholder="z. B. Phased out, ausgelistet">
+      </div>
+    </div>
+
     <div class="row">
       <button class="btn primary" type="submit">Import starten</button>
       <a class="btn" href="/catalog/products/import">Zurück</a>
@@ -265,7 +297,9 @@
   <li>Ordne jede gewünschte Zielspalte einer CSV-Spalte zu.</li>
   <li>Der Produktname ist Pflicht, alle anderen Felder sind optional.</li>
   <li>Manuelle Werte werden nur genutzt, wenn keine CSV-Spalte für das Feld zugeordnet ist.</li>
+  <li>Bereich, Geräteart und Gerätetyp können als Kaskaden-Standardwerte gewählt werden und greifen bei fehlender/ungültiger CSV-Zuordnung.</li>
   <li>Bild-Links müssen absolute URLs mit http:// oder https:// sein.</li>
+  <li>Aktiv/Inaktiv-Werte lassen sich optional frei definieren (z. B. On market / Phased out).</li>
   <li>Wähle die Duplikatstrategie und starte danach den Import.</li>
 </ul>
 {% endblock %}

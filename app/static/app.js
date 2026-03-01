@@ -513,6 +513,53 @@
     const typeSelect = form.querySelector('#catalog_type_id');
     if(!areaSelect && !kindSelect && !typeSelect) return;
 
+    const syncKindOptions = function(){
+      if(!kindSelect) return;
+      const selectedArea = areaSelect ? String(areaSelect.value || '0') : '0';
+      const options = Array.from(kindSelect.options || []);
+      options.forEach(function(opt){
+        const value = String(opt.value || '');
+        if(value === '' || value === '0'){
+          opt.hidden = false;
+          return;
+        }
+        const areaId = String(opt.getAttribute('data-area-id') || '');
+        const visible = !selectedArea || selectedArea === '0' || !areaId || areaId === selectedArea;
+        opt.hidden = !visible;
+      });
+      const selected = kindSelect.options[kindSelect.selectedIndex] || null;
+      if(selected && selected.hidden){
+        kindSelect.value = '0';
+      }
+    };
+
+    const syncTypeOptions = function(){
+      if(!typeSelect) return;
+      const selectedArea = areaSelect ? String(areaSelect.value || '0') : '0';
+      const selectedKind = kindSelect ? String(kindSelect.value || '0') : '0';
+      const options = Array.from(typeSelect.options || []);
+      options.forEach(function(opt){
+        const value = String(opt.value || '');
+        if(value === '' || value === '0'){
+          opt.hidden = false;
+          return;
+        }
+        const kindId = String(opt.getAttribute('data-kind-id') || '');
+        const areaId = String(opt.getAttribute('data-area-id') || '');
+        let visible = true;
+        if(selectedKind && selectedKind !== '0'){
+          visible = (kindId === selectedKind);
+        }else if(selectedArea && selectedArea !== '0'){
+          visible = (!areaId || areaId === selectedArea);
+        }
+        opt.hidden = !visible;
+      });
+      const selected = typeSelect.options[typeSelect.selectedIndex] || null;
+      if(selected && selected.hidden){
+        typeSelect.value = '0';
+      }
+    };
+
     const submit = function(){
       if(typeof form.requestSubmit === 'function'){
         form.requestSubmit();
@@ -523,20 +570,15 @@
 
     if(areaSelect){
       areaSelect.addEventListener('change', function(){
-        if(kindSelect){
-          kindSelect.value = '0';
-        }
-        if(typeSelect){
-          typeSelect.value = '0';
-        }
+        syncKindOptions();
+        if(typeSelect) typeSelect.value = '0';
+        syncTypeOptions();
         submit();
       });
     }
     if(kindSelect){
       kindSelect.addEventListener('change', function(){
-        if(typeSelect){
-          typeSelect.value = '0';
-        }
+        syncTypeOptions();
         submit();
       });
     }
@@ -545,6 +587,74 @@
         submit();
       });
     }
+
+    syncKindOptions();
+    syncTypeOptions();
+  }
+
+  function initImportMapCascadeDefaults(){
+    const form = document.querySelector('form[data-import-map-form="1"]');
+    if(!form) return;
+    const areaSelect = form.querySelector('select[name="manual_area_id"]');
+    const kindSelect = form.querySelector('select[name="manual_kind_id"]');
+    const typeSelect = form.querySelector('select[name="manual_type_id"]');
+    if(!areaSelect || !kindSelect || !typeSelect) return;
+
+    const syncKindOptions = function(){
+      const selectedArea = String(areaSelect.value || '');
+      const options = Array.from(kindSelect.options || []);
+      options.forEach(function(opt){
+        const value = String(opt.value || '');
+        if(!value){
+          opt.hidden = false;
+          return;
+        }
+        const areaId = String(opt.getAttribute('data-area-id') || '');
+        const visible = !selectedArea || !areaId || areaId === selectedArea;
+        opt.hidden = !visible;
+      });
+      const selected = kindSelect.options[kindSelect.selectedIndex] || null;
+      if(selected && selected.hidden){
+        kindSelect.value = '';
+      }
+    };
+
+    const syncTypeOptions = function(){
+      const selectedArea = String(areaSelect.value || '');
+      const selectedKind = String(kindSelect.value || '');
+      const options = Array.from(typeSelect.options || []);
+      options.forEach(function(opt){
+        const value = String(opt.value || '');
+        if(!value){
+          opt.hidden = false;
+          return;
+        }
+        const kindId = String(opt.getAttribute('data-kind-id') || '');
+        const areaId = String(opt.getAttribute('data-area-id') || '');
+        let visible = true;
+        if(selectedKind){
+          visible = (kindId === selectedKind);
+        }else if(selectedArea){
+          visible = (!areaId || areaId === selectedArea);
+        }
+        opt.hidden = !visible;
+      });
+      const selected = typeSelect.options[typeSelect.selectedIndex] || null;
+      if(selected && selected.hidden){
+        typeSelect.value = '';
+      }
+    };
+
+    areaSelect.addEventListener('change', function(){
+      syncKindOptions();
+      syncTypeOptions();
+    });
+    kindSelect.addEventListener('change', function(){
+      syncTypeOptions();
+    });
+
+    syncKindOptions();
+    syncTypeOptions();
   }
 
   function initTxFormAdjustActions(){
@@ -1284,6 +1394,7 @@
   initLoadbeePanel();
   initProductAttributeReload();
   initCatalogListCascadeFilter();
+  initImportMapCascadeDefaults();
   initTxFormAdjustActions();
   initProductDetailPanels();
   initRepairCreateProductToggle();

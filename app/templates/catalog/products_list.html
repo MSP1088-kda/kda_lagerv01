@@ -31,8 +31,9 @@
         <label>Geräteart</label>
         <select id="catalog_kind_id" name="kind_id">
           <option value="0">Alle</option>
-          {% for k in kinds %}
-            <option value="{{ k.id }}" {% if kind_id==k.id %}selected{% endif %}>{{ k.name }}</option>
+          {% for k in all_kinds %}
+            {% set show_kind = (area_id == 0) or (k.area_id == area_id) %}
+            <option value="{{ k.id }}" data-area-id="{{ k.area_id }}" {% if kind_id==k.id %}selected{% endif %} {% if not show_kind %}hidden{% endif %}>{{ k.name }}</option>
           {% endfor %}
         </select>
       </div>
@@ -40,8 +41,10 @@
         <label>Gerätetyp</label>
         <select id="catalog_type_id" name="type_id">
           <option value="0">Alle</option>
-          {% for t in types %}
-            <option value="{{ t.id }}" {% if type_id==t.id %}selected{% endif %}>{{ t.name }}</option>
+          {% for t in all_types %}
+            {% set type_area_id = type_area_map.get(t.id, 0) %}
+            {% set show_type = (kind_id and t.device_kind_id == kind_id) or ((not kind_id) and ((area_id == 0) or (type_area_id == area_id))) %}
+            <option value="{{ t.id }}" data-kind-id="{{ t.device_kind_id }}" data-area-id="{{ type_area_id }}" {% if type_id==t.id %}selected{% endif %} {% if not show_type %}hidden{% endif %}>{{ t.name }}</option>
           {% endfor %}
         </select>
       </div>
