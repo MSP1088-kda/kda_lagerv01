@@ -1,17 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Stammdaten: Lieferanten</h1>
+  <h1>Stammdaten: Inhaber</h1>
 
-  <form method="post" action="/stammdaten/lieferanten/add" class="form">
+  <form method="post" action="/stammdaten/inhaber/add" class="form">
     <div class="grid2">
       <div>
         <label>Name</label>
         <input type="text" name="name" required>
-      </div>
-      <div>
-        <label>Website</label>
-        <input type="text" name="website" placeholder="https://...">
       </div>
       <div>
         <label>Telefon</label>
@@ -31,9 +27,9 @@
 
     <label class="check"><input type="checkbox" name="active" checked> Aktiv</label>
     <div class="row">
-      <button class="btn primary" type="submit">Lieferant anlegen</button>
+      <button class="btn primary" type="submit">Inhaber anlegen</button>
       <a class="btn" href="/stammdaten/hersteller">Hersteller</a>
-      <a class="btn" href="/stammdaten/inhaber">Inhaber</a>
+      <a class="btn" href="/stammdaten/lieferanten">Lieferanten</a>
       <a class="btn" href="/stammdaten/zustaende">Zustände</a>
       <a class="btn" href="/stammdaten/formularregeln">Formularregeln</a>
       <a class="btn" href="/stammdaten/ui-layout">UI-Layout</a>
@@ -55,19 +51,18 @@
         <div>{{ row.phone or '-' }}</div>
         <div>{{ 'Aktiv' if row.active else 'Inaktiv' }}</div>
         <div>
-          <a class="btn small" href="/stammdaten/lieferanten/{{ row.id }}">Details</a>
-          <a class="btn small" href="/stammdaten/lieferanten/{{ row.id }}/edit">Bearbeiten</a>
-          <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/toggle" class="inline">
+          <a class="btn small" href="/stammdaten/inhaber/{{ row.id }}/edit">Bearbeiten</a>
+          <form method="post" action="/stammdaten/inhaber/{{ row.id }}/toggle" class="inline">
             <button class="btn small" type="submit">{{ 'Deaktivieren' if row.active else 'Aktivieren' }}</button>
           </form>
-          <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/delete" class="inline" onsubmit="return confirm('Lieferant wirklich vollständig löschen?');">
+          <form method="post" action="/stammdaten/inhaber/{{ row.id }}/delete" class="inline" onsubmit="return confirm('Inhaber wirklich vollständig löschen?');">
             <button class="btn small" type="submit">Löschen</button>
           </form>
         </div>
       </div>
     {% endfor %}
     {% if not rows %}
-      <div class="muted">Noch keine Lieferanten angelegt.</div>
+      <div class="muted">Noch keine Inhaber angelegt.</div>
     {% endif %}
   </div>
 </div>
@@ -75,8 +70,8 @@
 
 {% block help %}
 <ul>
-  <li>Vollständiges Löschen ist nur möglich, wenn der Lieferant in keinen Buchungen, Reparaturen oder Bestellungen verwendet wird.</li>
-  <li>Wareneingänge können einem Lieferanten und einer Lieferscheinnummer zugeordnet werden.</li>
-  <li>Die Detailseite zeigt die letzten Wareneingänge pro Lieferant.</li>
+  <li>Inhaber werden bei Lagerbuchungen optional mitgeführt.</li>
+  <li>Im Produktdetail wird Bestand je Zustand und Inhaber angezeigt.</li>
+  <li>Vollständiges Löschen ist nur möglich, wenn keine Buchung und kein Bestand mehr verknüpft ist.</li>
 </ul>
 {% endblock %}

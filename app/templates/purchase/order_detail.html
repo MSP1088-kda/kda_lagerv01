@@ -80,6 +80,16 @@
         {% if rfe.get('warehouse_to_id') %}<div class="flash-item flash-error">{{ rfe.get('warehouse_to_id') }}</div>{% endif %}
       </div>
       <div>
+        <label for="po_receive_owner_id">Inhaber (optional)</label>
+        <select id="po_receive_owner_id" name="owner_id" class="{% if rfe.get('owner_id') %}is-error{% endif %}">
+          <option value="0">-</option>
+          {% for o in owners %}
+            <option value="{{ o.id }}" {% if rfd.get('owner_id', '0')|int == o.id %}selected{% endif %}>{{ o.name }}</option>
+          {% endfor %}
+        </select>
+        {% if rfe.get('owner_id') %}<div class="flash-item flash-error">{{ rfe.get('owner_id') }}</div>{% endif %}
+      </div>
+      <div>
         <label for="po_receive_condition">Zustand</label>
         <select id="po_receive_condition" name="condition" class="{% if rfe.get('condition') %}is-error{% endif %}" required>
           {% for c in condition_defs %}
@@ -123,6 +133,7 @@
 <ul>
   <li>PO-Nummer steht im Betreff der Lieferantenmail.</li>
   <li>Bestätigter EK aktualisiert direkt den letzten EK am Produkt.</li>
+  <li>Beim Wareneingang kann optional ein Inhaber für alle Positionen gesetzt werden.</li>
   <li>Wareneingang bucht alle Positionen per Journalbuchung ein.</li>
 </ul>
 {% endblock %}

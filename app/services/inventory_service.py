@@ -16,8 +16,14 @@ from ..models import (
 )
 
 
-def _get_or_create_balance(db: Session, product_id: int, warehouse_id: int, condition: str) -> StockBalance:
-    return _get_or_create_balance_for_bin(db, product_id, warehouse_id, None, condition)
+def _get_or_create_balance(
+    db: Session,
+    product_id: int,
+    warehouse_id: int,
+    condition: str,
+    owner_id: int | None = None,
+) -> StockBalance:
+    return _get_or_create_balance_for_bin(db, product_id, warehouse_id, None, condition, owner_id=owner_id)
 
 
 def _get_or_create_balance_for_bin(
@@ -26,6 +32,7 @@ def _get_or_create_balance_for_bin(
     warehouse_id: int,
     bin_id: int | None,
     condition: str,
+    owner_id: int | None = None,
 ) -> StockBalance:
     q = (
         db.query(StockBalance)
@@ -35,12 +42,34 @@ def _get_or_create_balance_for_bin(
         q = q.filter(StockBalance.bin_id.is_(None))
     else:
         q = q.filter(StockBalance.bin_id == int(bin_id))
-    bal = q.one_or_none()
-    if not bal:
-        bal = StockBalance(product_id=product_id, warehouse_id=warehouse_id, bin_id=bin_id, condition=condition, quantity=0)
+    if owner_id is None:
+        q = q.filter(StockBalance.owner_id.is_(None))
+    else:
+        q = q.filter(StockBalance.owner_id == int(owner_id))
+    rows = q.order_by(StockBalance.id.asc()).all()
+    if not rows:
+        bal = StockBalance(
+            product_id=product_id,
+            warehouse_id=warehouse_id,
+            bin_id=bin_id,
+            owner_id=(int(owner_id) if owner_id is not None else None),
+            condition=condition,
+            quantity=0,
+        )
         db.add(bal)
         db.flush()
-    return bal
+        return bal
+    if len(rows) == 1:
+        return rows[0]
+
+    # Defensive merge for legacy duplicates: keep first row, collapse quantity, remove extras.
+    primary = rows[0]
+    primary.quantity = sum(int(r.quantity or 0) for r in rows)
+    db.add(primary)
+    for extra in rows[1:]:
+        db.delete(extra)
+    db.flush()
+    return primary
 
 
 def apply_transaction(db: Session, tx: InventoryTransaction, actor_user_id: int | None = None) -> None:
@@ -82,6 +111,7 @@ def _write_outbox_event(db: Session, tx: InventoryTransaction, actor_user_id: in
             "warehouse_to_id": tx.warehouse_to_id,
             "bin_from_id": tx.bin_from_id,
             "bin_to_id": tx.bin_to_id,
+            "owner_id": tx.owner_id,
             "condition": tx.condition,
             "quantity": tx.quantity,
             "serial_number": tx.serial_number,
@@ -142,7 +172,14 @@ def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
     if tx.tx_type == "receipt":
         if not tx.warehouse_to_id:
             raise ValueError("Ziel-Lager fehlt")
-        bal = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_to_id, tx.bin_to_id, tx.condition)
+        bal = _get_or_create_balance_for_bin(
+            db,
+            tx.product_id,
+            tx.warehouse_to_id,
+            tx.bin_to_id,
+            tx.condition,
+            owner_id=tx.owner_id,
+        )
         bal.quantity += qty
         db.add(bal)
         return
@@ -150,7 +187,14 @@ def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
     if tx.tx_type == "issue":
         if not tx.warehouse_from_id:
             raise ValueError("Quell-Lager fehlt")
-        bal = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_from_id, tx.bin_from_id, tx.condition)
+        bal = _get_or_create_balance_for_bin(
+            db,
+            tx.product_id,
+            tx.warehouse_from_id,
+            tx.bin_from_id,
+            tx.condition,
+            owner_id=tx.owner_id,
+        )
         if bal.quantity < qty:
             raise ValueError("Nicht genug Bestand")
         bal.quantity -= qty
@@ -161,11 +205,25 @@ def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
     if tx.tx_type == "transfer":
         if not tx.warehouse_from_id or not tx.warehouse_to_id:
             raise ValueError("Quelle/Ziel fehlt")
-        src = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_from_id, tx.bin_from_id, tx.condition)
+        src = _get_or_create_balance_for_bin(
+            db,
+            tx.product_id,
+            tx.warehouse_from_id,
+            tx.bin_from_id,
+            tx.condition,
+            owner_id=tx.owner_id,
+        )
         if src.quantity < qty:
             raise ValueError("Nicht genug Bestand in Quelle")
         src.quantity -= qty
-        dst = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_to_id, tx.bin_to_id, tx.condition)
+        dst = _get_or_create_balance_for_bin(
+            db,
+            tx.product_id,
+            tx.warehouse_to_id,
+            tx.bin_to_id,
+            tx.condition,
+            owner_id=tx.owner_id,
+        )
         dst.quantity += qty
         db.add_all([src, dst])
         return
@@ -177,7 +235,14 @@ def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
         if not target_warehouse:
             raise ValueError("Lager fehlt")
         target_bin = tx.bin_to_id if qty >= 0 else (tx.bin_from_id if tx.bin_from_id is not None else tx.bin_to_id)
-        bal = _get_or_create_balance_for_bin(db, tx.product_id, target_warehouse, target_bin, tx.condition)
+        bal = _get_or_create_balance_for_bin(
+            db,
+            tx.product_id,
+            target_warehouse,
+            target_bin,
+            tx.condition,
+            owner_id=tx.owner_id,
+        )
         if qty < 0 and bal.quantity < abs(qty):
             raise ValueError("Nicht genug Bestand für negative Korrektur")
         bal.quantity += qty
@@ -187,7 +252,14 @@ def _apply_quantity(db: Session, tx: InventoryTransaction) -> None:
     if tx.tx_type == "scrap":
         if not tx.warehouse_from_id:
             raise ValueError("Quell-Lager fehlt")
-        bal = _get_or_create_balance_for_bin(db, tx.product_id, tx.warehouse_from_id, tx.bin_from_id, tx.condition)
+        bal = _get_or_create_balance_for_bin(
+            db,
+            tx.product_id,
+            tx.warehouse_from_id,
+            tx.bin_from_id,
+            tx.condition,
+            owner_id=tx.owner_id,
+        )
         if bal.quantity < qty:
             raise ValueError("Nicht genug Bestand")
         bal.quantity -= qty

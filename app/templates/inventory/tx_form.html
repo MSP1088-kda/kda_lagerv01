@@ -42,6 +42,16 @@
         {{ f.field_error(fe, 'supplier_id') }}
       </div>
       <div>
+        <label for="tx_owner_id">Inhaber (optional)</label>
+        <select id="tx_owner_id" name="owner_id" class="{% if fe.get('owner_id') %}is-error{% endif %}">
+          <option value="0">-</option>
+          {% for o in owners %}
+            <option value="{{ o.id }}" {% if f.old(fd, 'owner_id', '0')|int == o.id %}selected{% endif %}>{{ o.name }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'owner_id') }}
+      </div>
+      <div>
         <label for="tx_delivery_note_no">Lieferschein-Nr. (optional)</label>
         <input id="tx_delivery_note_no" type="text" name="delivery_note_no" class="{% if fe.get('delivery_note_no') %}is-error{% endif %}" value="{{ f.old(fd, 'delivery_note_no', '') }}" placeholder="z. B. LS-2026-0007">
         {{ f.field_error(fe, 'delivery_note_no') }}
@@ -197,7 +207,7 @@
   {% endif %}
 
   <div class="hint">
-    Lieferant, Belegnummer und Einkaufspreis werden nur bei Wareneingang gespeichert.
+    Lieferant, Inhaber, Belegnummer und Einkaufspreis werden bei Wareneingang mitgeführt.
   </div>
 </div>
 {% endblock %}
@@ -207,6 +217,7 @@
   <li>Tab: zum nächsten Feld wechseln.</li>
   <li>Strg+S: Speichern (falls verfügbar).</li>
   <li>Esc: aktuelles Eingabefeld verlassen.</li>
+  <li>Der optionale Inhaber wird pro Buchung auf den Bestand mitgeführt.</li>
   <li>Bei Buchungstyp Korrektur kannst du den Bestand eines Produkts in allen Lagern/Fächern direkt auf 0 setzen.</li>
 </ul>
 {% endblock %}

@@ -203,6 +203,14 @@ NAV_ITEMS: list[dict] = [
                 "show_in_mobile": False,
             },
             {
+                "label_de": "Inhaber",
+                "path": "/stammdaten/inhaber",
+                "aliases": "eigentuermer besitzer",
+                "roles": ("admin",),
+                "show_in_topnav": False,
+                "show_in_mobile": False,
+            },
+            {
                 "label_de": "Zustände",
                 "path": "/stammdaten/zustaende",
                 "aliases": "zustand ware",

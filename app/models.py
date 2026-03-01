@@ -382,6 +382,22 @@ class Supplier(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Owner(Base):
+    __tablename__ = "owners"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_owners_active", "active"),
+    )
+
+
 class StockConditionDef(Base):
     __tablename__ = "stock_condition_defs"
     code: Mapped[str] = mapped_column(String(40), primary_key=True)
@@ -420,10 +436,15 @@ class StockBalance(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
     bin_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("owners.id"), nullable=True)
     condition: Mapped[str] = mapped_column(String(30), nullable=False, default="ok")  # ok|used|defect|bware
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    __table_args__ = (UniqueConstraint("product_id", "warehouse_id", "condition", name="uq_balance"),)
+    __table_args__ = (
+        Index("ix_stock_balances_scope", "product_id", "warehouse_id", "condition"),
+        Index("ix_stock_balances_bin_id", "bin_id"),
+        Index("ix_stock_balances_owner_id", "owner_id"),
+    )
 
 
 class StockSerial(Base):
@@ -448,6 +469,7 @@ class InventoryTransaction(Base):
     warehouse_to_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
     bin_from_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
     bin_to_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_bins.id"), nullable=True)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("owners.id"), nullable=True)
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
     delivery_note_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     unit_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -462,7 +484,11 @@ class InventoryTransaction(Base):
     created_by = relationship("User", back_populates="transactions")
     supplier = relationship("Supplier")
 
-    __table_args__ = (Index("ix_tx_created_at", "created_at"), Index("ix_tx_supplier_id", "supplier_id"))
+    __table_args__ = (
+        Index("ix_tx_created_at", "created_at"),
+        Index("ix_tx_supplier_id", "supplier_id"),
+        Index("ix_inventory_tx_owner_id", "owner_id"),
+    )
 
 
 class OutboxEvent(Base):

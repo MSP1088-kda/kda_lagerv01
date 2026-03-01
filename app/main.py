@@ -46,6 +46,7 @@ from .models import (
     KindListAttribute,
     Manufacturer,
     MinStock,
+    Owner,
     Product,
     ProductAttributeValue,
     ProductLink,
@@ -216,6 +217,7 @@ PRODUCT_FORM_FIELD_IDS = {
 PRODUCT_RECEIPT_FIELD_IDS = {
     "receipt_quantity": "receipt_quantity",
     "receipt_warehouse_to_id": "receipt_warehouse_to_id",
+    "receipt_owner_id": "receipt_owner_id",
     "receipt_condition": "receipt_condition",
     "receipt_supplier_id": "receipt_supplier_id",
     "receipt_delivery_note_no": "receipt_delivery_note_no",
@@ -231,6 +233,7 @@ TX_FORM_FIELD_IDS = {
     "warehouse_to_id": "tx_warehouse_to_id",
     "bin_from_id": "tx_bin_from_id",
     "bin_to_id": "tx_bin_to_id",
+    "owner_id": "tx_owner_id",
     "condition": "tx_condition",
     "quantity": "tx_quantity",
     "reference": "tx_reference",
@@ -250,6 +253,7 @@ REPAIR_FORM_FIELD_IDS = {
 }
 PO_RECEIVE_FIELD_IDS = {
     "warehouse_to_id": "po_receive_warehouse_to_id",
+    "owner_id": "po_receive_owner_id",
     "condition": "po_receive_condition",
     "delivery_note_no": "po_receive_delivery_note_no",
 }
@@ -844,6 +848,22 @@ def _ensure_inventory_bin_schema() -> None:
     with engine.begin() as conn:
         conn.exec_driver_sql(
             """
+            CREATE TABLE IF NOT EXISTS owners (
+                id INTEGER PRIMARY KEY,
+                name VARCHAR(200) NOT NULL UNIQUE,
+                address TEXT,
+                phone VARCHAR(120),
+                email VARCHAR(200),
+                note TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_owners_active ON owners(active)")
+
+        conn.exec_driver_sql(
+            """
             CREATE TABLE IF NOT EXISTS warehouse_bins (
                 id INTEGER PRIMARY KEY,
                 warehouse_id INTEGER NOT NULL,
@@ -859,7 +879,10 @@ def _ensure_inventory_bin_schema() -> None:
         bal_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(stock_balances)").fetchall()}
         if "bin_id" not in bal_cols:
             conn.exec_driver_sql("ALTER TABLE stock_balances ADD COLUMN bin_id INTEGER")
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_stock_balances_bin_id ON stock_balances(bin_id)")
+        if "owner_id" not in bal_cols:
+            conn.exec_driver_sql("ALTER TABLE stock_balances ADD COLUMN owner_id INTEGER")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_stock_balances_bin_id ON stock_balances(bin_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_stock_balances_owner_id ON stock_balances(owner_id)")
 
         serial_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(stock_serials)").fetchall()}
         if "bin_id" not in serial_cols:
@@ -871,8 +894,11 @@ def _ensure_inventory_bin_schema() -> None:
             conn.exec_driver_sql("ALTER TABLE inventory_transactions ADD COLUMN bin_from_id INTEGER")
         if "bin_to_id" not in tx_cols:
             conn.exec_driver_sql("ALTER TABLE inventory_transactions ADD COLUMN bin_to_id INTEGER")
+        if "owner_id" not in tx_cols:
+            conn.exec_driver_sql("ALTER TABLE inventory_transactions ADD COLUMN owner_id INTEGER")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_inventory_tx_bin_from ON inventory_transactions(bin_from_id)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_inventory_tx_bin_to ON inventory_transactions(bin_to_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_inventory_tx_owner_id ON inventory_transactions(owner_id)")
 
 
 def _ensure_extended_tables() -> None:
@@ -1289,6 +1315,21 @@ def _parse_supplier_id(db: Session, raw_supplier_id, active_only: bool = True) -
     return supplier_id, supplier
 
 
+def _parse_owner_id(db: Session, raw_owner_id, active_only: bool = True) -> tuple[int | None, Owner | None]:
+    try:
+        owner_id = int(raw_owner_id or 0) or None
+    except Exception:
+        return None, None
+    if not owner_id:
+        return None, None
+    owner = db.get(Owner, owner_id)
+    if not owner:
+        return None, None
+    if active_only and not owner.active:
+        return None, None
+    return owner_id, owner
+
+
 def _parse_manufacturer_id(db: Session, raw_manufacturer_id) -> tuple[int | None, Manufacturer | None]:
     try:
         manufacturer_id = int(raw_manufacturer_id or 0) or None
@@ -1426,6 +1467,11 @@ def _direct_receipt_payload_from_form(db: Session, form) -> tuple[dict, dict[str
     if not warehouse_to_id or not db.get(Warehouse, warehouse_to_id):
         errors["receipt_warehouse_to_id"] = "Bitte ein Ziel-Lager für die Einbuchung wählen."
 
+    owner_raw = form.get("receipt_owner_id")
+    owner_id, _owner = _parse_owner_id(db, owner_raw, active_only=True)
+    if _to_int(owner_raw, 0) > 0 and not owner_id:
+        errors["receipt_owner_id"] = "Inhaber wurde nicht gefunden oder ist inaktiv."
+
     condition = _condition_code_from_input(form.get("receipt_condition"))
     if not _condition_exists(db, condition, active_only=True):
         errors["receipt_condition"] = "Bitte einen gültigen Zustand für die Einbuchung wählen."
@@ -1447,6 +1493,7 @@ def _direct_receipt_payload_from_form(db: Session, form) -> tuple[dict, dict[str
         {
             "quantity": quantity,
             "warehouse_to_id": warehouse_to_id,
+            "owner_id": owner_id,
             "condition": condition,
             "supplier_id": supplier_id or None,
             "delivery_note_no": delivery_note_no,
@@ -1471,6 +1518,7 @@ def _apply_direct_receipt(
         warehouse_to_id=int(payload.get("warehouse_to_id") or 0),
         bin_from_id=None,
         bin_to_id=None,
+        owner_id=int(payload.get("owner_id") or 0) or None,
         supplier_id=(payload.get("supplier_id") or None),
         delivery_note_no=(payload.get("delivery_note_no") or None),
         condition=str(payload.get("condition") or _default_condition_code()),
@@ -2295,6 +2343,7 @@ def mobile_quick(
 
     products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc()).all()
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc()).all()
     bins = db.query(WarehouseBin).order_by(WarehouseBin.warehouse_id.asc(), WarehouseBin.code.asc()).all()
     bins_by_warehouse: dict[int, list[WarehouseBin]] = {}
     for b in bins:
@@ -2327,6 +2376,7 @@ def mobile_quick(
             user=user,
             products=products,
             warehouses=warehouses,
+            owners=owners,
             bins_by_warehouse=bins_by_warehouse,
             ean=ean_clean,
             serial=serial_clean,
@@ -4194,6 +4244,7 @@ def products_new_get(
     manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc()).all()
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     receipt_defaults = _receipt_defaults(db)
     attrs = _applicable_attributes(db, selected_kind_id or None, selected_type_id or None)
@@ -4220,6 +4271,7 @@ def products_new_get(
             manufacturers=manufacturers,
             warehouses=warehouses,
             suppliers=suppliers,
+            owners=owners,
             condition_defs=condition_defs,
             receipt_defaults=receipt_defaults,
             item_types=ITEM_TYPE_CHOICES,
@@ -4455,6 +4507,7 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
             manufacturers = sorted(manufacturers, key=lambda m: (str(m.name or "").lower(), m.id))
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     receipt_defaults = _receipt_defaults(db)
 
@@ -4503,6 +4556,7 @@ def products_edit_get(product_id: int, request: Request, user=Depends(require_ad
             item_type_labels=ITEM_TYPE_LABELS,
             warehouses=warehouses,
             suppliers=suppliers,
+            owners=owners,
             condition_defs=condition_defs,
             receipt_defaults=receipt_defaults,
             attrs=attrs,
@@ -4923,19 +4977,24 @@ def product_detail_get(
         db.query(
             Warehouse.name.label("warehouse_name"),
             StockBalance.condition.label("condition_code"),
+            StockBalance.owner_id.label("owner_id"),
+            Owner.name.label("owner_name"),
             func.coalesce(func.sum(StockBalance.quantity), 0).label("qty_sum"),
         )
         .join(Warehouse, Warehouse.id == StockBalance.warehouse_id)
+        .outerjoin(Owner, Owner.id == StockBalance.owner_id)
         .filter(StockBalance.product_id == product_id)
-        .group_by(Warehouse.name, StockBalance.condition)
+        .group_by(Warehouse.name, StockBalance.condition, StockBalance.owner_id, Owner.name)
         .having(func.coalesce(func.sum(StockBalance.quantity), 0) > 0)
-        .order_by(Warehouse.name.asc(), StockBalance.condition.asc())
+        .order_by(Warehouse.name.asc(), StockBalance.condition.asc(), Owner.name.asc())
         .all()
     )
     stock_condition_rows = [
         {
             "warehouse_name": str(getattr(row, "warehouse_name", "") or "-"),
             "condition_code": str(getattr(row, "condition_code", "") or ""),
+            "owner_id": int(getattr(row, "owner_id", 0) or 0),
+            "owner_name": str(getattr(row, "owner_name", "") or "").strip() or "Ohne Inhaber",
             "condition_label": condition_labels.get(
                 str(getattr(row, "condition_code", "") or ""),
                 str(getattr(row, "condition_code", "") or ""),
@@ -5532,6 +5591,125 @@ def manufacturer_delete(manufacturer_id: int, request: Request, user=Depends(req
         return RedirectResponse("/stammdaten/hersteller", status_code=302)
     _flash(request, "Hersteller gelöscht.", "info")
     return RedirectResponse("/stammdaten/hersteller", status_code=302)
+
+
+@app.get("/stammdaten/inhaber", response_class=HTMLResponse)
+def owner_list(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = db.query(Owner).order_by(Owner.active.desc(), Owner.name.asc()).all()
+    return templates.TemplateResponse("stammdaten/inhaber_list.html", _ctx(request, user=user, rows=rows))
+
+
+@app.post("/stammdaten/inhaber/add")
+async def owner_add(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        _flash(request, "Inhabername ist Pflicht.", "error")
+        return RedirectResponse("/stammdaten/inhaber", status_code=302)
+    exists = db.query(Owner).filter(func.lower(Owner.name) == name.lower()).count() > 0
+    if exists:
+        _flash(request, "Inhaber existiert bereits.", "error")
+        return RedirectResponse("/stammdaten/inhaber", status_code=302)
+    row = Owner(
+        name=name,
+        address=(form.get("address") or "").strip() or None,
+        phone=(form.get("phone") or "").strip() or None,
+        email=(form.get("email") or "").strip() or None,
+        note=(form.get("note") or "").strip() or None,
+        active=form.get("active") == "on",
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/inhaber", status_code=302)
+    _flash(request, "Inhaber angelegt.", "info")
+    return RedirectResponse("/stammdaten/inhaber", status_code=302)
+
+
+@app.get("/stammdaten/inhaber/{owner_id}/edit", response_class=HTMLResponse)
+def owner_edit_get(owner_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Owner, owner_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse("stammdaten/inhaber_edit.html", _ctx(request, user=user, row=row))
+
+
+@app.post("/stammdaten/inhaber/{owner_id}/edit")
+async def owner_edit_post(owner_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Owner, owner_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    if not name:
+        _flash(request, "Inhabername ist Pflicht.", "error")
+        return RedirectResponse(f"/stammdaten/inhaber/{owner_id}/edit", status_code=302)
+    exists = db.query(Owner).filter(func.lower(Owner.name) == name.lower(), Owner.id != owner_id).count() > 0
+    if exists:
+        _flash(request, "Inhaber existiert bereits.", "error")
+        return RedirectResponse(f"/stammdaten/inhaber/{owner_id}/edit", status_code=302)
+    row.name = name
+    row.address = (form.get("address") or "").strip() or None
+    row.phone = (form.get("phone") or "").strip() or None
+    row.email = (form.get("email") or "").strip() or None
+    row.note = (form.get("note") or "").strip() or None
+    row.active = form.get("active") == "on"
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse(f"/stammdaten/inhaber/{owner_id}/edit", status_code=302)
+    _flash(request, "Inhaber gespeichert.", "info")
+    return RedirectResponse("/stammdaten/inhaber", status_code=302)
+
+
+@app.post("/stammdaten/inhaber/{owner_id}/toggle")
+def owner_toggle(owner_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Owner, owner_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    row.active = not bool(row.active)
+    db.add(row)
+    db.commit()
+    _flash(request, f"Inhaber {'aktiviert' if row.active else 'deaktiviert'}.", "info")
+    return RedirectResponse("/stammdaten/inhaber", status_code=302)
+
+
+@app.post("/stammdaten/inhaber/{owner_id}/delete")
+def owner_delete(owner_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Owner, owner_id)
+    if not row:
+        raise HTTPException(status_code=404)
+
+    usage_tx = db.query(InventoryTransaction).filter(InventoryTransaction.owner_id == owner_id).count()
+    usage_balances = db.query(StockBalance).filter(StockBalance.owner_id == owner_id).count()
+    if usage_tx or usage_balances:
+        usage_parts: list[str] = []
+        if usage_tx:
+            usage_parts.append(f"{usage_tx} Buchung(en)")
+        if usage_balances:
+            usage_parts.append(f"{usage_balances} Bestandszeile(n)")
+        _flash(
+            request,
+            f"Inhaber kann nicht gelöscht werden: noch verwendet in {', '.join(usage_parts)}.",
+            "error",
+        )
+        return RedirectResponse("/stammdaten/inhaber", status_code=302)
+
+    db.delete(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/stammdaten/inhaber", status_code=302)
+    _flash(request, "Inhaber gelöscht.", "info")
+    return RedirectResponse("/stammdaten/inhaber", status_code=302)
 
 
 @app.get("/stammdaten/lieferanten", response_class=HTMLResponse)
@@ -6253,6 +6431,7 @@ def repair_new_get(request: Request, user=Depends(require_lager_access), db: Ses
             products.append(selected_product)
             products = sorted(products, key=lambda row: (str(row.name or "").lower(), int(row.id)))
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     return templates.TemplateResponse(
         "inventory/reparatur_new.html",
@@ -6807,6 +6986,7 @@ def purchase_order_detail(order_id: int, request: Request, user=Depends(require_
             .all()
         )
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     return templates.TemplateResponse(
         "purchase/order_detail.html",
@@ -6819,6 +6999,7 @@ def purchase_order_detail(order_id: int, request: Request, user=Depends(require_
             supplier=supplier,
             linked_messages=linked_messages,
             warehouses=warehouses,
+            owners=owners,
             condition_defs=condition_defs,
             purchase_status_label=_purchase_status_label,
             receive_form_data={},
@@ -6970,6 +7151,10 @@ async def purchase_order_receive(order_id: int, request: Request, user=Depends(r
         return _rerender_template_response(response)
 
     warehouse_to_id = _to_int(form.get("warehouse_to_id"), 0)
+    owner_raw = form.get("owner_id")
+    owner_id, _owner = _parse_owner_id(db, owner_raw, active_only=True)
+    if _to_int(owner_raw, 0) > 0 and not owner_id:
+        return render_error("owner_id", "Inhaber wurde nicht gefunden oder ist inaktiv.")
     condition = _condition_code_from_input(form.get("condition"))
     delivery_note_no = (form.get("delivery_note_no") or "").strip() or None
     if not warehouse_to_id or not db.get(Warehouse, warehouse_to_id):
@@ -6999,6 +7184,7 @@ async def purchase_order_receive(order_id: int, request: Request, user=Depends(r
                 warehouse_to_id=warehouse_to_id,
                 bin_from_id=None,
                 bin_to_id=None,
+                owner_id=owner_id,
                 supplier_id=order.supplier_id,
                 delivery_note_no=delivery_note_no,
                 unit_cost=chosen_cost,
@@ -7168,10 +7354,15 @@ def stock_overview(
     item_type: str = "",
     warehouse_id: int = 0,
     bin_id: int = 0,
+    owner_id: int = 0,
     only_low: int = 0,
     db: Session = Depends(db_session),
 ):
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    owners = db.query(Owner).order_by(Owner.active.desc(), Owner.name.asc()).all()
+    valid_owner_ids = {int(o.id) for o in owners}
+    if owner_id and owner_id not in valid_owner_ids:
+        owner_id = 0
     kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
     types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
     bins_q = db.query(WarehouseBin)
@@ -7201,6 +7392,8 @@ def stock_overview(
         bal_q = bal_q.filter(StockBalance.warehouse_id == warehouse_id)
     if bin_id:
         bal_q = bal_q.filter(StockBalance.bin_id == bin_id)
+    if owner_id:
+        bal_q = bal_q.filter(StockBalance.owner_id == owner_id)
     balances = bal_q.all()
 
     # build maps
@@ -7239,6 +7432,7 @@ def stock_overview(
             user=user,
             products=products,
             warehouses=warehouses,
+            owners=owners,
             bal_map=bal_map,
             condition_codes=condition_codes,
             condition_labels=condition_labels,
@@ -7248,6 +7442,7 @@ def stock_overview(
             item_type_labels=ITEM_TYPE_LABELS,
             warehouse_id=warehouse_id,
             bin_id=bin_id,
+            owner_id=owner_id,
             bins=bins,
             only_low=only_low,
             table_columns=table_columns,
@@ -7497,6 +7692,7 @@ def tx_new_get(
     user=Depends(require_lager_access),
     product_id: int = 0,
     tx_type: str = "",
+    owner_id: int = 0,
     return_to: str = "",
     db: Session = Depends(db_session),
 ):
@@ -7512,6 +7708,9 @@ def tx_new_get(
     requested_return_to = return_to or (request.query_params.get("return_to") or "")
     safe_return_to = _safe_return_to_path(str(requested_return_to or ""), fallback="")
     selected_product_id = int(product_id or _to_int(_form_scalar(prefill_form_data, "product_id"), 0) or 0)
+    requested_owner_id = int(owner_id or _to_int(_form_scalar(prefill_form_data, "owner_id"), 0) or 0)
+    if requested_owner_id > 0 and not _form_scalar(prefill_form_data, "owner_id"):
+        prefill_form_data["owner_id"] = str(requested_owner_id)
     selected_tx_type = (tx_type or query_tx_type or query_type or _form_scalar(prefill_form_data, "tx_type")).strip()
     if selected_tx_type not in ("receipt", "issue", "transfer", "scrap", "adjust"):
         selected_tx_type = "receipt"
@@ -7545,6 +7744,13 @@ def tx_new_get(
         products = sorted(products, key=lambda row: (str(row.name or "").lower(), int(row.id)))
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc()).all()
+    selected_owner_id = _to_int(_form_scalar(prefill_form_data, "owner_id"), 0)
+    if selected_owner_id and all(int(o.id) != int(selected_owner_id) for o in owners):
+        selected_owner = db.get(Owner, selected_owner_id)
+        if selected_owner:
+            owners.append(selected_owner)
+            owners = sorted(owners, key=lambda row: (str(row.name or "").lower(), int(row.id)))
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
     bins = db.query(WarehouseBin).order_by(WarehouseBin.warehouse_id.asc(), WarehouseBin.code.asc()).all()
     bins_by_warehouse: dict[int, list[WarehouseBin]] = {}
@@ -7558,6 +7764,7 @@ def tx_new_get(
             products=products,
             warehouses=warehouses,
             suppliers=suppliers,
+            owners=owners,
             condition_defs=condition_defs,
             bins_by_warehouse=bins_by_warehouse,
             selected_product_id=selected_product_id,
@@ -7623,7 +7830,7 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
     if tx_type == "receipt":
         supplier_input = form.get("supplier_id")
         supplier_id, _supplier = _parse_supplier_id(db, supplier_input, active_only=True)
-        if supplier_input and not supplier_id:
+        if _to_int(supplier_input, 0) > 0 and not supplier_id:
             return render_error("supplier_id", "Lieferant wurde nicht gefunden oder ist inaktiv.")
         delivery_note_no = (form.get("delivery_note_no") or "").strip() or None
         try:
@@ -7635,6 +7842,10 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
     wh_to = _to_int(form.get("warehouse_to_id"), 0) or None
     bin_from = _to_int(form.get("bin_from_id"), 0) or None
     bin_to = _to_int(form.get("bin_to_id"), 0) or None
+    owner_input = form.get("owner_id")
+    owner_id, _owner = _parse_owner_id(db, owner_input, active_only=True)
+    if _to_int(owner_input, 0) > 0 and not owner_id:
+        return render_error("owner_id", "Inhaber wurde nicht gefunden oder ist inaktiv.")
     if tx_type == "receipt" and (form.get("receipt_lock_warehouse") or "").strip() == "1":
         locked_defaults = _receipt_defaults(db)
         locked_wh = int(locked_defaults["warehouse_id"] or 0)
@@ -7668,6 +7879,7 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
                     warehouse_to_id=row.warehouse_id,
                     bin_from_id=row.bin_id,
                     bin_to_id=row.bin_id,
+                    owner_id=row.owner_id,
                     supplier_id=None,
                     delivery_note_no=None,
                     condition=row.condition,
@@ -7716,6 +7928,7 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
         warehouse_to_id=wh_to,
         bin_from_id=bin_from,
         bin_to_id=bin_to,
+        owner_id=owner_id,
         supplier_id=supplier_id,
         delivery_note_no=delivery_note_no,
         unit_cost=unit_cost,
@@ -8075,6 +8288,10 @@ async def api_write_transactions(
     condition = _condition_code_from_input(str(payload.get("condition") or _default_condition_code()))
     if not _condition_exists(db, condition, active_only=False):
         raise HTTPException(status_code=400, detail="Ungültiger Zustand.")
+    owner_raw = payload.get("owner_id")
+    owner_id, _owner = _parse_owner_id(db, owner_raw, active_only=True)
+    if _to_int(owner_raw, 0) > 0 and not owner_id:
+        raise HTTPException(status_code=400, detail="Inhaber wurde nicht gefunden oder ist inaktiv.")
 
     tx = InventoryTransaction(
         tx_type=tx_type,
@@ -8083,6 +8300,7 @@ async def api_write_transactions(
         warehouse_to_id=int(payload.get("warehouse_to_id") or 0) or None,
         bin_from_id=int(payload.get("bin_from_id") or 0) or None,
         bin_to_id=int(payload.get("bin_to_id") or 0) or None,
+        owner_id=owner_id,
         condition=condition,
         quantity=int(payload.get("quantity") or 1),
         serial_number=(payload.get("serial_number") or "").strip() or None,

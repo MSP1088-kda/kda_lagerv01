@@ -66,14 +66,16 @@
     <div class="box-body">
       {% if stock_condition_rows %}
       <div class="table">
-        <div class="tr th" style="grid-template-columns: 1.1fr 1fr 140px;">
+        <div class="tr th" style="grid-template-columns: 1.1fr 1fr 1fr 140px;">
           <div>Lager</div>
+          <div>Inhaber</div>
           <div>Zustand</div>
           <div>Menge</div>
         </div>
         {% for row in stock_condition_rows %}
-        <div class="tr" style="grid-template-columns: 1.1fr 1fr 140px;">
+        <div class="tr" style="grid-template-columns: 1.1fr 1fr 1fr 140px;">
           <div>{{ row.warehouse_name }}</div>
+          <div>{{ row.owner_name }}</div>
           <div>{{ row.condition_label }}</div>
           <div>{{ row.quantity }}</div>
         </div>
@@ -336,7 +338,7 @@
 
 {% block help %}
 <ul>
-  <li>Bestand nach Zustand zeigt nur Zustände mit Menge ungleich 0.</li>
+  <li>Bestand nach Zustand zeigt nur Zeilen mit Menge ungleich 0 und enthält den zugeordneten Inhaber.</li>
   <li>Bilder öffnen direkt im Browser über die hinterlegten absoluten Links.</li>
   <li>Das Datenblatt kann aus der Hersteller-Linklogik geladen und lokal gespeichert werden.</li>
   <li>H: Hersteller-Details öffnen oder schließen.</li>

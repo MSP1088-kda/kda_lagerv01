@@ -57,6 +57,13 @@
               <option value="{{ w.id }}">{{ w.name }}</option>
             {% endfor %}
           </select>
+          <label>Inhaber (optional)</label>
+          <select name="owner_id">
+            <option value="0">-</option>
+            {% for o in owners %}
+              <option value="{{ o.id }}">{{ o.name }}</option>
+            {% endfor %}
+          </select>
           <label>Menge (für Mengenartikel)</label>
           <input type="number" name="quantity" value="1" min="1">
           <label>Seriennummer (für Serienartikel)</label>
@@ -137,6 +144,7 @@
 {% block help %}
 <ul>
   <li>Diese Seite ist für schnelle Einhand-Abläufe auf Mobilgeräten gedacht.</li>
+  <li>Beim schnellen Wareneingang kann optional ein Inhaber gesetzt werden.</li>
   <li>Scan nutzt die Kamera (BarcodeDetector); falls nicht verfügbar, einfach manuell eingeben.</li>
   <li>EAN findet Produkte, Seriennummer führt direkt zur Detailansicht oder füllt Schnellformulare.</li>
 </ul>

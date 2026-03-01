@@ -254,6 +254,17 @@
           {{ f.field_error(rfe, 'receipt_warehouse_to_id') }}
         </div>
         <div>
+          <label>Inhaber (optional)</label>
+          <select id="receipt_owner_id" name="receipt_owner_id" class="{% if rfe.get('receipt_owner_id') %}is-error{% endif %}">
+            <option value="0">-</option>
+            {% set receipt_owner = f.old(rfd, 'receipt_owner_id', rdefaults.get('owner_id', 0)) | int %}
+            {% for o in owners %}
+              <option value="{{ o.id }}" {% if receipt_owner == o.id %}selected{% endif %}>{{ o.name }}</option>
+            {% endfor %}
+          </select>
+          {{ f.field_error(rfe, 'receipt_owner_id') }}
+        </div>
+        <div>
           <label>Zustand</label>
           <select id="receipt_condition" name="receipt_condition" class="{% if rfe.get('receipt_condition') %}is-error{% endif %}">
             {% set receipt_condition = f.old(rfd, 'receipt_condition', rdefaults.get('condition', 'A_WARE')) %}
@@ -322,6 +333,7 @@
   <li>Das Formular zeigt nur Felder, die in Stammdaten → Formularregeln aktiv sind.</li>
   <li>Pflichtfelder werden serverseitig je Artikelart geprüft.</li>
   <li>Bildfelder akzeptieren nur absolute Links mit http:// oder https://.</li>
+  <li>Bei Direkt-Einbuchung kann optional ein Inhaber mitgespeichert werden.</li>
   <li>Mit Strg+S speicherst du das Formular direkt.</li>
   <li>Produkte lassen sich nur archivieren, wenn kein Lagerbestand und keine aktive Reservierung vorhanden ist.</li>
 </ul>

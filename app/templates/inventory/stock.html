@@ -36,17 +36,26 @@
           {% endfor %}
         </select>
       </div>
+      <div>
+        <label>Inhaber</label>
+        <select name="owner_id">
+          <option value="0">Alle</option>
+          {% for o in owners %}
+            <option value="{{ o.id }}" {% if owner_id==o.id %}selected{% endif %}>{{ o.name }}{% if not o.active %} (inaktiv){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
       <div class="row">
         <label class="check"><input type="checkbox" name="only_low" value="1" {% if only_low==1 %}checked{% endif %}> Nur unter Mindestbestand</label>
         <button class="btn primary" type="submit">Filtern</button>
         <a class="btn" href="/inventory/stock">Zurücksetzen</a>
       </div>
       <div class="row">
-        <a class="btn {% if not item_type %}primary{% endif %}" href="/inventory/stock?q={{ q }}&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Alle</a>
-        <a class="btn {% if item_type=='appliance' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=appliance&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Großgeräte</a>
-        <a class="btn {% if item_type=='spare_part' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=spare_part&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Ersatzteile</a>
-        <a class="btn {% if item_type=='accessory' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=accessory&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Zubehör</a>
-        <a class="btn {% if item_type=='material' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=material&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&only_low={{ only_low }}">Material</a>
+        <a class="btn {% if not item_type %}primary{% endif %}" href="/inventory/stock?q={{ q }}&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&owner_id={{ owner_id }}&only_low={{ only_low }}">Alle</a>
+        <a class="btn {% if item_type=='appliance' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=appliance&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&owner_id={{ owner_id }}&only_low={{ only_low }}">Großgeräte</a>
+        <a class="btn {% if item_type=='spare_part' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=spare_part&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&owner_id={{ owner_id }}&only_low={{ only_low }}">Ersatzteile</a>
+        <a class="btn {% if item_type=='accessory' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=accessory&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&owner_id={{ owner_id }}&only_low={{ only_low }}">Zubehör</a>
+        <a class="btn {% if item_type=='material' %}primary{% endif %}" href="/inventory/stock?q={{ q }}&item_type=material&warehouse_id={{ warehouse_id }}&bin_id={{ bin_id }}&owner_id={{ owner_id }}&only_low={{ only_low }}">Material</a>
       </div>
       <div class="row right">
         {% if role_flags.can_inventory_write %}
@@ -80,7 +89,7 @@
       {% set type_label = type_name_map.get(p.device_type_id, '-') %}
       {% set traits = top_traits_map.get(p.id, []) %}
       {% set warns = warning_map.get(p.id, []) %}
-      <div class="tr" style="grid-template-columns: {{ table_grid }};" data-kbd-row="true" {% if role_flags.can_inventory_write and p.active %}data-href="/inventory/transactions/new?product_id={{ p.id }}"{% endif %}>
+      <div class="tr" style="grid-template-columns: {{ table_grid }};" data-kbd-row="true" {% if role_flags.can_inventory_write and p.active %}data-href="/inventory/transactions/new?product_id={{ p.id }}{% if owner_id %}&owner_id={{ owner_id }}{% endif %}"{% endif %}>
         {% for col in table_columns %}
           {% if col.key == 'product' %}
             <div>
@@ -169,6 +178,7 @@
 {% block help %}
 <ul>
   <li>Filtere Bestand nach Lager und optional Fach/Bin.</li>
+  <li>Über den Inhaber-Filter grenzt du Bestände auf einen Eigentümer ein.</li>
   <li>Zustände kommen aus den Stammdaten und werden mit Bezeichnung angezeigt.</li>
   <li>Klick auf den Produktnamen öffnet die Produktdetailseite.</li>
   <li>Über "+ Buchung" erfasst du Zu- und Abgänge.</li>

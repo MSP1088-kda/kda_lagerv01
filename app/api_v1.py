@@ -98,6 +98,7 @@ class WarehouseOut(BaseModel):
 class StockQtyLineOut(BaseModel):
     product_id: int
     warehouse_id: int
+    owner_id: Optional[int]
     condition: str
     quantity: int
 
@@ -124,6 +125,7 @@ class TransactionOut(BaseModel):
     product_id: int
     warehouse_from_id: Optional[int]
     warehouse_to_id: Optional[int]
+    owner_id: Optional[int]
     condition: str
     quantity: int
     serial_number: Optional[str]
@@ -305,7 +307,7 @@ def api_warehouses(db: Session = Depends(db_session)):
 
 
 @router.get("/stock", response_model=StockOut)
-def api_stock(product_id: int = 0, warehouse_id: int = 0, db: Session = Depends(db_session)):
+def api_stock(product_id: int = 0, warehouse_id: int = 0, owner_id: int = 0, db: Session = Depends(db_session)):
     bal_q = db.query(StockBalance)
     serial_q = db.query(StockSerial)
 
@@ -315,11 +317,14 @@ def api_stock(product_id: int = 0, warehouse_id: int = 0, db: Session = Depends(
     if warehouse_id:
         bal_q = bal_q.filter(StockBalance.warehouse_id == warehouse_id)
         serial_q = serial_q.filter(StockSerial.warehouse_id == warehouse_id)
+    if owner_id:
+        bal_q = bal_q.filter(StockBalance.owner_id == owner_id)
 
     qty_lines = [
         StockQtyLineOut(
             product_id=b.product_id,
             warehouse_id=b.warehouse_id,
+            owner_id=b.owner_id,
             condition=b.condition,
             quantity=b.quantity,
         )
@@ -358,6 +363,7 @@ def api_stock(product_id: int = 0, warehouse_id: int = 0, db: Session = Depends(
 def api_transactions(
     product_id: int = 0,
     warehouse_id: int = 0,
+    owner_id: int = 0,
     limit: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(db_session),
 ):
@@ -371,6 +377,8 @@ def api_transactions(
                 InventoryTransaction.warehouse_to_id == warehouse_id,
             )
         )
+    if owner_id:
+        q = q.filter(InventoryTransaction.owner_id == owner_id)
 
     rows = q.order_by(InventoryTransaction.created_at.desc(), InventoryTransaction.id.desc()).limit(limit).all()
     return [
@@ -380,6 +388,7 @@ def api_transactions(
             product_id=r.product_id,
             warehouse_from_id=r.warehouse_from_id,
             warehouse_to_id=r.warehouse_to_id,
+            owner_id=r.owner_id,
             condition=r.condition,
             quantity=r.quantity,
             serial_number=r.serial_number,
