@@ -2,34 +2,39 @@
 {% block content %}
 <div class="panel">
   <h1>Lieferant bearbeiten #{{ row.id }}</h1>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {{ f.render_errors(fe) }}
 
   <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/edit" class="form">
     <div class="grid2">
       <div>
         <label>Name</label>
-        <input type="text" name="name" value="{{ row.name }}" required>
+        <input type="text" name="name" class="{% if fe.get('name') %}is-error{% endif %}" value="{{ f.old(fd, 'name', row.name) }}" required>
+        {{ f.field_error(fe, 'name') }}
       </div>
       <div>
         <label>Website</label>
-        <input type="text" name="website" value="{{ row.website or '' }}">
+        <input type="text" name="website" value="{{ f.old(fd, 'website', row.website or '') }}">
       </div>
       <div>
         <label>Telefon</label>
-        <input type="text" name="phone" value="{{ row.phone or '' }}">
+        <input type="text" name="phone" value="{{ f.old(fd, 'phone', row.phone or '') }}">
       </div>
       <div>
         <label>E-Mail</label>
-        <input type="email" name="email" value="{{ row.email or '' }}">
+        <input type="email" name="email" value="{{ f.old(fd, 'email', row.email or '') }}">
       </div>
     </div>
 
     <label>Adresse</label>
-    <textarea name="address" rows="2">{{ row.address or '' }}</textarea>
+    <textarea name="address" rows="2">{{ f.old(fd, 'address', row.address or '') }}</textarea>
 
     <label>Notiz</label>
-    <textarea name="note" rows="2">{{ row.note or '' }}</textarea>
+    <textarea name="note" rows="2">{{ f.old(fd, 'note', row.note or '') }}</textarea>
 
-    <label class="check"><input type="checkbox" name="active" {% if row.active %}checked{% endif %}> Aktiv</label>
+    <label class="check"><input type="checkbox" name="active" {{ f.is_checked(fd, 'active', row.active) }}> Aktiv</label>
 
     <div class="row">
       <button class="btn primary" type="submit">Speichern</button>

@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>System: Standards</h1>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {% set defaults = receipt_defaults or {} %}
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="/system/standards" class="form" data-first-error="{% if fe.get('warehouse_id') %}std_warehouse{% elif fe.get('condition') %}std_condition{% elif fe.get('supplier_id') %}std_supplier{% elif fe.get('quantity') %}std_quantity{% endif %}">
+    <div class="grid2">
+      <div>
+        <label for="std_warehouse">Standard-Lager (Pflicht)</label>
+        <select id="std_warehouse" name="warehouse_id" class="{% if fe.get('warehouse_id') %}is-error{% endif %}" required>
+          <option value="0">Bitte wählen</option>
+          {% for w in warehouses %}
+            {% set selected_wh = f.old(fd, 'warehouse_id', defaults.get('warehouse_id', 0)) | int %}
+            <option value="{{ w.id }}" {% if selected_wh == w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'warehouse_id') }}
+      </div>
+      <div>
+        <label for="std_condition">Standard-Zustand (Pflicht)</label>
+        <select id="std_condition" name="condition" class="{% if fe.get('condition') %}is-error{% endif %}" required>
+          {% set selected_condition = f.old(fd, 'condition', defaults.get('condition', 'A_WARE')) %}
+          {% for c in condition_defs %}
+            <option value="{{ c.code }}" {% if selected_condition == c.code %}selected{% endif %}>{{ c.label_de }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'condition') }}
+      </div>
+      <div>
+        <label for="std_supplier">Standard-Lieferant (optional)</label>
+        <select id="std_supplier" name="supplier_id" class="{% if fe.get('supplier_id') %}is-error{% endif %}">
+          <option value="0">-</option>
+          {% for s in suppliers %}
+            {% set selected_supplier = f.old(fd, 'supplier_id', defaults.get('supplier_id', 0)) | int %}
+            <option value="{{ s.id }}" {% if selected_supplier == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'supplier_id') }}
+      </div>
+      <div>
+        <label for="std_quantity">Standard-Menge</label>
+        <input id="std_quantity" type="number" min="1" name="quantity" class="{% if fe.get('quantity') %}is-error{% endif %}" value="{{ f.old(fd, 'quantity', defaults.get('quantity', 1)) }}">
+        {{ f.field_error(fe, 'quantity') }}
+      </div>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" name="lock_warehouse" {{ f.is_checked(fd, 'lock_warehouse', defaults.get('lock_warehouse', false)) }}>
+      Lager bei Einbuchen sperren
+    </label>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/settings/company">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier legst du Standardwerte für den Wareneingang fest.</li>
+  <li>Mit aktivierter Sperre ist das Lager im Einbuch-Formular fest vorgegeben.</li>
+  <li>Strg+K und /menu zeigen die Seite ebenfalls an.</li>
+</ul>
+{% endblock %}

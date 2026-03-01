@@ -7,8 +7,14 @@
     <h1>Produkt neu</h1>
   {% endif %}
   {% set selected_item_type = selected_item_type if selected_item_type else (product.item_type if product and product.item_type else 'material') %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {% set rfd = receipt_form_data or fd %}
+  {% set rfe = receipt_form_errors or {} %}
+  {% set rdefaults = receipt_defaults or {} %}
+  {% import "macros/forms.html" as f %}
 
-  <form method="post" class="form" data-product-form="1" data-product-new="{% if not product %}1{% else %}0{% endif %}">
+  <form method="post" class="form" data-product-form="1" data-product-new="{% if not product %}1{% else %}0{% endif %}" data-first-error="{{ first_error_field_id or '' }}">
     <label>Artikelart</label>
     {% if item_type_locked %}
       <input type="text" value="{{ item_type_labels.get(selected_item_type, selected_item_type) }}" disabled>
@@ -22,10 +28,11 @@
     {% endif %}
 
     {% set section = namespace(current='') %}
-    {% set selected_manufacturer_id = product.manufacturer_id if product and product.manufacturer_id else 0 %}
-    {% set selected_area_id = product.area_id if product and product.area_id else 0 %}
-    {% set selected_kind = product.device_kind_id if product and product.device_kind_id else (selected_kind_id|default(0)) %}
-    {% set selected_type = product.device_type_id if product and product.device_type_id else (selected_type_id|default(0)) %}
+    {% set selected_manufacturer_id = (f.old(fd, 'manufacturer_id', product.manufacturer_id if product and product.manufacturer_id else 0) | int) %}
+    {% set selected_area = (f.old(fd, 'area_id', selected_area_id if selected_area_id else (product.area_id if product and product.area_id else 0)) | int) %}
+    {% set selected_kind = (f.old(fd, 'device_kind_id', selected_kind_id if selected_kind_id else (product.device_kind_id if product and product.device_kind_id else 0)) | int) %}
+    {% set selected_type = (f.old(fd, 'device_type_id', selected_type_id if selected_type_id else (product.device_type_id if product and product.device_type_id else 0)) | int) %}
+    {{ f.render_errors(fe) }}
 
     {% if form_schema %}
       {% for field in form_schema %}
@@ -36,57 +43,68 @@
 
         {% if field.key == 'name' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input type="text" name="name" value="{{ product.name if product else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %} autofocus>
+          <input id="product_name" type="text" name="name" class="{% if fe.get('name') %}is-error{% endif %}" value="{{ f.old(fd, 'name', product.name if product else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %} autofocus>
+          {{ f.field_error(fe, 'name') }}
         {% elif field.key == 'material_no' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input type="text" name="material_no" value="{{ product.material_no if product and product.material_no else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_material_no" type="text" name="material_no" class="{% if fe.get('material_no') %}is-error{% endif %}" value="{{ f.old(fd, 'material_no', product.material_no if product and product.material_no else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          {{ f.field_error(fe, 'material_no') }}
         {% elif field.key == 'manufacturer_id' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <select name="manufacturer_id" {% if field.required %}required{% endif %}>
+          <select id="product_manufacturer_id" name="manufacturer_id" class="{% if fe.get('manufacturer_id') %}is-error{% endif %}" {% if field.required %}required{% endif %}>
             <option value="0">Bitte wählen</option>
             {% for m in manufacturers %}
               <option value="{{ m.id }}" {% if selected_manufacturer_id == m.id %}selected{% endif %}>{{ m.name }}{% if not m.active %} (inaktiv){% endif %}</option>
             {% endfor %}
           </select>
+          {{ f.field_error(fe, 'manufacturer_id') }}
         {% elif field.key == 'sku' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input type="text" name="sku" value="{{ product.sku if product and product.sku else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_sku" type="text" name="sku" class="{% if fe.get('sku') %}is-error{% endif %}" value="{{ f.old(fd, 'sku', product.sku if product and product.sku else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          {{ f.field_error(fe, 'sku') }}
         {% elif field.key == 'sales_name' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input type="text" name="sales_name" value="{{ product.sales_name if product and product.sales_name else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_sales_name" type="text" name="sales_name" class="{% if fe.get('sales_name') %}is-error{% endif %}" value="{{ f.old(fd, 'sales_name', product.sales_name if product and product.sales_name else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          {{ f.field_error(fe, 'sales_name') }}
         {% elif field.key == 'manufacturer_name' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input type="text" name="manufacturer_name" value="{{ product.manufacturer_name if product and product.manufacturer_name else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_manufacturer_name" type="text" name="manufacturer_name" class="{% if fe.get('manufacturer_name') %}is-error{% endif %}" value="{{ f.old(fd, 'manufacturer_name', product.manufacturer_name if product and product.manufacturer_name else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          {{ f.field_error(fe, 'manufacturer_name') }}
         {% elif field.key == 'ean' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input type="text" name="ean" value="{{ product.ean if product and product.ean else '' }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_ean" type="text" name="ean" class="{% if fe.get('ean') %}is-error{% endif %}" value="{{ f.old(fd, 'ean', product.ean if product and product.ean else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          {{ f.field_error(fe, 'ean') }}
         {% elif field.key == 'area_id' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <select name="area_id" {% if field.required %}required{% endif %}>
+          <select id="product_area_id" name="area_id" class="{% if fe.get('area_id') %}is-error{% endif %}" {% if field.required %}required{% endif %}>
             <option value="0">Bitte wählen</option>
             {% for a in areas %}
-              <option value="{{ a.id }}" {% if selected_area_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+              <option value="{{ a.id }}" {% if selected_area == a.id %}selected{% endif %}>{{ a.name }}</option>
             {% endfor %}
           </select>
+          {{ f.field_error(fe, 'area_id') }}
         {% elif field.key == 'device_kind_id' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <select name="device_kind_id" {% if field.required %}required{% endif %}>
+          <select id="product_device_kind_id" name="device_kind_id" class="{% if fe.get('device_kind_id') %}is-error{% endif %}" {% if field.required %}required{% endif %}>
             <option value="0">Bitte wählen</option>
             {% for k in kinds %}
               <option value="{{ k.id }}" {% if selected_kind == k.id %}selected{% endif %}>{{ k.name }}</option>
             {% endfor %}
           </select>
+          {{ f.field_error(fe, 'device_kind_id') }}
         {% elif field.key == 'device_type_id' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <select name="device_type_id" {% if field.required %}required{% endif %}>
+          <select id="product_device_type_id" name="device_type_id" class="{% if fe.get('device_type_id') %}is-error{% endif %}" {% if field.required %}required{% endif %}>
             <option value="0">Bitte wählen</option>
             {% for t in types %}
               <option value="{{ t.id }}" {% if selected_type == t.id %}selected{% endif %}>{{ t.name }}</option>
             {% endfor %}
           </select>
+          {{ f.field_error(fe, 'device_type_id') }}
         {% elif field.key == 'description' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <textarea name="description" rows="4" {% if field.required %}required{% endif %}>{{ product.description if product and product.description else '' }}</textarea>
+          <textarea id="product_description" name="description" rows="4" class="{% if fe.get('description') %}is-error{% endif %}" {% if field.required %}required{% endif %}>{{ f.old(fd, 'description', product.description if product and product.description else '') }}</textarea>
+          {{ f.field_error(fe, 'description') }}
         {% endif %}
 
         {% if field.help_text %}
@@ -112,32 +130,35 @@
             </label>
 
             {% if a.value_type == 'bool' %}
-              <select name="attr_{{ a.id }}">
+              <select id="attr_{{ a.id }}" name="attr_{{ a.id }}" class="{% if fe.get('attr_' ~ a.id) %}is-error{% endif %}">
                 <option value="">-</option>
                 <option value="true" {% if val_map.get(a.id) == 'true' %}selected{% endif %}>Ja</option>
                 <option value="false" {% if val_map.get(a.id) == 'false' %}selected{% endif %}>Nein</option>
               </select>
             {% elif a.value_type == 'number' %}
-              <input type="number" step="any" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}">
+              <input id="attr_{{ a.id }}" type="number" step="any" name="attr_{{ a.id }}" class="{% if fe.get('attr_' ~ a.id) %}is-error{% endif %}" value="{{ val_map.get(a.id,'') }}">
             {% elif a.value_type == 'enum' and a.is_multi %}
               <div class="row">
                 {% set selected = val_multi_map.get(a.id, []) %}
                 {% for opt in options_map.get(a.id, []) %}
                 <label class="check">
-                  <input type="checkbox" name="attr_{{ a.id }}" value="{{ opt }}" {% if opt in selected %}checked{% endif %}>
+                  <input id="attr_{{ a.id }}{% if loop.first %}{% else %}_{{ loop.index }}{% endif %}" type="checkbox" name="attr_{{ a.id }}" value="{{ opt }}" {% if opt in selected %}checked{% endif %}>
                   {{ opt }}
                 </label>
                 {% endfor %}
               </div>
             {% elif a.value_type == 'enum' %}
-              <select name="attr_{{ a.id }}">
+              <select id="attr_{{ a.id }}" name="attr_{{ a.id }}" class="{% if fe.get('attr_' ~ a.id) %}is-error{% endif %}">
                 <option value="">-</option>
                 {% for opt in options_map.get(a.id, []) %}
                   <option value="{{ opt }}" {% if val_map.get(a.id) == opt %}selected{% endif %}>{{ opt }}</option>
                 {% endfor %}
               </select>
             {% else %}
-              <input type="text" name="attr_{{ a.id }}" value="{{ val_map.get(a.id,'') }}">
+              <input id="attr_{{ a.id }}" type="text" name="attr_{{ a.id }}" class="{% if fe.get('attr_' ~ a.id) %}is-error{% endif %}" value="{{ val_map.get(a.id,'') }}">
+            {% endif %}
+            {% if fe.get('attr_' ~ a.id) %}
+              <div class="flash-item flash-error">{{ fe.get('attr_' ~ a.id) }}</div>
             {% endif %}
           {% endfor %}
         </div>
@@ -193,15 +214,79 @@
       </div>
     {% endif %}
 
+    {% if (not product) or show_receipt_block %}
+      <h2>Direkt einbuchen (optional)</h2>
+      {{ f.render_errors(rfe) }}
+      <div class="grid3">
+        <div>
+          <label>Menge</label>
+          <input id="receipt_quantity" type="number" min="1" name="receipt_quantity" class="{% if rfe.get('receipt_quantity') %}is-error{% endif %}" value="{{ f.old(rfd, 'receipt_quantity', rdefaults.get('quantity', 1)) }}">
+          {{ f.field_error(rfe, 'receipt_quantity') }}
+        </div>
+        <div>
+          <label>Lager</label>
+          <select id="receipt_warehouse_to_id" name="receipt_warehouse_to_id" class="{% if rfe.get('receipt_warehouse_to_id') %}is-error{% endif %}">
+            <option value="0">Bitte wählen</option>
+            {% set receipt_warehouse = f.old(rfd, 'receipt_warehouse_to_id', rdefaults.get('warehouse_id', 0)) | int %}
+            {% for w in warehouses %}
+              <option value="{{ w.id }}" {% if receipt_warehouse == w.id %}selected{% endif %}>{{ w.name }}</option>
+            {% endfor %}
+          </select>
+          {{ f.field_error(rfe, 'receipt_warehouse_to_id') }}
+        </div>
+        <div>
+          <label>Zustand</label>
+          <select id="receipt_condition" name="receipt_condition" class="{% if rfe.get('receipt_condition') %}is-error{% endif %}">
+            {% set receipt_condition = f.old(rfd, 'receipt_condition', rdefaults.get('condition', 'A_WARE')) %}
+            {% for c in condition_defs %}
+              <option value="{{ c.code }}" {% if receipt_condition == c.code %}selected{% endif %}>{{ c.label_de }}</option>
+            {% endfor %}
+          </select>
+          {{ f.field_error(rfe, 'receipt_condition') }}
+        </div>
+        <div>
+          <label>Lieferant (optional)</label>
+          <select id="receipt_supplier_id" name="receipt_supplier_id" class="{% if rfe.get('receipt_supplier_id') %}is-error{% endif %}">
+            <option value="0">-</option>
+            {% set receipt_supplier = f.old(rfd, 'receipt_supplier_id', rdefaults.get('supplier_id', 0)) | int %}
+            {% for s in suppliers %}
+              <option value="{{ s.id }}" {% if receipt_supplier == s.id %}selected{% endif %}>{{ s.name }}</option>
+            {% endfor %}
+          </select>
+          {{ f.field_error(rfe, 'receipt_supplier_id') }}
+        </div>
+        <div>
+          <label>Belegnummer (optional)</label>
+          <input id="receipt_delivery_note_no" type="text" name="receipt_delivery_note_no" value="{{ f.old(rfd, 'receipt_delivery_note_no', '') }}" placeholder="z. B. LS-2026-0007">
+        </div>
+        <div>
+          <label>Preis pro Stück netto (optional)</label>
+          <input id="receipt_unit_cost" type="text" name="receipt_unit_cost" class="{% if rfe.get('receipt_unit_cost') %}is-error{% endif %}" value="{{ f.old(rfd, 'receipt_unit_cost', '') }}" placeholder="z. B. 129,90">
+          {{ f.field_error(rfe, 'receipt_unit_cost') }}
+        </div>
+      </div>
+    {% endif %}
+
     <div class="row">
-      <button class="btn primary" type="submit">Speichern</button>
+      <button class="btn primary" type="submit" name="action" value="save">Speichern</button>
+      {% if (not product) or show_receipt_block %}
+      <button class="btn" type="submit" name="action" value="save_and_receipt">Speichern &amp; Einbuchen</button>
+      {% endif %}
       <a class="btn" href="/catalog/products">Zurück</a>
     </div>
   </form>
 
+  {% if draft_key %}
+  <form method="post" action="/ui/draft/clear" class="row inline" data-draft-clear-form="1">
+    <input type="hidden" name="key" value="{{ draft_key }}">
+    <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+    <button class="btn" type="submit">Entwurf löschen</button>
+  </form>
+  {% endif %}
+
   {% if product %}
-  <form method="post" action="/catalog/products/{{ product.id }}/delete" class="row" onsubmit="return confirm('Produkt wirklich löschen? Nur möglich, wenn Lagerbestand 0 ist.');">
-    <button class="btn" type="submit">Produkt löschen</button>
+  <form method="post" action="/catalog/products/{{ product.id }}/archive" class="row" onsubmit="return confirm('Produkt wirklich archivieren? Nur möglich, wenn Lagerbestand 0 ist.');">
+    <button class="btn" type="submit">Produkt archivieren</button>
   </form>
   {% endif %}
 
@@ -218,6 +303,6 @@
   <li>Das Formular zeigt nur Felder, die in Stammdaten → Formularregeln aktiv sind.</li>
   <li>Pflichtfelder werden serverseitig je Artikelart geprüft.</li>
   <li>Mit Strg+S speicherst du das Formular direkt.</li>
-  <li>Produkte lassen sich nur löschen, wenn kein Lagerbestand und keine aktive Reservierung vorhanden ist.</li>
+  <li>Produkte lassen sich nur archivieren, wenn kein Lagerbestand und keine aktive Reservierung vorhanden ist.</li>
 </ul>
 {% endblock %}

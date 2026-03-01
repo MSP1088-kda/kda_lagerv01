@@ -3,7 +3,7 @@
 <div class="panel">
   <h1>Produktkatalog</h1>
 
-  <form method="get" action="/catalog/products" class="form compact">
+  <form method="get" action="/catalog/products" class="form compact" data-catalog-cascade-filter="1">
     <div class="grid3">
       <div>
         <label>Suche</label>
@@ -20,7 +20,7 @@
       </div>
       <div>
         <label>Bereich</label>
-        <select name="area_id">
+        <select id="catalog_area_id" name="area_id">
           <option value="0">Alle</option>
           {% for a in areas %}
             <option value="{{ a.id }}" {% if area_id==a.id %}selected{% endif %}>{{ a.name }}</option>
@@ -29,7 +29,7 @@
       </div>
       <div>
         <label>Geräteart</label>
-        <select name="kind_id">
+        <select id="catalog_kind_id" name="kind_id">
           <option value="0">Alle</option>
           {% for k in kinds %}
             <option value="{{ k.id }}" {% if kind_id==k.id %}selected{% endif %}>{{ k.name }}</option>
@@ -38,13 +38,18 @@
       </div>
       <div>
         <label>Gerätetyp</label>
-        <select name="type_id">
+        <select id="catalog_type_id" name="type_id">
           <option value="0">Alle</option>
           {% for t in types %}
             <option value="{{ t.id }}" {% if type_id==t.id %}selected{% endif %}>{{ t.name }}</option>
           {% endfor %}
         </select>
       </div>
+      {% if user.role == 'admin' %}
+      <div class="row">
+        <label class="check"><input type="checkbox" name="show_inactive" value="1" {% if show_inactive==1 %}checked{% endif %}> Inaktive anzeigen</label>
+      </div>
+      {% endif %}
     </div>
 
     {% if filter_attrs %}
@@ -96,11 +101,11 @@
     {% endif %}
 
     <div class="row">
-      <a class="btn {% if not item_type %}primary{% endif %}" href="/catalog/products?q={{ q }}&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}">Alle</a>
-      <a class="btn {% if item_type=='appliance' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=appliance&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}">Großgeräte</a>
-      <a class="btn {% if item_type=='spare_part' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=spare_part&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}">Ersatzteile</a>
-      <a class="btn {% if item_type=='accessory' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=accessory&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}">Zubehör</a>
-      <a class="btn {% if item_type=='material' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=material&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}">Material</a>
+      <a class="btn {% if not item_type %}primary{% endif %}" href="/catalog/products?q={{ q }}&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Alle</a>
+      <a class="btn {% if item_type=='appliance' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=appliance&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Großgeräte</a>
+      <a class="btn {% if item_type=='spare_part' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=spare_part&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Ersatzteile</a>
+      <a class="btn {% if item_type=='accessory' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=accessory&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Zubehör</a>
+      <a class="btn {% if item_type=='material' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=material&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Material</a>
     </div>
     <div class="row">
       <button class="btn primary" type="submit">Filtern</button>
@@ -124,30 +129,48 @@
       {% endfor %}
     </div>
     {% for p in products %}
-      {% set display_name = p.sales_name if p.item_type == 'appliance' and p.sales_name else p.name %}
-      <div class="tr" style="grid-template-columns: {{ table_grid }};" data-kbd-row="true" data-href="/catalog/products/{{ p.id }}">
+      {% set is_appliance = p.item_type == 'appliance' %}
+      {% set display_name = p.sales_name if is_appliance and p.sales_name else p.name %}
+      {% set brand = p.manufacturer if p.manufacturer else (p.manufacturer_name if p.manufacturer_name else '-') %}
+      {% set kind_label = kind_name_map.get(p.device_kind_id, '-') %}
+      {% set type_label = type_name_map.get(p.device_type_id, '-') %}
+      {% set traits = top_traits_map.get(p.id, []) %}
+      <div
+        class="tr kbd-row"
+        style="grid-template-columns: {{ table_grid }};"
+        data-kbd-row="true"
+        data-href="/catalog/products/{{ p.id }}"
+        data-details-href="/catalog/products/{{ p.id }}"
+        {% if p.active %}data-book-href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}&return_to={{ return_to_q }}"{% endif %}
+        tabindex="0"
+      >
         {% for col in table_columns %}
-          {% if col.key == 'id' %}
-            <div>{{ p.id }}</div>
-          {% elif col.key == 'item_type' %}
-            <div>{{ item_type_labels.get(p.item_type, 'Material') }}</div>
-          {% elif col.key == 'name' %}
-            <div><a href="/catalog/products/{{ p.id }}">{{ display_name }}</a></div>
-          {% elif col.key == 'material_no' %}
-            <div>{{ p.material_no or "-" }}</div>
-          {% elif col.key == 'sales_name' %}
-            <div>{{ p.sales_name or "-" }}</div>
-          {% elif col.key == 'manufacturer_name' %}
-            <div>{{ p.manufacturer_name or "-" }}</div>
+          {% if col.key == 'product' %}
+            <div>
+              <a href="/catalog/products/{{ p.id }}">{{ display_name }}</a>{% if not p.active %} <span class="muted">(archiviert)</span>{% endif %}
+              {% if not is_appliance and p.material_no %}<br><span class="muted">Materialnummer: {{ p.material_no }}</span>{% endif %}
+            </div>
+          {% elif col.key == 'brand' %}
+            <div>{% if is_appliance %}{{ brand }}{% else %}-{% endif %}</div>
+          {% elif col.key == 'kind_type' %}
+            <div>
+              {% if is_appliance %}
+                {{ kind_label }}{% if type_label != '-' %} / {{ type_label }}{% endif %}
+              {% else %}
+                {{ item_type_labels.get(p.item_type, 'Material') }}
+              {% endif %}
+            </div>
+          {% elif col.key == 'traits' %}
+            <div>{% if is_appliance and traits %}{{ traits|join(' | ') }}{% else %}-{% endif %}</div>
+          {% elif col.key == 'stock_total' %}
+            <div>{{ stock_total_map.get(p.id, 0) }}</div>
           {% elif col.key == 'actions' %}
             <div>
               <a class="btn small" href="/catalog/products/{{ p.id }}">Details</a>
-              {% if p.item_type == 'appliance' and p.ean %}
-                <a class="btn small" href="/catalog/products/{{ p.id }}?show=hersteller">Hersteller-Details</a>
-              {% endif %}
-              <a class="btn small" href="/catalog/products/{{ p.id }}/matches">Kombis</a>
-              {% if user.role == 'admin' %}
-                <a class="btn small" href="/catalog/products/{{ p.id }}/edit">Bearbeiten</a>
+              {% if p.active %}
+                <a class="btn small" href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}&return_to={{ return_to_q }}">Einbuchen</a>
+              {% else %}
+                <span class="muted">Einbuchen gesperrt</span>
               {% endif %}
             </div>
           {% endif %}
@@ -163,9 +186,10 @@
 
 {% block help %}
 <ul>
-  <li>Großgeräte mit EAN zeigen einen Direktlink zu Hersteller-Details.</li>
-  <li>Neben Bereich/Geräteart/Gerätetyp kannst du Attribute gezielt als Facetten filtern.</li>
-  <li>Für Zahlenattribute stehen Min-/Max-Felder bereit, für Mehrfachauswahl Checkboxen.</li>
-  <li>Alle Filterwerte bleiben nach dem Absenden erhalten.</li>
+  <li>Enter: Details der markierten Zeile öffnen.</li>
+  <li>I: Als Bestand einbuchen (Wareneingang mit vorausgewähltem Produkt).</li>
+  <li>↑/↓: Zwischen den Produktzeilen wechseln.</li>
+  <li>Die Liste zeigt den Gesamtbestand; Zustandsdetails siehst du in der Produktdetailseite.</li>
+  <li>Bearbeiten und Archivieren findest du auf der Produktdetailseite.</li>
 </ul>
 {% endblock %}

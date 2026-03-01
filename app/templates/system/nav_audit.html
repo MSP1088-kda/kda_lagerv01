@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Navigation prüfen</h1>
+
+  <div class="box">
+    <div class="box-title">Ergebnis</div>
+    <div class="box-body">
+      <div>UI-Routen (GET/HTML): <b>{{ ui_paths|length }}</b></div>
+      <div>Routen in Nav-Registry: <b>{{ nav_registry_paths|length }}</b></div>
+      <div>Fehlende Verlinkung: <b>{{ missing_in_nav|length }}</b></div>
+      <div>Registry ohne passende Route: <b>{{ nav_without_route|length }}</b></div>
+    </div>
+  </div>
+
+  <h2>Warnung: UI-Seiten ohne Nav-Registry</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 90px 1fr;">
+      <div>#</div>
+      <div>Route</div>
+    </div>
+    {% for path in missing_in_nav %}
+      <div class="tr" style="grid-template-columns: 90px 1fr;">
+        <div>{{ loop.index }}</div>
+        <div>{{ path }}</div>
+      </div>
+    {% endfor %}
+    {% if not missing_in_nav %}
+      <div class="muted">Keine fehlenden UI-Routen gefunden.</div>
+    {% endif %}
+  </div>
+
+  <h2>Hinweis: Registry-Ziele ohne GET-HTML-Route</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 90px 1fr;">
+      <div>#</div>
+      <div>Pfad</div>
+    </div>
+    {% for path in nav_without_route %}
+      <div class="tr" style="grid-template-columns: 90px 1fr;">
+        <div>{{ loop.index }}</div>
+        <div>{{ path }}</div>
+      </div>
+    {% endfor %}
+    {% if not nav_without_route %}
+      <div class="muted">Alle Registry-Ziele sind als GET-HTML-Route vorhanden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Checkliste: Neue Seite gebaut?</li>
+  <li>Checkliste: Seite in `app/nav.py` aufgenommen?</li>
+  <li>Checkliste: Seite über Strg+K und `/menu` erreichbar?</li>
+  <li>Checkliste: Alt-Hotkey nur für Kernziele vergeben?</li>
+</ul>
+{% endblock %}

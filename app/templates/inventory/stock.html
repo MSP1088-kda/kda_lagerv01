@@ -59,6 +59,9 @@
         <a class="btn" href="/inventory/reparaturen">Reparaturen</a>
         <a class="btn" href="/inventory/stocktakes">Inventur</a>
         {% endif %}
+        {% if role_flags.is_admin %}
+        <a class="btn" href="/admin/report/archiviert_mit_bestand">Archiviert mit Bestand</a>
+        {% endif %}
         <a class="btn" href="/inventory/warehouses">Lagerorte</a>
       </div>
     </div>
@@ -71,16 +74,29 @@
       {% endfor %}
     </div>
     {% for p in products %}
-      {% set display_name = p.sales_name if p.item_type == 'appliance' and p.sales_name else p.name %}
+      {% set is_appliance = p.item_type == 'appliance' %}
+      {% set display_name = p.sales_name if is_appliance and p.sales_name else p.name %}
+      {% set kind_label = kind_name_map.get(p.device_kind_id, '-') %}
+      {% set type_label = type_name_map.get(p.device_type_id, '-') %}
+      {% set traits = top_traits_map.get(p.id, []) %}
       {% set warns = warning_map.get(p.id, []) %}
-      <div class="tr" style="grid-template-columns: {{ table_grid }};" data-kbd-row="true" {% if role_flags.can_inventory_write %}data-href="/inventory/transactions/new?product_id={{ p.id }}"{% endif %}>
+      <div class="tr" style="grid-template-columns: {{ table_grid }};" data-kbd-row="true" {% if role_flags.can_inventory_write and p.active %}data-href="/inventory/transactions/new?product_id={{ p.id }}"{% endif %}>
         {% for col in table_columns %}
-          {% if col.key == 'id' %}
-            <div>{{ p.id }}</div>
-          {% elif col.key == 'item_type' %}
-            <div>{{ item_type_labels.get(p.item_type, 'Material') }}</div>
-          {% elif col.key == 'product' %}
-            <div>{{ display_name }}</div>
+          {% if col.key == 'product' %}
+            <div>
+              <a href="/catalog/products/{{ p.id }}">{{ display_name }}</a>{% if not p.active %} <span class="muted">(archiviert)</span>{% endif %}
+              {% if not is_appliance and p.material_no %}<br><span class="muted">Materialnummer: {{ p.material_no }}</span>{% endif %}
+            </div>
+          {% elif col.key == 'kind_type' %}
+            <div>
+              {% if is_appliance %}
+                {{ kind_label }}{% if type_label != '-' %} / {{ type_label }}{% endif %}
+              {% else %}
+                {{ item_type_labels.get(p.item_type, 'Material') }}
+              {% endif %}
+            </div>
+          {% elif col.key == 'traits' %}
+            <div>{% if is_appliance and traits %}{{ traits|join(' | ') }}{% else %}-{% endif %}</div>
           {% elif col.key == 'conditions' %}
             <div>
               {% set shown = namespace(count=0) %}
@@ -102,8 +118,6 @@
                 <div>-</div>
               {% endif %}
             </div>
-          {% elif col.key == 'material_no' %}
-            <div>{{ p.material_no or '-' }}</div>
           {% elif col.key == 'warning' %}
             <div>
               {% if warns %}
@@ -128,8 +142,16 @@
     </div>
     {% for p in products %}
       {% set display_name = p.sales_name if p.item_type == 'appliance' and p.sales_name else p.name %}
+      {% set mobile_traits = top_traits_map.get(p.id, []) %}
       <div class="tr" style="grid-template-columns: 1.7fr 0.7fr;">
-        <div>{{ display_name }}</div>
+        <div>
+          <a href="/catalog/products/{{ p.id }}">{{ display_name }}</a>{% if not p.active %} <span class="muted">(archiviert)</span>{% endif %}
+          {% if p.item_type == 'appliance' and mobile_traits %}
+            <br><span class="muted">{{ mobile_traits|join(' | ') }}</span>
+          {% elif p.item_type != 'appliance' and p.material_no %}
+            <br><span class="muted">Materialnummer: {{ p.material_no }}</span>
+          {% endif %}
+        </div>
         <div>{{ stock_total_map.get(p.id, 0) }}</div>
       </div>
     {% endfor %}
@@ -148,6 +170,7 @@
 <ul>
   <li>Filtere Bestand nach Lager und optional Fach/Bin.</li>
   <li>Zustände kommen aus den Stammdaten und werden mit Bezeichnung angezeigt.</li>
+  <li>Klick auf den Produktnamen öffnet die Produktdetailseite.</li>
   <li>Über "+ Buchung" erfasst du Zu- und Abgänge.</li>
 </ul>
 {% endblock %}

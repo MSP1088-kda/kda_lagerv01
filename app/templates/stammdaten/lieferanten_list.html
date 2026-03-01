@@ -40,7 +40,7 @@
   </form>
 
   <div class="table">
-    <div class="tr th" style="grid-template-columns: 80px 1.5fr 1fr 1fr 260px;">
+    <div class="tr th" style="grid-template-columns: 80px 1.5fr 1fr 1fr 360px;">
       <div>ID</div>
       <div>Name</div>
       <div>Telefon</div>
@@ -48,7 +48,7 @@
       <div>Aktionen</div>
     </div>
     {% for row in rows %}
-      <div class="tr" style="grid-template-columns: 80px 1.5fr 1fr 1fr 260px;">
+      <div class="tr" style="grid-template-columns: 80px 1.5fr 1fr 1fr 360px;">
         <div>{{ row.id }}</div>
         <div>{{ row.name }}</div>
         <div>{{ row.phone or '-' }}</div>
@@ -58,6 +58,9 @@
           <a class="btn small" href="/stammdaten/lieferanten/{{ row.id }}/edit">Bearbeiten</a>
           <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/toggle" class="inline">
             <button class="btn small" type="submit">{{ 'Deaktivieren' if row.active else 'Aktivieren' }}</button>
+          </form>
+          <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/delete" class="inline" onsubmit="return confirm('Lieferant wirklich vollständig löschen?');">
+            <button class="btn small" type="submit">Löschen</button>
           </form>
         </div>
       </div>
@@ -71,7 +74,7 @@
 
 {% block help %}
 <ul>
-  <li>Lieferanten werden nicht hart gelöscht, sondern aktiv/inaktiv geschaltet.</li>
+  <li>Vollständiges Löschen ist nur möglich, wenn der Lieferant in keinen Buchungen, Reparaturen oder Bestellungen verwendet wird.</li>
   <li>Wareneingänge können einem Lieferanten und einer Lieferscheinnummer zugeordnet werden.</li>
   <li>Die Detailseite zeigt die letzten Wareneingänge pro Lieferant.</li>
 </ul>

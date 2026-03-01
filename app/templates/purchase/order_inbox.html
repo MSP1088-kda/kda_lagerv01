@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>PO-Inbox</h1>
+
+  <form method="get" action="/purchase/inbox" class="form compact">
+    <div class="grid2">
+      <div>
+        <label>Filter</label>
+        <input type="text" name="q" value="{{ q }}" placeholder="z. B. PO-">
+      </div>
+      <div class="row right">
+        <button class="btn primary" type="submit">Filtern</button>
+        <a class="btn" href="/purchase/inbox">Zurücksetzen</a>
+        <a class="btn" href="/purchase/orders">Bestellungen</a>
+      </div>
+    </div>
+  </form>
+
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 80px 1fr 1.2fr 1fr 180px;">
+      <div>ID</div>
+      <div>Betreff</div>
+      <div>Snippet</div>
+      <div>PO-Treffer</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      {% set msg = row.msg %}
+      <div class="tr" style="grid-template-columns: 80px 1fr 1.2fr 1fr 180px;">
+        <div>{{ msg.id }}</div>
+        <div>{{ msg.subject or '-' }}</div>
+        <div>{{ msg.snippet or '-' }}</div>
+        <div>
+          {% for po in row.po_numbers %}
+            {% if orders_by_po.get(po) %}
+              <a class="btn small" href="/purchase/orders/{{ orders_by_po.get(po).id }}">{{ po }}</a>
+            {% else %}
+              <span>{{ po }}</span>
+            {% endif %}
+          {% endfor %}
+          {% if not row.po_numbers %}
+            <span class="muted">-</span>
+          {% endif %}
+        </div>
+        <div>
+          <a class="btn small" href="/settings/email/inbox/{{ msg.id }}">Mail öffnen</a>
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Keine E-Mails gefunden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Zuordnung erfolgt über die PO-Nummer im Betreff oder Inhalt.</li>
+  <li>Von hier springst du direkt zur passenden Bestellung.</li>
+  <li>Wenn keine PO gefunden wird, pflege die Zuordnung manuell in der Bestellung.</li>
+</ul>
+{% endblock %}

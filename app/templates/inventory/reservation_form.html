@@ -9,7 +9,7 @@
     <input id="reservation_product_filter" type="text" placeholder="Tippen zum Filtern... (Materialnummer/EAN/Bezeichnung)">
     <select id="reservation_product_id" name="product_id" required>
       {% for p in products %}
-        <option value="{{ p.id }}" {% if selected_product_id==p.id %}selected{% endif %}>{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.ean %} | EAN {{ p.ean }}{% endif %}{% if p.sales_name %} | {{ p.sales_name }}{% endif %}</option>
+        <option value="{{ p.id }}" {% if selected_product_id==p.id %}selected{% endif %}>{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.ean %} | EAN {{ p.ean }}{% endif %}{% if p.sales_name %} | {{ p.sales_name }}{% endif %}{% if not p.active %} | (archiviert){% endif %}</option>
       {% endfor %}
     </select>
 

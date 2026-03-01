@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Listenansicht: Top-3 Merkmale</h1>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {% set slots = slot_values or {} %}
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="/stammdaten/listenansicht" class="form" data-first-error="{% if fe.get('kind_id') %}listen_kind_id{% elif fe.get('slot_1') %}listen_slot_1{% elif fe.get('slot_2') %}listen_slot_2{% elif fe.get('slot_3') %}listen_slot_3{% endif %}">
+    <label for="listen_kind_id">Geräteart</label>
+    <select id="listen_kind_id" name="kind_id" class="{% if fe.get('kind_id') %}is-error{% endif %}" onchange="window.location.href='/stammdaten/listenansicht?kind_id=' + this.value" required>
+      <option value="0">Bitte wählen</option>
+      {% for kind in kinds %}
+        {% set selected_kind = f.old(fd, 'kind_id', selected_kind_id) | int %}
+        <option value="{{ kind.id }}" {% if selected_kind == kind.id %}selected{% endif %}>{{ kind.name }}</option>
+      {% endfor %}
+    </select>
+    {{ f.field_error(fe, 'kind_id') }}
+
+    <div class="grid3">
+      {% for slot in [1, 2, 3] %}
+      <div>
+        <label for="listen_slot_{{ slot }}">Merkmal {{ slot }}</label>
+        <select id="listen_slot_{{ slot }}" name="slot_{{ slot }}" class="{% if fe.get('slot_' ~ slot) %}is-error{% endif %}">
+          <option value="0">-</option>
+          {% set selected_attr = f.old(fd, 'slot_' ~ slot, slots.get(slot, 0)) | int %}
+          {% for attr in attrs %}
+            <option value="{{ attr.id }}" {% if selected_attr == attr.id %}selected{% endif %}>{{ attr.name }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'slot_' ~ slot) }}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/stammdaten/lieferanten">Zurück</a>
+    </div>
+  </form>
+
+  {% if not attrs and selected_kind_id %}
+    <div class="hint">Für diese Geräteart sind noch keine passenden Attribute hinterlegt.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wähle je Geräteart bis zu drei Merkmale für Listenansichten.</li>
+  <li>Es werden nur Attribute angeboten, die zur Geräteart passen.</li>
+  <li>Alles ist per Tab/Enter vollständig bedienbar.</li>
+</ul>
+{% endblock %}

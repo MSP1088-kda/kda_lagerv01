@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Bestellung {{ order.po_number }}</h1>
+  {% set rfd = receive_form_data or {} %}
+  {% set rfe = receive_form_errors or {} %}
+  {% if rfe.get('__all__') %}
+    <div class="flash-item flash-error">{{ rfe.get('__all__') }}</div>
+  {% endif %}
+
+  <div class="box">
+    <div class="box-title">Kopf</div>
+    <div class="box-body">
+      <div><b>Status:</b> {{ purchase_status_label(order.status) }}</div>
+      <div><b>Lieferant:</b> {{ supplier.name if supplier else '-' }}</div>
+      <div><b>E-Mail:</b> {{ supplier.email if supplier and supplier.email else '-' }}</div>
+      <div><b>Notiz:</b> {{ order.note or '-' }}</div>
+      <div class="row">
+        <form method="post" action="/purchase/orders/{{ order.id }}/send" class="inline">
+          <button class="btn" type="submit">Per E-Mail senden</button>
+        </form>
+        <form method="post" action="/purchase/orders/{{ order.id }}/confirm" class="inline">
+          <button class="btn" type="submit">Als Auftragsbestätigung markieren</button>
+        </form>
+        <a class="btn" href="/purchase/orders">Zur Liste</a>
+      </div>
+    </div>
+  </div>
+
+  <h2>Positionen</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 70px 1.4fr 120px 160px 160px 170px;">
+      <div>ID</div>
+      <div>Produkt</div>
+      <div>Menge</div>
+      <div>Erwarteter EK</div>
+      <div>Bestätigter EK</div>
+      <div>Aktion</div>
+    </div>
+    {% for line in lines %}
+      {% set p = products.get(line.product_id) %}
+      <div class="tr" style="grid-template-columns: 70px 1.4fr 120px 160px 160px 170px;">
+        <div>{{ line.id }}</div>
+        <div>
+          {% if p %}
+          <a href="/catalog/products/{{ p.id }}">{{ p.name }}</a>
+          {% if p.material_no %}<div class="muted">{{ p.material_no }}</div>{% endif %}
+          {% else %}
+          {{ line.product_id }}
+          {% endif %}
+        </div>
+        <div>{{ line.qty }}</div>
+        <div>{{ line.expected_cost_cents|eur_cents if line.expected_cost_cents is not none else '-' }}</div>
+        <div>{{ line.confirmed_cost_cents|eur_cents if line.confirmed_cost_cents is not none else '-' }}</div>
+        <div>
+          <form method="post" action="/purchase/orders/{{ order.id }}/lines/{{ line.id }}/cost" class="form compact">
+            <input type="text" name="expected_cost" placeholder="Erwartet" value="{{ (line.expected_cost_cents|eur_cents).replace(' €','') if line.expected_cost_cents is not none else '' }}">
+            <input type="text" name="confirmed_cost" placeholder="Bestätigt" value="{{ (line.confirmed_cost_cents|eur_cents).replace(' €','') if line.confirmed_cost_cents is not none else '' }}">
+            <button class="btn small" type="submit">Speichern</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+    {% if not lines %}
+      <div class="muted">Keine Positionen vorhanden.</div>
+    {% endif %}
+  </div>
+
+  <h2>Wareneingang buchen</h2>
+  <form method="post" action="/purchase/orders/{{ order.id }}/receive" class="form compact" data-first-error="{{ first_error_field_id or '' }}">
+    <div class="grid3">
+      <div>
+        <label for="po_receive_warehouse_to_id">Ziel-Lager</label>
+        <select id="po_receive_warehouse_to_id" name="warehouse_to_id" class="{% if rfe.get('warehouse_to_id') %}is-error{% endif %}" required>
+          <option value="0">Bitte wählen</option>
+          {% for w in warehouses %}
+            <option value="{{ w.id }}" {% if rfd.get('warehouse_to_id', '0')|int == w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+        {% if rfe.get('warehouse_to_id') %}<div class="flash-item flash-error">{{ rfe.get('warehouse_to_id') }}</div>{% endif %}
+      </div>
+      <div>
+        <label for="po_receive_condition">Zustand</label>
+        <select id="po_receive_condition" name="condition" class="{% if rfe.get('condition') %}is-error{% endif %}" required>
+          {% for c in condition_defs %}
+            <option value="{{ c.code }}" {% if rfd.get('condition', 'A_WARE') == c.code %}selected{% endif %}>{{ c.label_de }}</option>
+          {% endfor %}
+        </select>
+        {% if rfe.get('condition') %}<div class="flash-item flash-error">{{ rfe.get('condition') }}</div>{% endif %}
+      </div>
+      <div>
+        <label for="po_receive_delivery_note_no">Lieferschein-Nr. (optional)</label>
+        <input id="po_receive_delivery_note_no" type="text" name="delivery_note_no" value="{{ rfd.get('delivery_note_no', '') }}">
+      </div>
+    </div>
+    <button class="btn primary" type="submit" onclick="return confirm('Wareneingang für alle Positionen buchen?');">Wareneingang buchen</button>
+  </form>
+
+  <h2>Zugeordnete E-Mails</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 90px 1fr 1.2fr 170px;">
+      <div>ID</div>
+      <div>Betreff</div>
+      <div>Snippet</div>
+      <div>Aktion</div>
+    </div>
+    {% for m in linked_messages %}
+      <div class="tr" style="grid-template-columns: 90px 1fr 1.2fr 170px;">
+        <div>{{ m.id }}</div>
+        <div>{{ m.subject or '-' }}</div>
+        <div>{{ m.snippet or '-' }}</div>
+        <div><a class="btn small" href="/settings/email/inbox/{{ m.id }}">Mail öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not linked_messages %}
+      <div class="muted">Keine zugeordneten E-Mails gefunden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>PO-Nummer steht im Betreff der Lieferantenmail.</li>
+  <li>Bestätigter EK aktualisiert direkt den letzten EK am Produkt.</li>
+  <li>Wareneingang bucht alle Positionen per Journalbuchung ein.</li>
+</ul>
+{% endblock %}

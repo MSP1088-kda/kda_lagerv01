@@ -1,0 +1,40 @@
+{% macro old(form_data, key, default='') -%}
+  {%- if form_data and (key in form_data) -%}
+    {%- set value = form_data.get(key) -%}
+    {%- if value is sameas none -%}
+      {{- default -}}
+    {%- elif value is sequence and value is not string -%}
+      {{- value[0] if value else default -}}
+    {%- else -%}
+      {{- value -}}
+    {%- endif -%}
+  {%- else -%}
+    {{- default -}}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro is_checked(form_data, key, default=False) -%}
+  {%- if form_data and (key in form_data) -%}
+    {%- set value = form_data.get(key) -%}
+    {%- if value is sequence and value is not string -%}
+      {{- 'checked' if value|length > 0 else '' -}}
+    {%- else -%}
+      {%- set raw = (value|string|lower).strip() -%}
+      {{- 'checked' if raw in ('1', 'true', 'on', 'yes', 'ja', 'x') else '' -}}
+    {%- endif -%}
+  {%- else -%}
+    {{- 'checked' if default else '' -}}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro field_error(errors, key) -%}
+  {%- if errors and errors.get(key) -%}
+    <div class="flash-item flash-error">{{ errors.get(key) }}</div>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro render_errors(errors) -%}
+  {%- if errors and errors.get('__all__') -%}
+    <div class="flash-item flash-error">{{ errors.get('__all__') }}</div>
+  {%- endif -%}
+{%- endmacro %}

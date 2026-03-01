@@ -29,7 +29,7 @@
   </form>
 
   <div class="table">
-    <div class="tr th" style="grid-template-columns: 1fr 1.4fr 120px 120px 220px;">
+    <div class="tr th" style="grid-template-columns: 1fr 1.4fr 120px 120px 320px;">
       <div>Code</div>
       <div>Bezeichnung</div>
       <div>Sort</div>
@@ -37,7 +37,7 @@
       <div>Aktionen</div>
     </div>
     {% for row in rows %}
-      <div class="tr" style="grid-template-columns: 1fr 1.4fr 120px 120px 220px;">
+      <div class="tr" style="grid-template-columns: 1fr 1.4fr 120px 120px 320px;">
         <div>{{ row.code }}</div>
         <div>{{ row.label_de }}</div>
         <div>{{ row.sort_order }}</div>
@@ -46,6 +46,9 @@
           <a class="btn small" href="/stammdaten/zustaende/{{ row.code }}/edit">Bearbeiten</a>
           <form method="post" action="/stammdaten/zustaende/{{ row.code }}/toggle" class="inline">
             <button class="btn small" type="submit">{{ 'Deaktivieren' if row.active else 'Aktivieren' }}</button>
+          </form>
+          <form method="post" action="/stammdaten/zustaende/{{ row.code }}/delete" class="inline" onsubmit="return confirm('Zustand wirklich vollständig löschen?');">
+            <button class="btn small" type="submit">Löschen</button>
           </form>
         </div>
       </div>
@@ -60,7 +63,7 @@
 {% block help %}
 <ul>
   <li>Zustände steuern Wareneingang, Reservierung und Bestandsanzeige.</li>
-  <li>Code bleibt stabil, nur Label/Aktiv-Status wird im Alltag angepasst.</li>
+  <li>Vollständiges Löschen ist nur möglich, wenn der Zustand nirgends verwendet wird.</li>
   <li>Bestehende Bewegungen behalten ihren Zustandscode.</li>
 </ul>
 {% endblock %}

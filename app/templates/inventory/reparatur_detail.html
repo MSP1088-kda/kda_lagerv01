@@ -6,24 +6,54 @@
   <div class="box">
     <div class="box-title">Kopf</div>
     <div class="box-body">
-      <div><b>Status:</b> {{ order.status }}</div>
+      <div><b>Status:</b> {{ repair_status_label.get(order.status, order.status) }}</div>
       <div><b>Referenz:</b> {{ order.reference or ('REP-' ~ order.id) }}</div>
       <div><b>Partner:</b> {{ supplier.name if supplier else 'Interne Werkstatt' }}</div>
       <div><b>Notiz:</b> {{ order.note or '-' }}</div>
       <div class="row">
         {% if order.status == 'open' %}
-          <form method="post" action="/inventory/reparaturen/{{ order.id }}/in_repair" class="inline">
+          <form id="repairSendForm" method="post" action="/inventory/reparaturen/{{ order.id }}/send" class="inline">
             <button class="btn primary" type="submit">In Reparatur buchen</button>
           </form>
         {% endif %}
         {% if order.status == 'in_repair' %}
-          <form method="post" action="/inventory/reparaturen/{{ order.id }}/return" class="inline">
+          <form id="repairReturnForm" method="post" action="/inventory/reparaturen/{{ order.id }}/return" class="inline">
             <button class="btn primary" type="submit">Zurückbuchen</button>
           </form>
         {% endif %}
         <a class="btn" href="/inventory/reparaturen">Zurück zur Liste</a>
       </div>
     </div>
+  </div>
+
+  <h2>Fotos</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 90px 1fr 220px;">
+      <div>ID</div>
+      <div>Datei</div>
+      <div>Vorschau</div>
+    </div>
+    {% for a in attachments %}
+      <div class="tr" style="grid-template-columns: 90px 1fr 220px;">
+        <div>{{ a.id }}</div>
+        <div>
+          <a href="/inventory/reparaturen/{{ order.id }}/attachments/{{ a.id }}">{{ a.original_name or a.filename }}</a>
+          <div class="muted">{{ a.mime_type or '-' }} | {{ a.size_bytes }} Bytes</div>
+        </div>
+        <div>
+          {% if a.mime_type and a.mime_type.startswith('image/') %}
+          <a href="/inventory/reparaturen/{{ order.id }}/attachments/{{ a.id }}">
+            <img src="/inventory/reparaturen/{{ order.id }}/attachments/{{ a.id }}" alt="Foto {{ a.id }}" style="max-height:100px;max-width:200px;">
+          </a>
+          {% else %}
+          <span class="muted">Keine Bildvorschau</span>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not attachments %}
+      <div class="muted">Keine Fotos vorhanden.</div>
+    {% endif %}
   </div>
 
   <h2>Positionen</h2>
@@ -60,7 +90,9 @@
 
 {% block help %}
 <ul>
+  <li>Taste I bucht den Auftrag in Reparatur, Taste Z bucht zurück.</li>
   <li>"In Reparatur buchen" erzeugt pro Position zwei Buchungen: Issue aus Quelle und Receipt ins Reparaturlager.</li>
   <li>"Zurückbuchen" erzeugt ebenfalls zwei Buchungen und setzt den Ausgangszustand je Position.</li>
+  <li>Fotos aus dem Auftrag werden hier als Vorschau und Download angezeigt.</li>
 </ul>
 {% endblock %}

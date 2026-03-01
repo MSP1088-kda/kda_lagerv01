@@ -19,57 +19,65 @@
     </div>
   </div>
 
-  <h2>Häufig gelieferte Produkte</h2>
-  <div class="table">
-    <div class="tr th" style="grid-template-columns: 80px 1.8fr 140px;">
-      <div>ID</div>
-      <div>Produkt</div>
-      <div>Wareneingänge</div>
+  <h2>Bestellungen (Wareneingänge)</h2>
+  <div class="box">
+    <div class="box-body">
+      <div><b>Positionen:</b> {{ tx_rows|length }}</div>
+      <div><b>Gesamtmenge:</b> {{ total_qty }}</div>
+      <div><b>Gesamtsumme:</b> {% if total_value_known %}{{ total_value_cents|eur_cents }}{% else %}-{% endif %}</div>
     </div>
-    {% for item in top_products %}
-      <div class="tr" style="grid-template-columns: 80px 1.8fr 140px;">
-        <div>{{ item.product.id }}</div>
-        <div>{{ item.product.name }}</div>
-        <div>{{ item.count }}</div>
-      </div>
-    {% endfor %}
-    {% if not top_products %}
-      <div class="muted">Noch keine Wareneingänge vorhanden.</div>
-    {% endif %}
   </div>
 
-  <h2>Letzte Wareneingänge</h2>
-  <div class="table">
-    <div class="tr th" style="grid-template-columns: 180px 1.4fr 1fr 120px 1fr 1fr;">
-      <div>Zeitpunkt</div>
-      <div>Produkt</div>
-      <div>Ziel-Lager</div>
-      <div>Menge</div>
-      <div>Zustand</div>
-      <div>Lieferschein / Ref</div>
-    </div>
-    {% for tx in tx_rows %}
-      {% set product = products.get(tx.product_id) %}
-      {% set wh = warehouses.get(tx.warehouse_to_id) if tx.warehouse_to_id else None %}
-      <div class="tr" style="grid-template-columns: 180px 1.4fr 1fr 120px 1fr 1fr;">
-        <div>{{ tx.created_at }}</div>
-        <div>{{ product.name if product else tx.product_id }}</div>
-        <div>{{ wh.name if wh else '-' }}</div>
-        <div>{{ tx.quantity }}</div>
-        <div>{{ condition_labels.get(tx.condition, tx.condition) }}</div>
-        <div>{{ tx.delivery_note_no or '-' }}{% if tx.reference %} / {{ tx.reference }}{% endif %}</div>
+  {% for order in orders %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">
+        {% if order.delivery_note_no %}
+          Belegnummer: {{ order.delivery_note_no }}
+        {% else %}
+          Ohne Belegnummer
+        {% endif %}
       </div>
-    {% endfor %}
-    {% if not tx_rows %}
-      <div class="muted">Keine Wareneingänge gefunden.</div>
-    {% endif %}
-  </div>
+      <div class="box-body">
+        <div class="row">
+          <div><b>Positionen:</b> {{ order.rows|length }}</div>
+          <div><b>Menge gesamt:</b> {{ order.qty_total }}</div>
+          <div><b>Summe:</b> {% if order.sum_known %}{{ order.sum_cents|eur_cents }}{% else %}-{% endif %}</div>
+        </div>
+
+        <div class="table">
+          <div class="tr th" style="grid-template-columns: 170px 1.8fr 110px 140px 140px 1fr;">
+            <div>Datum</div>
+            <div>Gerät / Artikel</div>
+            <div>Menge</div>
+            <div>Preis/Stück</div>
+            <div>Zeilensumme</div>
+            <div>Zustand</div>
+          </div>
+          {% for item in order.rows %}
+            <div class="tr" style="grid-template-columns: 170px 1.8fr 110px 140px 140px 1fr;">
+              <div>{{ item.tx.created_at }}</div>
+              <div>{{ item.product_label }}</div>
+              <div>{{ item.quantity }}</div>
+              <div>{% if item.unit_cost is not none %}{{ item.unit_cost|eur_cents }}{% else %}-{% endif %}</div>
+              <div>{% if item.line_sum_cents is not none %}{{ item.line_sum_cents|eur_cents }}{% else %}-{% endif %}</div>
+              <div>{{ item.condition_label }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+
+  {% if not orders %}
+    <div class="muted">Keine Wareneingänge gefunden.</div>
+  {% endif %}
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Hier siehst du Wareneingänge dieses Lieferanten (bis zu 200 Einträge).</li>
-  <li>Die Liste hilft bei Rückfragen zu Lieferungen und Lieferscheinnummern.</li>
+  <li>Wareneingänge werden nach Belegnummer gruppiert.</li>
+  <li>Preis- und Summenspalten erscheinen nur, wenn Einkaufspreise gepflegt sind.</li>
+  <li>Großgeräte zeigen Verkaufsbezeichnung und Marke.</li>
 </ul>
 {% endblock %}

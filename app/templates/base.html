@@ -16,19 +16,14 @@
     </div>
 
     {% if user %}
+    {% set current_path = request.url.path %}
     <nav class="nav nav-desktop">
-      <a href="/dashboard" data-hotkey="Alt+1">[1] Übersicht</a>
-      <a href="/catalog/products" data-hotkey="Alt+2">[2] Suchen</a>
-      {% if role_flags.can_inventory %}
-      <a href="/inventory/transactions/new?tx_type=receipt" data-hotkey="Alt+3">[3] Wareneingang</a>
-      <a href="/inventory/stock" data-hotkey="Alt+4">[4] Lager</a>
-      {% endif %}
-      <a href="/catalog/products" data-hotkey="Alt+5">[5] Katalog</a>
-      {% if role_flags.can_settings %}
-      <a href="/stammdaten/formularregeln" data-hotkey="Alt+6">[6] Stammdaten</a>
-      <a href="/settings/company" data-hotkey="Alt+7">[7] System</a>
-      <a href="/system/loadbee">Hersteller-Details</a>
-      {% endif %}
+      {% for item in nav_top_items %}
+        {% set active = current_path == item.path_base or (item.path_base != '/' and current_path.startswith(item.path_base)) %}
+        <a href="{{ item.path }}"{% if active %} class="active"{% endif %}{% if item.hotkey %} data-hotkey="{{ item.hotkey }}"{% endif %}>
+          {% if item.hotkey and item.hotkey.startswith('Alt+') and item.hotkey|length >= 5 %}[{{ item.hotkey[4:] }}] {% endif %}{{ item.label_de }}
+        </a>
+      {% endfor %}
       <form action="/logout" method="post" class="inline">
         <button type="submit" class="linklike" title="Abmelden">[0] Abmelden</button>
       </form>
@@ -37,12 +32,17 @@
   </header>
 
   {% if user %}
-  {% set more_url = '/stammdaten/formularregeln' if role_flags.can_settings else '/inventory/warehouses' %}
   <nav class="nav nav-mobile bottomnav">
-    <a href="/dashboard">Übersicht</a>
-    <a href="/catalog/products">Suchen</a>
-    <a href="/inventory/stock">Lager</a>
-    <a href="{{ more_url }}">Mehr</a>
+    {% for item in nav_mobile_items %}
+      {% set mobile_label = item.label_de %}
+      {% if item.path_base == '/dashboard' %}{% set mobile_label = 'Übersicht' %}{% endif %}
+      {% if item.path_base == '/suche' %}{% set mobile_label = 'Suchen' %}{% endif %}
+      {% if item.path_base == '/inventory/transactions/new' %}{% set mobile_label = 'Einbuchen' %}{% endif %}
+      {% if item.path_base == '/inventory/stock' %}{% set mobile_label = 'Lager' %}{% endif %}
+      {% if item.path_base == '/mobile/quick' %}{% set mobile_label = 'Schnell' %}{% endif %}
+      {% if item.path_base == '/menu' %}{% set mobile_label = 'Mehr' %}{% endif %}
+      <a href="{{ item.path }}">{{ mobile_label }}</a>
+    {% endfor %}
   </nav>
   {% endif %}
 
@@ -65,6 +65,12 @@
       <div class="hint">Enter: Öffnen | Esc: Schließen</div>
     </div>
   </div>
+  {% if user %}
+  <script>
+    window.__navCommands = {{ nav_commands | tojson }};
+    window.__navHotkeys = {{ nav_hotkeys | tojson }};
+  </script>
+  {% endif %}
 
   <footer class="footer">
     <div class="footer-left">
@@ -72,7 +78,13 @@
     </div>
     <div class="footer-right">
       {% if user %}
-      <span class="muted">Benutzer: {{ user.email }} ({{ user.role }}) | / Suche | Strg+K Kommando</span>
+      <form method="post" action="/ui/customer_view/toggle" class="inline">
+        <input type="hidden" name="next" value="{{ request.url.path }}">
+        <button id="customerViewState" class="btn small" type="submit" title="F9 schaltet um">
+          Kundenansicht: {% if customer_view %}AN{% else %}AUS{% endif %}
+        </button>
+      </form>
+      <span class="muted">Benutzer: {{ user.email }} ({{ user.role }}) | / Suche | Strg+K Kommando | F9 Kundenansicht</span>
       {% else %}
       <span class="muted">/ = Suche, Strg+K = Kommando</span>
       {% endif %}
@@ -86,7 +98,7 @@
   <div class="help-panel-body">
     {% block help %}
     <ul>
-      <li>Nutze Alt+1 bis Alt+7 für die Hauptnavigation.</li>
+      <li>Nutze Alt+Ziffern für die Hauptnavigation.</li>
       <li>Mit / springst du in das Suchfeld der aktuellen Seite.</li>
       <li>Mit Strg+K oder F2 öffnest du die Kommando-Palette.</li>
       <li>Mit F1 blendest du diese Hilfe ein oder aus.</li>

@@ -2,91 +2,154 @@
 {% block content %}
 <div class="panel">
   <h1>Reparaturauftrag neu</h1>
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {% if fe.get('__all__') %}
+    <div class="flash-item flash-error">{{ fe.get('__all__') }}</div>
+  {% endif %}
 
-  <form method="post" action="/inventory/reparaturen/new" class="form">
+  <form method="post" action="/inventory/reparaturen/new" class="form" enctype="multipart/form-data" data-first-error="{{ first_error_field_id or '' }}">
     <div class="grid2">
       <div>
-        <label>Reparaturpartner (Lieferant)</label>
-        <select name="supplier_id">
+        <label for="repair_supplier_id">Reparaturpartner (Lieferant)</label>
+        <select id="repair_supplier_id" name="supplier_id" class="{% if fe.get('supplier_id') %}is-error{% endif %}">
           <option value="0">Interne Werkstatt</option>
           {% for s in suppliers %}
-            <option value="{{ s.id }}">{{ s.name }}</option>
+            <option value="{{ s.id }}" {% if fd.get('supplier_id', '0')|int == s.id %}selected{% endif %}>{{ s.name }}</option>
           {% endfor %}
         </select>
+        {% if fe.get('supplier_id') %}<div class="flash-item flash-error">{{ fe.get('supplier_id') }}</div>{% endif %}
       </div>
       <div>
-        <label>Referenz (optional)</label>
-        <input type="text" name="reference" placeholder="z. B. REP-2026-0001">
+        <label for="repair_reference">Referenz (optional)</label>
+        <input id="repair_reference" type="text" name="reference" class="{% if fe.get('reference') %}is-error{% endif %}" value="{{ fd.get('reference', '') }}" placeholder="z. B. REP-2026-0001">
+        {% if fe.get('reference') %}<div class="flash-item flash-error">{{ fe.get('reference') }}</div>{% endif %}
       </div>
     </div>
 
-    <label>Notiz (optional)</label>
-    <textarea name="note" rows="2"></textarea>
+    <label for="repair_note">Notiz (optional)</label>
+    <textarea id="repair_note" name="note" rows="2">{{ fd.get('note', '') }}</textarea>
 
     <h2>Position</h2>
-    <label for="repair_product_filter">Produkt filtern</label>
+    <label for="repair_product_filter">Ersatzteil auswählen</label>
     <input id="repair_product_filter" type="text" placeholder="Tippen zum Filtern...">
-    <select id="repair_product_id" name="product_id" required>
+    <select id="repair_product_id" name="product_id" class="{% if fe.get('product_id') %}is-error{% endif %}">
+      <option value="0">Bitte wählen</option>
       {% for p in products %}
-        <option value="{{ p.id }}">{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.sales_name %} | {{ p.sales_name }}{% endif %}</option>
+        <option value="{{ p.id }}" {% if fd.get('product_id', '0')|int == p.id %}selected{% endif %}>
+          {{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.sales_name %} | {{ p.sales_name }}{% endif %}{% if not p.active %} | (archiviert){% endif %}
+        </option>
       {% endfor %}
     </select>
+    {% if fe.get('product_id') %}<div class="flash-item flash-error">{{ fe.get('product_id') }}</div>{% endif %}
+    <label class="check">
+      <input id="repair_create_product_chk" type="checkbox" name="create_product" value="1" {% if fd.get('create_product', '') == '1' %}checked{% endif %}>
+      Nicht gefunden? Ersatzteil neu anlegen
+    </label>
+
+    <div id="repair_create_product_box" class="box" {% if fd.get('create_product', '') != '1' %}hidden{% endif %}>
+      <div class="box-title">Neues Ersatzteil</div>
+      <div class="box-body">
+        <div class="grid2">
+          <div>
+            <label for="repair_new_product_name">Bezeichnung *</label>
+            <input id="repair_new_product_name" type="text" name="new_product_name" class="{% if fe.get('new_product_name') %}is-error{% endif %}" value="{{ fd.get('new_product_name', '') }}">
+            {% if fe.get('new_product_name') %}<div class="flash-item flash-error">{{ fe.get('new_product_name') }}</div>{% endif %}
+          </div>
+          <div>
+            <label for="repair_new_product_material_no">Materialnummer *</label>
+            <input id="repair_new_product_material_no" type="text" name="new_product_material_no" class="{% if fe.get('new_product_material_no') %}is-error{% endif %}" value="{{ fd.get('new_product_material_no', '') }}">
+            {% if fe.get('new_product_material_no') %}<div class="flash-item flash-error">{{ fe.get('new_product_material_no') }}</div>{% endif %}
+          </div>
+          <div>
+            <label for="repair_new_product_manufacturer">Hersteller (optional)</label>
+            <input id="repair_new_product_manufacturer" type="text" name="new_product_manufacturer" value="{{ fd.get('new_product_manufacturer', '') }}">
+          </div>
+          <div>
+            <label for="repair_new_product_ean">EAN (optional)</label>
+            <input id="repair_new_product_ean" type="text" name="new_product_ean" class="{% if fe.get('new_product_ean') %}is-error{% endif %}" value="{{ fd.get('new_product_ean', '') }}">
+            {% if fe.get('new_product_ean') %}<div class="flash-item flash-error">{{ fe.get('new_product_ean') }}</div>{% endif %}
+          </div>
+        </div>
+        <label for="repair_new_product_description">Beschreibung (optional)</label>
+        <textarea id="repair_new_product_description" name="new_product_description" rows="2">{{ fd.get('new_product_description', '') }}</textarea>
+      </div>
+    </div>
 
     <div class="grid3">
       <div>
-        <label>Menge</label>
-        <input type="number" name="qty" min="1" value="1" required>
+        <label for="repair_qty">Menge</label>
+        <input id="repair_qty" type="number" name="qty" class="{% if fe.get('qty') %}is-error{% endif %}" min="1" value="{{ fd.get('qty', '1') }}" required>
+        {% if fe.get('qty') %}<div class="flash-item flash-error">{{ fe.get('qty') }}</div>{% endif %}
       </div>
       <div>
-        <label>Quelle-Lager</label>
-        <select name="warehouse_from_id" required>
+        <label for="repair_warehouse_from_id">Quelle-Lager</label>
+        <select id="repair_warehouse_from_id" name="warehouse_from_id" class="{% if fe.get('warehouse_from_id') %}is-error{% endif %}" required>
           <option value="0">Bitte wählen</option>
           {% for w in warehouses %}
-            <option value="{{ w.id }}">{{ w.name }}</option>
+            <option value="{{ w.id }}" {% if fd.get('warehouse_from_id', '0')|int == w.id %}selected{% endif %}>{{ w.name }}</option>
           {% endfor %}
         </select>
+        {% if fe.get('warehouse_from_id') %}<div class="flash-item flash-error">{{ fe.get('warehouse_from_id') }}</div>{% endif %}
       </div>
       <div>
-        <label>Ziel-Lager nach Rückkehr (optional)</label>
-        <select name="warehouse_to_id">
+        <label for="repair_warehouse_to_id">Ziel-Lager nach Rückkehr (optional)</label>
+        <select id="repair_warehouse_to_id" name="warehouse_to_id" class="{% if fe.get('warehouse_to_id') %}is-error{% endif %}">
           <option value="0">Quelle-Lager verwenden</option>
           {% for w in warehouses %}
-            <option value="{{ w.id }}">{{ w.name }}</option>
+            <option value="{{ w.id }}" {% if fd.get('warehouse_to_id', '0')|int == w.id %}selected{% endif %}>{{ w.name }}</option>
           {% endfor %}
         </select>
+        {% if fe.get('warehouse_to_id') %}<div class="flash-item flash-error">{{ fe.get('warehouse_to_id') }}</div>{% endif %}
       </div>
     </div>
 
     <div class="grid2">
       <div>
-        <label>Eingangs-Zustand</label>
-        <select name="condition_in" required>
+        <label for="repair_condition_in">Eingangs-Zustand</label>
+        <select id="repair_condition_in" name="condition_in" class="{% if fe.get('condition_in') %}is-error{% endif %}" required>
           {% for c in condition_defs %}
-            <option value="{{ c.code }}" {% if c.code == default_condition_in %}selected{% endif %}>{{ c.label_de }}</option>
+            <option value="{{ c.code }}" {% if fd.get('condition_in', default_condition_in) == c.code %}selected{% endif %}>{{ c.label_de }}</option>
           {% endfor %}
         </select>
+        {% if fe.get('condition_in') %}<div class="flash-item flash-error">{{ fe.get('condition_in') }}</div>{% endif %}
       </div>
       <div>
-        <label>Ausgangs-Zustand</label>
-        <select name="condition_out" required>
+        <label for="repair_condition_out">Ausgangs-Zustand</label>
+        <select id="repair_condition_out" name="condition_out" class="{% if fe.get('condition_out') %}is-error{% endif %}" required>
           {% for c in condition_defs %}
-            <option value="{{ c.code }}" {% if c.code == default_condition_out %}selected{% endif %}>{{ c.label_de }}</option>
+            <option value="{{ c.code }}" {% if fd.get('condition_out', default_condition_out) == c.code %}selected{% endif %}>{{ c.label_de }}</option>
           {% endfor %}
         </select>
+        {% if fe.get('condition_out') %}<div class="flash-item flash-error">{{ fe.get('condition_out') }}</div>{% endif %}
       </div>
     </div>
+
+    <h2>Foto (optional)</h2>
+    <label for="repair_photo">Schadenfoto aufnehmen / hochladen</label>
+    <input id="repair_photo" type="file" name="photo" accept="image/*" capture="environment">
 
     <div class="row">
       <button class="btn primary" type="submit">Reparaturauftrag anlegen</button>
       <a class="btn" href="/inventory/reparaturen">Zurück</a>
     </div>
   </form>
+
+  {% if draft_key %}
+  <form method="post" action="/ui/draft/clear" class="row inline" data-draft-clear-form="1">
+    <input type="hidden" name="key" value="{{ draft_key }}">
+    <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+    <button class="btn" type="submit">Entwurf löschen</button>
+  </form>
+  {% endif %}
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
   <li>Der Auftrag wird zunächst als "open" angelegt.</li>
+  <li>Foto aufnehmen -> Reparatur speichern.</li>
+  <li>Fehlt ein Ersatzteil, kannst du es direkt hier inline anlegen.</li>
   <li>Auf der Detailseite buchst du mit einem Klick "In Reparatur" und später "Zurückbuchen".</li>
 </ul>
 {% endblock %}

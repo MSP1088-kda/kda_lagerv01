@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Menü</h1>
+  <div class="hint">Alle erreichbaren Bereiche für deine Rolle.</div>
+
+  {% for group in menu_groups %}
+    <h2>{{ group['label_de'] }}</h2>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 70px 1.4fr 1.2fr 1fr;">
+        <div>#</div>
+        <div>Bereich</div>
+        <div>Hotkey</div>
+        <div>Aktion</div>
+      </div>
+      {% for item in group['items'] %}
+        <div class="tr" style="grid-template-columns: 70px 1.4fr 1.2fr 1fr;">
+          <div>{{ loop.index }}</div>
+          <div>{{ item.label_de }}</div>
+          <div>{{ item.hotkey or '-' }}</div>
+          <div><a class="btn small" href="{{ item.path }}">Öffnen</a></div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+
+  {% if not menu_groups %}
+    <div class="muted">Keine Menüpunkte verfügbar.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Strg+K öffnet die Kommando-Palette auf jeder Seite.</li>
+  <li>Alt+Ziffern springen in häufige Bereiche.</li>
+  <li>Mit Tab und Enter ist die Seite vollständig bedienbar.</li>
+</ul>
+{% endblock %}
