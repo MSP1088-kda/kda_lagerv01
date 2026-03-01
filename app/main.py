@@ -141,7 +141,7 @@ def _compute_build_id() -> str:
             continue
     return h.hexdigest()[:10]
 
-APP_VERSION = os.environ.get("APP_VERSION", "0.1.4")
+APP_VERSION = os.environ.get("APP_VERSION", "0.1.5")
 _env_build = (os.environ.get("APP_BUILD") or "").strip()
 APP_BUILD = _env_build if _env_build and _env_build.lower() not in ("dev", "local") else _compute_build_id()
 GIT_SHA = os.environ.get("GIT_SHA", "local")
@@ -2859,13 +2859,6 @@ def _csv_value(row: dict[str, str], column: str | None) -> str:
     return (row.get(column) or "").strip()
 
 
-def _csv_value_or_default(row: dict[str, str], column: str | None, default_value: str = "") -> str:
-    value = _csv_value(row, column)
-    if value:
-        return value
-    return str(default_value or "").strip()
-
-
 def _guess_column(columns: list[str], candidates: tuple[str, ...]) -> str:
     norm_map = {c.strip().lower(): c for c in columns}
     for c in candidates:
@@ -3798,22 +3791,22 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
         mapping[f"image_url_{idx}"] = (form.get(f"map_image_url_{idx}") or "").strip() or None
 
-    defaults: dict[str, str] = {
-        "sales_name": (form.get("default_sales_name") or "").strip(),
-        "material_no": (form.get("default_material_no") or "").strip(),
-        "manufacturer": (form.get("default_manufacturer") or "").strip(),
-        "sku": (form.get("default_sku") or "").strip(),
-        "ean": (form.get("default_ean") or "").strip(),
-        "item_type": (form.get("default_item_type") or "").strip(),
-        "area": (form.get("default_area") or "").strip(),
-        "kind": (form.get("default_kind") or "").strip(),
-        "type": (form.get("default_type") or "").strip(),
-        "tracking": (form.get("default_tracking") or "").strip(),
-        "description": (form.get("default_description") or "").strip(),
-        "active": (form.get("default_active") or "").strip(),
+    manual_values: dict[str, str] = {
+        "sales_name": (form.get("manual_sales_name") or "").strip(),
+        "material_no": (form.get("manual_material_no") or "").strip(),
+        "manufacturer": (form.get("manual_manufacturer") or "").strip(),
+        "sku": (form.get("manual_sku") or "").strip(),
+        "ean": (form.get("manual_ean") or "").strip(),
+        "item_type": (form.get("manual_item_type") or "").strip(),
+        "area": (form.get("manual_area") or "").strip(),
+        "kind": (form.get("manual_kind") or "").strip(),
+        "type": (form.get("manual_type") or "").strip(),
+        "tracking": (form.get("manual_tracking") or "").strip(),
+        "description": (form.get("manual_description") or "").strip(),
+        "active": (form.get("manual_active") or "").strip(),
     }
     for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
-        defaults[f"image_url_{idx}"] = (form.get(f"default_image_url_{idx}") or "").strip()
+        manual_values[f"image_url_{idx}"] = (form.get(f"manual_image_url_{idx}") or "").strip()
 
     for key, col in mapping.items():
         if not col:
@@ -3826,7 +3819,7 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     duplicate_mode = (form.get("duplicate_mode") or "skip").strip()
     if duplicate_mode not in ("skip", "update"):
         duplicate_mode = "skip"
-    default_track_mode = _parse_track_mode((form.get("default_track_mode") or "").strip(), "quantity")
+    default_track_mode = "quantity"
 
     created = 0
     updated = 0
@@ -3842,26 +3835,32 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 errors.append(f"Zeile {i}: Produktname fehlt.")
                 continue
 
-            source_has = {key: bool(mapping.get(key)) or bool(defaults.get(key)) for key in mapping.keys()}
+            source_has = {key: bool(mapping.get(key)) or bool(manual_values.get(key)) for key in mapping.keys()}
 
-            sales_name = _csv_value_or_default(row, mapping.get("sales_name"), defaults.get("sales_name", ""))
-            material_no = _csv_value_or_default(row, mapping.get("material_no"), defaults.get("material_no", ""))
-            manufacturer = _csv_value_or_default(row, mapping.get("manufacturer"), defaults.get("manufacturer", ""))
-            sku = _csv_value_or_default(row, mapping.get("sku"), defaults.get("sku", ""))
-            raw_ean = _csv_value_or_default(row, mapping.get("ean"), defaults.get("ean", ""))
+            def picked_value(field_key: str) -> str:
+                mapped_col = mapping.get(field_key)
+                if mapped_col:
+                    return _csv_value(row, mapped_col)
+                return str(manual_values.get(field_key, "") or "").strip()
+
+            sales_name = picked_value("sales_name")
+            material_no = picked_value("material_no")
+            manufacturer = picked_value("manufacturer")
+            sku = picked_value("sku")
+            raw_ean = picked_value("ean")
             ean = normalize_ean(raw_ean) if raw_ean else None
-            item_type_raw = _csv_value_or_default(row, mapping.get("item_type"), defaults.get("item_type", ""))
-            area_name = _csv_value_or_default(row, mapping.get("area"), defaults.get("area", ""))
-            kind_name = _csv_value_or_default(row, mapping.get("kind"), defaults.get("kind", ""))
-            type_name = _csv_value_or_default(row, mapping.get("type"), defaults.get("type", ""))
-            tracking_raw = _csv_value_or_default(row, mapping.get("tracking"), defaults.get("tracking", ""))
-            description = _csv_value_or_default(row, mapping.get("description"), defaults.get("description", ""))
-            active_raw = _csv_value_or_default(row, mapping.get("active"), defaults.get("active", ""))
+            item_type_raw = picked_value("item_type")
+            area_name = picked_value("area")
+            kind_name = picked_value("kind")
+            type_name = picked_value("type")
+            tracking_raw = picked_value("tracking")
+            description = picked_value("description")
+            active_raw = picked_value("active")
 
             image_urls: dict[str, str | None] = {}
             for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
                 key = f"image_url_{idx}"
-                raw_img = _csv_value_or_default(row, mapping.get(key), defaults.get(key, ""))
+                raw_img = picked_value(key)
                 if not raw_img:
                     image_urls[key] = None
                     continue
