@@ -8,6 +8,8 @@
     Aktualisiert: {{ updated_count }}<br>
     Übersprungen: {{ skipped_count }}<br>
     Fehler: {{ error_count }}<br>
+    Datenblätter lokal gespeichert: {{ datasheet_saved_count or 0 }}<br>
+    Datenblatt-Fehler: {{ datasheet_error_count or 0 }}<br>
   </div>
 
   <h2>Fehlerliste (maximal 50)</h2>
@@ -19,6 +21,17 @@
   </div>
   {% else %}
   <div class="muted">Keine Fehler aufgetreten.</div>
+  {% endif %}
+
+  <h2>Datenblatt-Hinweise (maximal 50)</h2>
+  {% if datasheet_errors_preview %}
+  <div class="mono">
+    {% for e in datasheet_errors_preview %}
+      - {{ e }}<br>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted">Keine Datenblatt-Fehler aufgetreten.</div>
   {% endif %}
 
   <div class="row">

@@ -226,6 +226,20 @@ h3{ margin-top:12px; font-size:16px; }
   background: rgba(0,255,102,0.08);
 }
 .box-body{ padding:10px; }
+details.collapse-box > summary.box-title{
+  cursor:pointer;
+  list-style:none;
+}
+details.collapse-box > summary.box-title::-webkit-details-marker{
+  display:none;
+}
+details.collapse-box > summary.box-title::after{
+  content:"[+]";
+  float:right;
+}
+details.collapse-box[open] > summary.box-title::after{
+  content:"[-]";
+}
 
 .mono{ font-family:inherit; white-space:pre-wrap; }
 

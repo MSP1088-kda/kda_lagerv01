@@ -18,8 +18,8 @@
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Herstellerbezeichnung</div><div>{{ product.manufacturer_name or '-' }}</div></div>
   </div>
 
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Bilder</div>
+  <details class="box collapse-box" style="margin-top:10px;">
+    <summary class="box-title">Bilder</summary>
     <div class="box-body">
       {% if image_urls %}
       <div class="image-grid">
@@ -34,10 +34,10 @@
       <div class="muted">Keine Bild-Links hinterlegt.</div>
       {% endif %}
     </div>
-  </div>
+  </details>
 
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Datenblatt</div>
+  <details class="box collapse-box" style="margin-top:10px;">
+    <summary class="box-title">Datenblatt</summary>
     <div class="box-body">
       {% if datasheet_source_url %}
       <div class="row">
@@ -59,7 +59,7 @@
       </div>
       {% endif %}
     </div>
-  </div>
+  </details>
 
   <div class="box" style="margin-top:10px;">
     <div class="box-title">Bestand nach Zustand</div>
@@ -151,8 +151,8 @@
     {% endif %}
   </div>
 
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Aktionen</div>
+  <details class="box collapse-box" style="margin-top:10px;">
+    <summary class="box-title">Aktionen</summary>
     <div class="box-body">
       <div class="row">
         {% if user.role == "admin" %}
@@ -168,7 +168,7 @@
         {% endif %}
       </div>
     </div>
-  </div>
+  </details>
   {% if not product.active %}
   <div class="hint">Archivierte Produkte sind für neue Bestellungen und Lagerbuchungen gesperrt.</div>
   {% endif %}
@@ -213,7 +213,7 @@
   </div>
   {% endif %}
 
-  {% set lb_open = loadbee_auto_open or loadbee_load_mode == 'auto' %}
+  {% set lb_open = false %}
   {% if loadbee_enabled and product.item_type == 'appliance' and loadbee_gtin %}
   <div class="loadbee-wrap">
     <div class="loadbee-head">

@@ -141,7 +141,7 @@ def _compute_build_id() -> str:
             continue
     return h.hexdigest()[:10]
 
-APP_VERSION = os.environ.get("APP_VERSION", "0.1.7")
+APP_VERSION = os.environ.get("APP_VERSION", "0.1.8")
 _env_build = (os.environ.get("APP_BUILD") or "").strip()
 APP_BUILD = _env_build if _env_build and _env_build.lower() not in ("dev", "local") else _compute_build_id()
 GIT_SHA = os.environ.get("GIT_SHA", "local")
@@ -426,6 +426,30 @@ def _latest_product_datasheet(db: Session, product_id: int) -> Attachment | None
         .order_by(Attachment.id.desc())
         .first()
     )
+
+
+def _fetch_and_store_product_datasheet(
+    db: Session,
+    product: Product | None,
+    manufacturer: Manufacturer | None,
+    force_download: bool = False,
+) -> tuple[bool, str]:
+    if not product or not getattr(product, "id", None):
+        return False, ""
+    source_url = _build_product_datasheet_url(manufacturer, product)
+    if not source_url:
+        return False, ""
+    if (not force_download) and _latest_product_datasheet(db, int(product.id)):
+        return False, source_url
+    payload, content_type = _download_pdf_bytes(source_url)
+    _attach_product_datasheet(
+        db=db,
+        product_id=int(product.id),
+        source_url=source_url,
+        payload=payload,
+        mime_type=content_type,
+    )
+    return True, source_url
 
 
 def _form_scalar(form_data: dict[str, str | list[str]], key: str, fallback: str = "") -> str:
@@ -3941,6 +3965,9 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     updated = 0
     skipped = 0
     errors: list[str] = []
+    datasheet_saved_count = 0
+    datasheet_error_count = 0
+    datasheet_errors: list[str] = []
 
     start_line = 2 if has_header else 1
     for i, row in enumerate(rows, start=start_line):
@@ -4083,6 +4110,24 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 )
             db.add(product)
             db.commit()
+            try:
+                datasheet_saved, _source_url = _fetch_and_store_product_datasheet(
+                    db=db,
+                    product=product,
+                    manufacturer=manufacturer_row,
+                    force_download=False,
+                )
+                if datasheet_saved:
+                    db.commit()
+                    datasheet_saved_count += 1
+            except (url_error.URLError, TimeoutError, ValueError) as ds_exc:
+                db.rollback()
+                datasheet_error_count += 1
+                datasheet_errors.append(f"Zeile {i}: Datenblatt konnte nicht geladen/gespeichert werden ({ds_exc}).")
+            except Exception as ds_exc:
+                db.rollback()
+                datasheet_error_count += 1
+                datasheet_errors.append(f"Zeile {i}: Datenblatt konnte nicht gespeichert werden ({ds_exc}).")
         except Exception as e:
             db.rollback()
             skipped += 1
@@ -4099,6 +4144,9 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             skipped_count=skipped,
             error_count=len(errors),
             errors_preview=errors[:50],
+            datasheet_saved_count=datasheet_saved_count,
+            datasheet_error_count=datasheet_error_count,
+            datasheet_errors_preview=datasheet_errors[:50],
         ),
     )
 
@@ -4951,15 +4999,14 @@ def product_datasheet_fetch(product_id: int, request: Request, user=Depends(requ
         return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
 
     try:
-        payload, content_type = _download_pdf_bytes(source_url)
-        _attach_product_datasheet(
+        saved, _ = _fetch_and_store_product_datasheet(
             db=db,
-            product_id=int(product_id),
-            source_url=source_url,
-            payload=payload,
-            mime_type=content_type,
+            product=product,
+            manufacturer=manufacturer_row,
+            force_download=True,
         )
-        db.commit()
+        if saved:
+            db.commit()
     except ValueError as exc:
         db.rollback()
         _flash(request, f"Datenblatt konnte nicht gespeichert werden: {exc}", "error")
