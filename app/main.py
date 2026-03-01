@@ -141,7 +141,7 @@ def _compute_build_id() -> str:
             continue
     return h.hexdigest()[:10]
 
-APP_VERSION = os.environ.get("APP_VERSION", "0.1.5")
+APP_VERSION = os.environ.get("APP_VERSION", "0.1.6")
 _env_build = (os.environ.get("APP_BUILD") or "").strip()
 APP_BUILD = _env_build if _env_build and _env_build.lower() not in ("dev", "local") else _compute_build_id()
 GIT_SHA = os.environ.get("GIT_SHA", "local")
@@ -3450,6 +3450,7 @@ def products_list(
     area_id: int = 0,
     kind_id: int = 0,
     type_id: int = 0,
+    manufacturer_id: int = 0,
     show_inactive: int = 0,
     db: Session = Depends(db_session),
 ):
@@ -3461,6 +3462,12 @@ def products_list(
     )
 
     include_inactive = int(show_inactive or 0) == 1 and (getattr(user, "role", "") or "").strip().lower() == "admin"
+    manufacturers = db.query(Manufacturer).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
+    valid_manufacturer_ids = {int(m.id) for m in manufacturers}
+    manufacturer_id = int(manufacturer_id or 0)
+    if manufacturer_id and manufacturer_id not in valid_manufacturer_ids:
+        manufacturer_id = 0
+
     query = db.query(Product)
     if not include_inactive:
         query = query.filter(Product.active == True)
@@ -3476,6 +3483,8 @@ def products_list(
         query = query.filter(Product.device_kind_id == kind_id)
     if type_id:
         query = query.filter(Product.device_type_id == type_id)
+    if manufacturer_id:
+        query = query.filter(Product.manufacturer_id == manufacturer_id)
 
     filter_attrs = _applicable_attributes(db, kind_id or None, type_id or None) if (kind_id or type_id) else []
     attr_filters: dict[str, str | list[str]] = {}
@@ -3637,6 +3646,8 @@ def products_list(
             area_id=area_id,
             kind_id=kind_id,
             type_id=type_id,
+            manufacturers=manufacturers,
+            manufacturer_id=manufacturer_id,
             show_inactive=(1 if include_inactive else 0),
             filter_attrs=filter_attrs,
             attr_filters=attr_filters,
@@ -3660,7 +3671,7 @@ def products_import_get(request: Request, user=Depends(require_admin)):
 
 
 @app.post("/catalog/products/import/preview")
-async def products_import_preview(request: Request, user=Depends(require_admin)):
+async def products_import_preview(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     form = await request.form()
     delimiter = (form.get("delimiter") or ";").strip()
     if delimiter not in (";", ","):
@@ -3720,6 +3731,7 @@ async def products_import_preview(request: Request, user=Depends(require_admin))
                 f"foto_url_{idx}",
             ),
         )
+    manufacturers = db.query(Manufacturer).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
 
     request.session["csv_import_state"] = {
         "path": str(tmp_path),
@@ -3738,6 +3750,7 @@ async def products_import_preview(request: Request, user=Depends(require_admin))
             total_rows=len(rows),
             delimiter=delimiter,
             has_header=has_header,
+            manufacturers=manufacturers,
         ),
     )
 
@@ -3791,10 +3804,15 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
         mapping[f"image_url_{idx}"] = (form.get(f"map_image_url_{idx}") or "").strip() or None
 
+    manual_manufacturer_id_raw = (form.get("manual_manufacturer_id") or "").strip()
+    manual_manufacturer_id, manual_manufacturer_row = _parse_manufacturer_id(db, manual_manufacturer_id_raw)
+    if manual_manufacturer_id_raw and not manual_manufacturer_row:
+        _flash(request, "Ungültiger Hersteller für den manuellen Standardwert.", "error")
+        return RedirectResponse("/catalog/products/import", status_code=302)
+
     manual_values: dict[str, str] = {
         "sales_name": (form.get("manual_sales_name") or "").strip(),
         "material_no": (form.get("manual_material_no") or "").strip(),
-        "manufacturer": (form.get("manual_manufacturer") or "").strip(),
         "sku": (form.get("manual_sku") or "").strip(),
         "ean": (form.get("manual_ean") or "").strip(),
         "item_type": (form.get("manual_item_type") or "").strip(),
@@ -3836,6 +3854,8 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 continue
 
             source_has = {key: bool(mapping.get(key)) or bool(manual_values.get(key)) for key in mapping.keys()}
+            if not mapping.get("manufacturer"):
+                source_has["manufacturer"] = bool(manual_manufacturer_id)
 
             def picked_value(field_key: str) -> str:
                 mapped_col = mapping.get(field_key)
@@ -3890,12 +3910,18 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 created += 1
 
             manufacturer_row = None
-            if manufacturer:
-                manufacturer_row = (
-                    db.query(Manufacturer)
-                    .filter(func.lower(Manufacturer.name) == manufacturer.lower())
-                    .one_or_none()
-                )
+            if mapping.get("manufacturer"):
+                if manufacturer:
+                    manufacturer_row = (
+                        db.query(Manufacturer)
+                        .filter(func.lower(Manufacturer.name) == manufacturer.lower())
+                        .one_or_none()
+                    )
+                    if not manufacturer_row:
+                        raise ValueError(f"Hersteller '{manufacturer}' ist nicht in den Stammdaten registriert.")
+            elif manual_manufacturer_row:
+                manufacturer_row = manual_manufacturer_row
+                manufacturer = str(manufacturer_row.name or "").strip()
 
             default_active = bool(product.active) if product.id else True
             product.name = name
@@ -3904,7 +3930,7 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             if (not product.id) or source_has.get("material_no", False):
                 product.material_no = material_no or None
             if (not product.id) or source_has.get("manufacturer", False):
-                product.manufacturer = manufacturer or None
+                product.manufacturer = manufacturer_row.name if manufacturer_row else (manufacturer or None)
                 product.manufacturer_id = int(manufacturer_row.id) if manufacturer_row else None
             if (not product.id) or source_has.get("sku", False):
                 product.sku = sku or None

@@ -81,7 +81,14 @@
             {% endfor %}
           </select>
         </div>
-        <div><input type="text" name="manual_manufacturer" placeholder="Optional"></div>
+        <div>
+          <select name="manual_manufacturer_id">
+            <option value="">Keine Vorgabe</option>
+            {% for m in manufacturers %}
+              <option value="{{ m.id }}">{{ m.name }}{% if not m.active %} (inaktiv){% endif %}</option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
 
       <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">

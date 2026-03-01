@@ -45,6 +45,15 @@
           {% endfor %}
         </select>
       </div>
+      <div>
+        <label>Hersteller</label>
+        <select name="manufacturer_id">
+          <option value="0">Alle</option>
+          {% for m in manufacturers %}
+            <option value="{{ m.id }}" {% if manufacturer_id==m.id %}selected{% endif %}>{{ m.name }}{% if not m.active %} (inaktiv){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
       {% if user.role == 'admin' %}
       <div class="row">
         <label class="check"><input type="checkbox" name="show_inactive" value="1" {% if show_inactive==1 %}checked{% endif %}> Inaktive anzeigen</label>
@@ -101,11 +110,11 @@
     {% endif %}
 
     <div class="row">
-      <a class="btn {% if not item_type %}primary{% endif %}" href="/catalog/products?q={{ q }}&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Alle</a>
-      <a class="btn {% if item_type=='appliance' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=appliance&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Großgeräte</a>
-      <a class="btn {% if item_type=='spare_part' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=spare_part&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Ersatzteile</a>
-      <a class="btn {% if item_type=='accessory' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=accessory&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Zubehör</a>
-      <a class="btn {% if item_type=='material' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=material&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&show_inactive={{ show_inactive }}">Material</a>
+      <a class="btn {% if not item_type %}primary{% endif %}" href="/catalog/products?q={{ q }}&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&show_inactive={{ show_inactive }}">Alle</a>
+      <a class="btn {% if item_type=='appliance' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=appliance&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&show_inactive={{ show_inactive }}">Großgeräte</a>
+      <a class="btn {% if item_type=='spare_part' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=spare_part&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&show_inactive={{ show_inactive }}">Ersatzteile</a>
+      <a class="btn {% if item_type=='accessory' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=accessory&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&show_inactive={{ show_inactive }}">Zubehör</a>
+      <a class="btn {% if item_type=='material' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=material&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&show_inactive={{ show_inactive }}">Material</a>
     </div>
     <div class="row">
       <button class="btn primary" type="submit">Filtern</button>
