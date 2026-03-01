@@ -21,6 +21,25 @@
         <label>E-Mail</label>
         <input type="email" name="email" value="{{ row.email or '' }}">
       </div>
+      <div>
+        <label>Datenblatt Variable 1 (Prefix)</label>
+        <input type="text" name="datasheet_var_1" value="{{ row.datasheet_var_1 or '' }}">
+      </div>
+      <div>
+        <label>Datenblatt Variable 3</label>
+        <input type="text" name="datasheet_var_3" value="{{ row.datasheet_var_3 or '' }}">
+      </div>
+      <div>
+        <label>Datenblatt Variable 4 (Suffix)</label>
+        <input type="text" name="datasheet_var_4" value="{{ row.datasheet_var_4 or '' }}">
+      </div>
+      <div>
+        <label>Variable-2 Quelle</label>
+        <select name="datasheet_var2_source">
+          <option value="sales_name" {% if row.datasheet_var2_source != 'material_no' %}selected{% endif %}>Verkaufsbezeichnung</option>
+          <option value="material_no" {% if row.datasheet_var2_source == 'material_no' %}selected{% endif %}>Materialnummer</option>
+        </select>
+      </div>
     </div>
     <label class="check"><input type="checkbox" name="active" {% if row.active %}checked{% endif %}> Aktiv</label>
     <div class="row">
@@ -34,6 +53,7 @@
 {% block help %}
 <ul>
   <li>Herstellerdaten lassen sich ohne Löschen aktiv/inaktiv schalten.</li>
+  <li>Mit den Datenblatt-Variablen definierst du die Linklogik für Produkt-Datenblätter.</li>
   <li>Änderungen wirken sofort im Produktformular.</li>
 </ul>
 {% endblock %}

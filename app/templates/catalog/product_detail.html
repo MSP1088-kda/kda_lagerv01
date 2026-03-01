@@ -19,6 +19,49 @@
   </div>
 
   <div class="box" style="margin-top:10px;">
+    <div class="box-title">Bilder</div>
+    <div class="box-body">
+      {% if image_urls %}
+      <div class="image-grid">
+        {% for url in image_urls %}
+        <a class="image-card" href="{{ url }}" target="_blank" rel="noopener">
+          <img src="{{ url }}" alt="Produktbild {{ loop.index }}" loading="lazy">
+          <span>Bild {{ loop.index }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="muted">Keine Bild-Links hinterlegt.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Datenblatt</div>
+    <div class="box-body">
+      {% if datasheet_source_url %}
+      <div class="row">
+        <a class="btn small" href="{{ datasheet_source_url }}" target="_blank" rel="noopener">Quelle öffnen</a>
+        {% if user.role == "admin" %}
+        <form method="post" action="/catalog/products/{{ product.id }}/datasheet/fetch" class="inline">
+          <button class="btn small" type="submit">PDF laden & lokal speichern</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="muted">{{ datasheet_source_url }}</div>
+      {% else %}
+      <div class="muted">Kein zusammensetzbarer Datenblatt-Link vorhanden.</div>
+      {% endif %}
+
+      {% if datasheet_local_attachment %}
+      <div class="row" style="margin-top:8px;">
+        <a class="btn" href="/catalog/products/{{ product.id }}/datasheet/{{ datasheet_local_attachment.id }}">Lokales Datenblatt öffnen</a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
     <div class="box-title">Bestand nach Zustand</div>
     <div class="box-body">
       {% if stock_condition_rows %}
@@ -294,6 +337,8 @@
 {% block help %}
 <ul>
   <li>Bestand nach Zustand zeigt nur Zustände mit Menge ungleich 0.</li>
+  <li>Bilder öffnen direkt im Browser über die hinterlegten absoluten Links.</li>
+  <li>Das Datenblatt kann aus der Hersteller-Linklogik geladen und lokal gespeichert werden.</li>
   <li>H: Hersteller-Details öffnen oder schließen.</li>
   <li>E: Bearbeiten.</li>
   <li>A: Archivieren/Reaktivieren.</li>

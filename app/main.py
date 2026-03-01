@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 from typing import Optional
+from urllib import error as url_error, request as url_request
 from urllib.parse import quote, urlsplit
 import uuid
 
@@ -140,7 +141,7 @@ def _compute_build_id() -> str:
             continue
     return h.hexdigest()[:10]
 
-APP_VERSION = os.environ.get("APP_VERSION", "0.1.3")
+APP_VERSION = os.environ.get("APP_VERSION", "0.1.4")
 _env_build = (os.environ.get("APP_BUILD") or "").strip()
 APP_BUILD = _env_build if _env_build and _env_build.lower() not in ("dev", "local") else _compute_build_id()
 GIT_SHA = os.environ.get("GIT_SHA", "local")
@@ -177,6 +178,9 @@ RECEIPT_DEFAULT_SUPPLIER_ID = "receipt_default_supplier_id"
 RECEIPT_DEFAULT_QTY = "receipt_default_qty"
 RECEIPT_LOCK_WAREHOUSE = "receipt_lock_warehouse"
 VAT_RATE_STANDARD = 0.19
+PRODUCT_IMAGE_URL_MAX = 6
+PRODUCT_DATASHEET_ATTACHMENT_TYPE = "product_datasheet"
+PRODUCT_DATASHEET_MAX_BYTES = 15 * 1024 * 1024
 
 REPAIR_ATTACHMENT_ALLOWED_MIME = {
     "image/jpeg": ".jpg",
@@ -202,6 +206,12 @@ PRODUCT_FORM_FIELD_IDS = {
     "device_kind_id": "product_device_kind_id",
     "device_type_id": "product_device_type_id",
     "description": "product_description",
+    "image_url_1": "product_image_url_1",
+    "image_url_2": "product_image_url_2",
+    "image_url_3": "product_image_url_3",
+    "image_url_4": "product_image_url_4",
+    "image_url_5": "product_image_url_5",
+    "image_url_6": "product_image_url_6",
 }
 PRODUCT_RECEIPT_FIELD_IDS = {
     "receipt_quantity": "receipt_quantity",
@@ -298,6 +308,124 @@ def _safe_return_to_path(value: str, fallback: str = "") -> str:
     if parsed.scheme or parsed.netloc:
         return fallback
     return raw
+
+
+def _normalize_absolute_url(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    scheme = str(parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return None
+    if not str(parsed.netloc or "").strip():
+        return None
+    if any(ch in raw for ch in ("\n", "\r", "\t", " ")):
+        return None
+    return raw
+
+
+def _product_image_url_keys() -> list[str]:
+    return [f"image_url_{idx}" for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1)]
+
+
+def _product_image_urls(product: Product | None) -> list[str]:
+    if not product:
+        return []
+    out: list[str] = []
+    for key in _product_image_url_keys():
+        value = _normalize_absolute_url(getattr(product, key, None))
+        if value:
+            out.append(value)
+    return out
+
+
+def _manufacturer_datasheet_var2_source(raw: str | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value not in ("sales_name", "material_no"):
+        return "sales_name"
+    return value
+
+
+def _build_product_datasheet_url(manufacturer: Manufacturer | None, product: Product | None) -> str:
+    if not manufacturer or not product:
+        return ""
+    v1 = str(getattr(manufacturer, "datasheet_var_1", "") or "").strip()
+    v3 = str(getattr(manufacturer, "datasheet_var_3", "") or "").strip()
+    v4 = str(getattr(manufacturer, "datasheet_var_4", "") or "").strip()
+    var2_source = _manufacturer_datasheet_var2_source(getattr(manufacturer, "datasheet_var2_source", "sales_name"))
+
+    source_value = ""
+    if var2_source == "material_no":
+        source_value = str(getattr(product, "material_no", "") or "").strip()
+        if not source_value:
+            source_value = str(getattr(product, "sales_name", "") or "").strip()
+    else:
+        source_value = str(getattr(product, "sales_name", "") or "").strip()
+        if not source_value:
+            source_value = str(getattr(product, "material_no", "") or "").strip()
+
+    v2 = quote(source_value, safe="") if source_value else ""
+
+    candidate = f"{v1}{v2}{v3}{v4}".strip()
+    normalized = _normalize_absolute_url(candidate)
+    return normalized or ""
+
+
+def _download_pdf_bytes(url: str, timeout_seconds: int = 20) -> tuple[bytes, str]:
+    req = url_request.Request(
+        url,
+        headers={
+            "User-Agent": "KDA-Lager/1.0",
+            "Accept": "application/pdf,application/octet-stream;q=0.8,*/*;q=0.5",
+        },
+    )
+    with url_request.urlopen(req, timeout=timeout_seconds) as resp:  # nosec B310
+        content_type = str(resp.headers.get("Content-Type") or "").strip().lower()
+        payload = resp.read(PRODUCT_DATASHEET_MAX_BYTES + 1)
+    if not payload:
+        raise ValueError("Leere Antwort erhalten.")
+    if len(payload) > PRODUCT_DATASHEET_MAX_BYTES:
+        raise ValueError("Datei ist größer als 15 MB.")
+    if payload[:5] != b"%PDF-":
+        raise ValueError("Antwort ist kein PDF.")
+    return payload, (content_type or "application/pdf")
+
+
+def _attach_product_datasheet(db: Session, product_id: int, source_url: str, payload: bytes, mime_type: str) -> Attachment:
+    dirs = ensure_dirs()
+    rel_dir = Path("datasheets") / str(int(product_id))
+    abs_dir = dirs["uploads"] / rel_dir
+    abs_dir.mkdir(parents=True, exist_ok=True)
+    file_name = f"datasheet_{dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}.pdf"
+    abs_path = abs_dir / file_name
+    abs_path.write_bytes(payload)
+
+    parsed = urlsplit(source_url or "")
+    original_name = Path(str(parsed.path or "").strip()).name or "datenblatt.pdf"
+    row = Attachment(
+        entity_type=PRODUCT_DATASHEET_ATTACHMENT_TYPE,
+        entity_id=int(product_id),
+        filename=str(rel_dir / file_name),
+        original_name=original_name,
+        mime_type=(mime_type or "application/pdf"),
+        size_bytes=len(payload),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _latest_product_datasheet(db: Session, product_id: int) -> Attachment | None:
+    return (
+        db.query(Attachment)
+        .filter(
+            Attachment.entity_type == PRODUCT_DATASHEET_ATTACHMENT_TYPE,
+            Attachment.entity_id == int(product_id),
+        )
+        .order_by(Attachment.id.desc())
+        .first()
+    )
 
 
 def _form_scalar(form_data: dict[str, str | list[str]], key: str, fallback: str = "") -> str:
@@ -544,6 +672,7 @@ def startup():
     _ensure_product_sets_schema()
     _ensure_prompt_pack5_schema()
     _ensure_prompt_pack9_schema()
+    _ensure_prompt_pack10_schema()
     _ensure_ui_preferences_schema()
     _ensure_system_settings_schema()
     _ensure_item_type_field_rules_schema()
@@ -980,6 +1109,29 @@ def _ensure_prompt_pack9_schema() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_kind_list_attribute_slot ON kind_list_attributes(kind_id, slot)"
         )
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_kind_list_attribute_kind ON kind_list_attributes(kind_id)")
+
+
+def _ensure_prompt_pack10_schema() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        p_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(products)").fetchall()}
+        for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+            key = f"image_url_{idx}"
+            if key not in p_cols:
+                conn.exec_driver_sql(f"ALTER TABLE products ADD COLUMN {key} VARCHAR(600)")
+
+        m_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(manufacturers)").fetchall()}
+        if "datasheet_var_1" not in m_cols:
+            conn.exec_driver_sql("ALTER TABLE manufacturers ADD COLUMN datasheet_var_1 VARCHAR(500)")
+        if "datasheet_var_3" not in m_cols:
+            conn.exec_driver_sql("ALTER TABLE manufacturers ADD COLUMN datasheet_var_3 VARCHAR(500)")
+        if "datasheet_var_4" not in m_cols:
+            conn.exec_driver_sql("ALTER TABLE manufacturers ADD COLUMN datasheet_var_4 VARCHAR(500)")
+        if "datasheet_var2_source" not in m_cols:
+            conn.exec_driver_sql("ALTER TABLE manufacturers ADD COLUMN datasheet_var2_source VARCHAR(30) DEFAULT 'sales_name'")
+        conn.exec_driver_sql(
+            "UPDATE manufacturers SET datasheet_var2_source='sales_name' WHERE datasheet_var2_source IS NULL OR TRIM(datasheet_var2_source)=''"
+        )
 
 
 def _ensure_ui_preferences_schema() -> None:
@@ -1476,6 +1628,22 @@ def _parse_product_select_id(db: Session, field_key: str, raw_value) -> tuple[in
         return value, True
     row = db.get(model, value)
     return value, bool(row)
+
+
+def _parse_product_image_urls(form, add_error) -> dict[str, str | None]:
+    out: dict[str, str | None] = {}
+    for key in _product_image_url_keys():
+        raw = (form.get(key) or "").strip()
+        if not raw:
+            out[key] = None
+            continue
+        normalized = _normalize_absolute_url(raw)
+        if not normalized:
+            add_error(key, f"Bild-Link in '{key}' muss eine absolute URL mit http:// oder https:// sein.")
+            out[key] = None
+            continue
+        out[key] = normalized
+    return out
 
 
 def _minimum_visible_fields(item_type: str) -> set[str]:
@@ -2691,6 +2859,13 @@ def _csv_value(row: dict[str, str], column: str | None) -> str:
     return (row.get(column) or "").strip()
 
 
+def _csv_value_or_default(row: dict[str, str], column: str | None, default_value: str = "") -> str:
+    value = _csv_value(row, column)
+    if value:
+        return value
+    return str(default_value or "").strip()
+
+
 def _guess_column(columns: list[str], candidates: tuple[str, ...]) -> str:
     norm_map = {c.strip().lower(): c for c in columns}
     for c in candidates:
@@ -3526,9 +3701,12 @@ async def products_import_preview(request: Request, user=Depends(require_admin))
 
     guesses = {
         "name": _guess_column(columns, ("produktname", "name", "produkt")),
+        "sales_name": _guess_column(columns, ("verkaufsbezeichnung", "sales_name", "display_name")),
+        "material_no": _guess_column(columns, ("materialnummer", "material_no", "material", "matnr", "mat_nr")),
         "manufacturer": _guess_column(columns, ("hersteller", "manufacturer")),
         "sku": _guess_column(columns, ("sku", "artikelnummer", "artikel_nr", "artikel-nr")),
         "ean": _guess_column(columns, ("ean", "gtin")),
+        "item_type": _guess_column(columns, ("artikelart", "item_type", "typ")),
         "area": _guess_column(columns, ("bereich", "area")),
         "kind": _guess_column(columns, ("geräteart", "geraeteart", "kind")),
         "type": _guess_column(columns, ("gerätetyp", "geraetetyp", "type")),
@@ -3536,6 +3714,19 @@ async def products_import_preview(request: Request, user=Depends(require_admin))
         "description": _guess_column(columns, ("beschreibung", "description")),
         "active": _guess_column(columns, ("aktiv", "active")),
     }
+    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+        guesses[f"image_url_{idx}"] = _guess_column(
+            columns,
+            (
+                f"bild{idx}",
+                f"bild_{idx}",
+                f"bild_url_{idx}",
+                f"image{idx}",
+                f"image_url_{idx}",
+                f"foto{idx}",
+                f"foto_url_{idx}",
+            ),
+        )
 
     request.session["csv_import_state"] = {
         "path": str(tmp_path),
@@ -3591,9 +3782,12 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
 
     mapping = {
         "name": map_name,
+        "sales_name": (form.get("map_sales_name") or "").strip() or None,
+        "material_no": (form.get("map_material_no") or "").strip() or None,
         "manufacturer": (form.get("map_manufacturer") or "").strip() or None,
         "sku": (form.get("map_sku") or "").strip() or None,
         "ean": (form.get("map_ean") or "").strip() or None,
+        "item_type": (form.get("map_item_type") or "").strip() or None,
         "area": (form.get("map_area") or "").strip() or None,
         "kind": (form.get("map_kind") or "").strip() or None,
         "type": (form.get("map_type") or "").strip() or None,
@@ -3601,6 +3795,25 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
         "description": (form.get("map_description") or "").strip() or None,
         "active": (form.get("map_active") or "").strip() or None,
     }
+    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+        mapping[f"image_url_{idx}"] = (form.get(f"map_image_url_{idx}") or "").strip() or None
+
+    defaults: dict[str, str] = {
+        "sales_name": (form.get("default_sales_name") or "").strip(),
+        "material_no": (form.get("default_material_no") or "").strip(),
+        "manufacturer": (form.get("default_manufacturer") or "").strip(),
+        "sku": (form.get("default_sku") or "").strip(),
+        "ean": (form.get("default_ean") or "").strip(),
+        "item_type": (form.get("default_item_type") or "").strip(),
+        "area": (form.get("default_area") or "").strip(),
+        "kind": (form.get("default_kind") or "").strip(),
+        "type": (form.get("default_type") or "").strip(),
+        "tracking": (form.get("default_tracking") or "").strip(),
+        "description": (form.get("default_description") or "").strip(),
+        "active": (form.get("default_active") or "").strip(),
+    }
+    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+        defaults[f"image_url_{idx}"] = (form.get(f"default_image_url_{idx}") or "").strip()
 
     for key, col in mapping.items():
         if not col:
@@ -3613,7 +3826,7 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     duplicate_mode = (form.get("duplicate_mode") or "skip").strip()
     if duplicate_mode not in ("skip", "update"):
         duplicate_mode = "skip"
-    default_track_mode = "quantity"
+    default_track_mode = _parse_track_mode((form.get("default_track_mode") or "").strip(), "quantity")
 
     created = 0
     updated = 0
@@ -3629,15 +3842,33 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 errors.append(f"Zeile {i}: Produktname fehlt.")
                 continue
 
-            manufacturer = _csv_value(row, mapping["manufacturer"]) or None
-            sku = _csv_value(row, mapping["sku"]) or None
-            raw_ean = _csv_value(row, mapping["ean"])
-            ean = normalize_ean(raw_ean)
-            area_name = _csv_value(row, mapping["area"])
-            kind_name = _csv_value(row, mapping["kind"])
-            type_name = _csv_value(row, mapping["type"])
-            _ = _parse_track_mode(_csv_value(row, mapping["tracking"]), default_track_mode)
-            description = _csv_value(row, mapping["description"]) or None
+            source_has = {key: bool(mapping.get(key)) or bool(defaults.get(key)) for key in mapping.keys()}
+
+            sales_name = _csv_value_or_default(row, mapping.get("sales_name"), defaults.get("sales_name", ""))
+            material_no = _csv_value_or_default(row, mapping.get("material_no"), defaults.get("material_no", ""))
+            manufacturer = _csv_value_or_default(row, mapping.get("manufacturer"), defaults.get("manufacturer", ""))
+            sku = _csv_value_or_default(row, mapping.get("sku"), defaults.get("sku", ""))
+            raw_ean = _csv_value_or_default(row, mapping.get("ean"), defaults.get("ean", ""))
+            ean = normalize_ean(raw_ean) if raw_ean else None
+            item_type_raw = _csv_value_or_default(row, mapping.get("item_type"), defaults.get("item_type", ""))
+            area_name = _csv_value_or_default(row, mapping.get("area"), defaults.get("area", ""))
+            kind_name = _csv_value_or_default(row, mapping.get("kind"), defaults.get("kind", ""))
+            type_name = _csv_value_or_default(row, mapping.get("type"), defaults.get("type", ""))
+            tracking_raw = _csv_value_or_default(row, mapping.get("tracking"), defaults.get("tracking", ""))
+            description = _csv_value_or_default(row, mapping.get("description"), defaults.get("description", ""))
+            active_raw = _csv_value_or_default(row, mapping.get("active"), defaults.get("active", ""))
+
+            image_urls: dict[str, str | None] = {}
+            for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+                key = f"image_url_{idx}"
+                raw_img = _csv_value_or_default(row, mapping.get(key), defaults.get(key, ""))
+                if not raw_img:
+                    image_urls[key] = None
+                    continue
+                normalized_img = _normalize_absolute_url(raw_img)
+                if not normalized_img:
+                    raise ValueError(f"Bild-Link in '{key}' muss absolute URL mit http/https sein.")
+                image_urls[key] = normalized_img
 
             existing = _find_product_by_sku_or_ean(db, sku=sku, ean=ean)
             if duplicate_mode == "skip" and existing:
@@ -3659,18 +3890,54 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 product = Product(active=True, track_mode="quantity", item_type="material")
                 created += 1
 
+            manufacturer_row = None
+            if manufacturer:
+                manufacturer_row = (
+                    db.query(Manufacturer)
+                    .filter(func.lower(Manufacturer.name) == manufacturer.lower())
+                    .one_or_none()
+                )
+
             default_active = bool(product.active) if product.id else True
             product.name = name
-            product.manufacturer = manufacturer
-            product.sku = sku
-            product.ean = ean
-            product.area_id = area.id if area else None
-            product.device_kind_id = kind.id if kind else None
-            product.device_type_id = dtype.id if dtype else None
-            product.track_mode = "quantity"
-            product.item_type = _normalize_item_type(getattr(product, "item_type", None), fallback="material")
-            product.description = description
-            product.active = _parse_active(_csv_value(row, mapping["active"]), default_value=default_active)
+            if (not product.id) or source_has.get("sales_name", False):
+                product.sales_name = sales_name or None
+            if (not product.id) or source_has.get("material_no", False):
+                product.material_no = material_no or None
+            if (not product.id) or source_has.get("manufacturer", False):
+                product.manufacturer = manufacturer or None
+                product.manufacturer_id = int(manufacturer_row.id) if manufacturer_row else None
+            if (not product.id) or source_has.get("sku", False):
+                product.sku = sku or None
+            if (not product.id) or source_has.get("ean", False):
+                product.ean = ean
+            if (not product.id) or source_has.get("area", False):
+                product.area_id = area.id if area else None
+            if (not product.id) or source_has.get("kind", False):
+                product.device_kind_id = kind.id if kind else None
+            if (not product.id) or source_has.get("type", False):
+                product.device_type_id = dtype.id if dtype else None
+
+            if source_has.get("tracking", False):
+                product.track_mode = _parse_track_mode(tracking_raw, default_track_mode)
+            elif not product.id:
+                product.track_mode = default_track_mode
+
+            if source_has.get("item_type", False):
+                product.item_type = _normalize_item_type(item_type_raw, fallback="material")
+            elif not product.id:
+                product.item_type = _normalize_item_type(getattr(product, "item_type", None), fallback="material")
+
+            if (not product.id) or source_has.get("description", False):
+                product.description = description or None
+
+            for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+                key = f"image_url_{idx}"
+                if (not product.id) or source_has.get(key, False):
+                    setattr(product, key, image_urls.get(key))
+
+            if (not product.id) or source_has.get("active", False):
+                product.active = _parse_active(active_raw, default_value=default_active)
             db.add(product)
             db.commit()
         except Exception as e:
@@ -3851,6 +4118,7 @@ async def products_new_post(request: Request, user=Depends(require_admin), db: S
             ean = normalize_ean(text_values.get("ean"))
     except ValueError as e:
         add_error("ean", f"Ungültige EAN: {e}")
+    image_url_values = _parse_product_image_urls(form, add_error)
 
     area_id = select_values.get("area_id") if "area_id" in visible_fields else None
     device_kind_id = select_values.get("device_kind_id") if "device_kind_id" in visible_fields else None
@@ -3914,6 +4182,7 @@ async def products_new_post(request: Request, user=Depends(require_admin), db: S
         device_kind_id=device_kind_id,
         device_type_id=device_type_id,
         active=True,
+        **image_url_values,
     )
     db.add(p)
     db.flush()
@@ -4132,6 +4401,7 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
             ean = normalize_ean(text_values.get("ean"))
         except ValueError as e:
             add_error("ean", f"Ungültige EAN: {e}")
+    image_url_values = _parse_product_image_urls(form, add_error)
 
     if form_errors:
         for msg in list(form_errors.values())[:5]:
@@ -4173,6 +4443,8 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
         p.device_kind_id = select_values.get("device_kind_id")
     if "device_type_id" in visible_fields:
         p.device_type_id = select_values.get("device_type_id")
+    for key, value in image_url_values.items():
+        setattr(p, key, value)
     p.track_mode = "quantity"
 
     attrs = _applicable_attributes(db, p.device_kind_id, p.device_type_id)
@@ -4382,6 +4654,10 @@ def product_detail_get(
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404)
+    manufacturer_row = db.get(Manufacturer, int(product.manufacturer_id or 0)) if product.manufacturer_id else None
+    image_urls = _product_image_urls(product)
+    datasheet_source_url = _build_product_datasheet_url(manufacturer_row, product)
+    datasheet_local_attachment = _latest_product_datasheet(db, int(product_id))
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
     order_draft_key = f"draft:/purchase/orders/from_product:{int(product_id)}"
     order_form_data: dict[str, str | list[str]] = {}
@@ -4510,10 +4786,76 @@ def product_detail_get(
             last_cost_gross_cents=last_cost_gross_cents,
             stock_condition_rows=stock_condition_rows,
             purchase_status_label=_purchase_status_label,
+            image_urls=image_urls,
+            datasheet_source_url=datasheet_source_url,
+            datasheet_local_attachment=datasheet_local_attachment,
             return_to=return_to,
             return_to_q=return_to_q,
             receipt_saved=(int(receipt_saved or 0) == 1),
         ),
+    )
+
+
+@app.post("/catalog/products/{product_id}/datasheet/fetch")
+def product_datasheet_fetch(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+    manufacturer_row = db.get(Manufacturer, int(product.manufacturer_id or 0)) if product.manufacturer_id else None
+    source_url = _build_product_datasheet_url(manufacturer_row, product)
+    if not source_url:
+        _flash(request, "Datenblatt-Link kann für dieses Produkt nicht zusammengesetzt werden.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+    try:
+        payload, content_type = _download_pdf_bytes(source_url)
+        _attach_product_datasheet(
+            db=db,
+            product_id=int(product_id),
+            source_url=source_url,
+            payload=payload,
+            mime_type=content_type,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        _flash(request, f"Datenblatt konnte nicht gespeichert werden: {exc}", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    except (url_error.URLError, TimeoutError) as exc:
+        db.rollback()
+        _flash(request, f"Datenblatt konnte nicht geladen werden: {exc}", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Datenblatt konnte nicht gespeichert werden: {exc}", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+    _flash(request, "Datenblatt als PDF geladen und lokal gespeichert.", "info")
+    return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+
+@app.get("/catalog/products/{product_id}/datasheet/{attachment_id}")
+def product_datasheet_download(
+    product_id: int,
+    attachment_id: int,
+    request: Request,
+    user=Depends(require_user),
+    db: Session = Depends(db_session),
+):
+    _ = request, user
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+    att = db.get(Attachment, attachment_id)
+    if not att or att.entity_type != PRODUCT_DATASHEET_ATTACHMENT_TYPE or int(att.entity_id or 0) != int(product_id):
+        raise HTTPException(status_code=404)
+    abs_path = ensure_dirs()["uploads"] / str(att.filename or "")
+    if not abs_path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(
+        path=str(abs_path),
+        media_type=(att.mime_type or "application/pdf"),
+        filename=(att.original_name or abs_path.name),
     )
 
 
@@ -4873,6 +5215,15 @@ def set_item_delete(set_id: int, item_id: int, request: Request, user=Depends(re
 # Stammdaten
 # ---------------------------
 
+def _manufacturer_datasheet_fields_from_form(form) -> dict[str, str | None]:
+    return {
+        "datasheet_var_1": (form.get("datasheet_var_1") or "").strip() or None,
+        "datasheet_var_3": (form.get("datasheet_var_3") or "").strip() or None,
+        "datasheet_var_4": (form.get("datasheet_var_4") or "").strip() or None,
+        "datasheet_var2_source": _manufacturer_datasheet_var2_source((form.get("datasheet_var2_source") or "").strip()),
+    }
+
+
 @app.get("/stammdaten/hersteller", response_class=HTMLResponse)
 def manufacturer_list(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     rows = db.query(Manufacturer).order_by(Manufacturer.active.desc(), Manufacturer.name.asc()).all()
@@ -4895,6 +5246,7 @@ async def manufacturer_add(request: Request, user=Depends(require_admin), db: Se
         website=(form.get("website") or "").strip() or None,
         phone=(form.get("phone") or "").strip() or None,
         email=(form.get("email") or "").strip() or None,
+        **_manufacturer_datasheet_fields_from_form(form),
         active=form.get("active") == "on",
     )
     db.add(row)
@@ -4939,6 +5291,11 @@ async def manufacturer_edit_post(manufacturer_id: int, request: Request, user=De
     row.website = (form.get("website") or "").strip() or None
     row.phone = (form.get("phone") or "").strip() or None
     row.email = (form.get("email") or "").strip() or None
+    datasheet_payload = _manufacturer_datasheet_fields_from_form(form)
+    row.datasheet_var_1 = datasheet_payload.get("datasheet_var_1")
+    row.datasheet_var_3 = datasheet_payload.get("datasheet_var_3")
+    row.datasheet_var_4 = datasheet_payload.get("datasheet_var_4")
+    row.datasheet_var2_source = str(datasheet_payload.get("datasheet_var2_source") or "sales_name")
     row.active = form.get("active") == "on"
     db.add(row)
     try:

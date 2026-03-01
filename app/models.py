@@ -217,6 +217,10 @@ class Manufacturer(Base):
     website: Mapped[str | None] = mapped_column(String(240), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
     email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    datasheet_var_1: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    datasheet_var_3: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    datasheet_var_4: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    datasheet_var2_source: Mapped[str] = mapped_column(String(30), nullable=False, default="sales_name")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -239,6 +243,12 @@ class Product(Base):
     manufacturer_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     material_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_url_1: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_2: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_3: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_4: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_5: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_6: Mapped[str | None] = mapped_column(String(600), nullable=True)
     sale_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     price_source: Mapped[str] = mapped_column(String(30), nullable=False, default="manuell")
@@ -493,7 +503,7 @@ class Reservation(Base):
 class Attachment(Base):
     __tablename__ = "attachments"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)  # repair
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)  # repair|product_datasheet
     entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
     filename: Mapped[str] = mapped_column(String(400), nullable=False)
     original_name: Mapped[str | None] = mapped_column(String(260), nullable=True)

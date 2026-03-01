@@ -32,6 +32,24 @@
         </select>
       </div>
       <div>
+        <label>Verkaufsbezeichnung</label>
+        <select name="map_sales_name">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('sales_name') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Materialnummer</label>
+        <select name="map_material_no">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('material_no') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
         <label>Hersteller</label>
         <select name="map_manufacturer">
           <option value="">-</option>
@@ -55,6 +73,15 @@
           <option value="">-</option>
           {% for c in columns %}
             <option value="{{ c }}" {% if guesses.get('ean') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Artikelart</label>
+        <select name="map_item_type">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('item_type') == c %}selected{% endif %}>{{ c }}</option>
           {% endfor %}
         </select>
       </div>
@@ -114,6 +141,87 @@
       </div>
     </div>
 
+    <h2>Bild-Links (optional)</h2>
+    <div class="grid3">
+      {% for idx in range(1, 7) %}
+      <div>
+        <label>Bild-Link {{ idx }}</label>
+        <select name="map_image_url_{{ idx }}">
+          <option value="">-</option>
+          {% for c in columns %}
+            <option value="{{ c }}" {% if guesses.get('image_url_' ~ idx) == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+
+    <h2>Manuelle Standardwerte (wenn CSV-Spalte fehlt oder leer ist)</h2>
+    <div class="grid2">
+      <div>
+        <label>Verkaufsbezeichnung (Standard)</label>
+        <input type="text" name="default_sales_name" placeholder="Optional">
+      </div>
+      <div>
+        <label>Materialnummer (Standard)</label>
+        <input type="text" name="default_material_no" placeholder="Optional">
+      </div>
+      <div>
+        <label>Hersteller (Standard)</label>
+        <input type="text" name="default_manufacturer" placeholder="Optional">
+      </div>
+      <div>
+        <label>SKU / Artikelnummer (Standard)</label>
+        <input type="text" name="default_sku" placeholder="Optional">
+      </div>
+      <div>
+        <label>EAN (Standard)</label>
+        <input type="text" name="default_ean" placeholder="Optional">
+      </div>
+      <div>
+        <label>Artikelart (Standard)</label>
+        <select name="default_item_type">
+          <option value="">Keine Vorgabe</option>
+          <option value="appliance">Großgerät</option>
+          <option value="spare_part">Ersatzteil</option>
+          <option value="accessory">Zubehör</option>
+          <option value="material">Material</option>
+        </select>
+      </div>
+      <div>
+        <label>Bereich (Standard)</label>
+        <input type="text" name="default_area" placeholder="z. B. Küche">
+      </div>
+      <div>
+        <label>Geräteart (Standard)</label>
+        <input type="text" name="default_kind" placeholder="z. B. Geschirrspüler">
+      </div>
+      <div>
+        <label>Gerätetyp (Standard)</label>
+        <input type="text" name="default_type" placeholder="Optional">
+      </div>
+      <div>
+        <label>Beschreibung (Standard)</label>
+        <input type="text" name="default_description" placeholder="Optional">
+      </div>
+      <div>
+        <label>Aktiv (Standard)</label>
+        <select name="default_active">
+          <option value="">-</option>
+          <option value="ja">Ja</option>
+          <option value="nein">Nein</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid3">
+      {% for idx in range(1, 7) %}
+      <div>
+        <label>Bild-Link {{ idx }} (Standard, absolute URL)</label>
+        <input type="text" name="default_image_url_{{ idx }}" placeholder="https://...">
+      </div>
+      {% endfor %}
+    </div>
+
     <h2>Import-Optionen</h2>
     <label class="check"><input type="checkbox" name="auto_create" checked> Fehlende Bereiche, Gerätearten und Gerätetypen automatisch anlegen</label>
 
@@ -140,6 +248,8 @@
 <ul>
   <li>Ordne jede gewünschte Zielspalte einer CSV-Spalte zu.</li>
   <li>Der Produktname ist Pflicht, alle anderen Felder sind optional.</li>
+  <li>Wenn Felder in der CSV fehlen, nutze die manuellen Standardwerte.</li>
+  <li>Bild-Links müssen absolute URLs mit http:// oder https:// sein.</li>
   <li>Wähle die Duplikatstrategie und starte danach den Import.</li>
 </ul>
 {% endblock %}
