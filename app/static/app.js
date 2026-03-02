@@ -849,59 +849,10 @@
   }
 
   function initCatalogListCascadeFilter(){
-    const form = document.querySelector('form[data-catalog-cascade-filter="1"]');
+    const form = document.querySelector('form[data-catalog-v2-filter="1"]') || document.querySelector('form[data-catalog-cascade-filter="1"]');
     if(!form) return;
-    const areaSelect = form.querySelector('#catalog_area_id');
     const kindSelect = form.querySelector('#catalog_kind_id');
-    const typeSelect = form.querySelector('#catalog_type_id');
-    if(!areaSelect && !kindSelect && !typeSelect) return;
-
-    const syncKindOptions = function(){
-      if(!kindSelect) return;
-      const selectedArea = areaSelect ? String(areaSelect.value || '0') : '0';
-      const options = Array.from(kindSelect.options || []);
-      options.forEach(function(opt){
-        const value = String(opt.value || '');
-        if(value === '' || value === '0'){
-          opt.hidden = false;
-          return;
-        }
-        const areaId = String(opt.getAttribute('data-area-id') || '');
-        const visible = !selectedArea || selectedArea === '0' || !areaId || areaId === selectedArea;
-        opt.hidden = !visible;
-      });
-      const selected = kindSelect.options[kindSelect.selectedIndex] || null;
-      if(selected && selected.hidden){
-        kindSelect.value = '0';
-      }
-    };
-
-    const syncTypeOptions = function(){
-      if(!typeSelect) return;
-      const selectedArea = areaSelect ? String(areaSelect.value || '0') : '0';
-      const selectedKind = kindSelect ? String(kindSelect.value || '0') : '0';
-      const options = Array.from(typeSelect.options || []);
-      options.forEach(function(opt){
-        const value = String(opt.value || '');
-        if(value === '' || value === '0'){
-          opt.hidden = false;
-          return;
-        }
-        const kindId = String(opt.getAttribute('data-kind-id') || '');
-        const areaId = String(opt.getAttribute('data-area-id') || '');
-        let visible = true;
-        if(selectedKind && selectedKind !== '0'){
-          visible = (kindId === selectedKind);
-        }else if(selectedArea && selectedArea !== '0'){
-          visible = (!areaId || areaId === selectedArea);
-        }
-        opt.hidden = !visible;
-      });
-      const selected = typeSelect.options[typeSelect.selectedIndex] || null;
-      if(selected && selected.hidden){
-        typeSelect.value = '0';
-      }
-    };
+    if(!kindSelect) return;
 
     const submit = function(){
       if(typeof form.requestSubmit === 'function'){
@@ -911,28 +862,28 @@
       }
     };
 
-    if(areaSelect){
-      areaSelect.addEventListener('change', function(){
-        syncKindOptions();
-        if(typeSelect) typeSelect.value = '0';
-        syncTypeOptions();
-        submit();
-      });
-    }
-    if(kindSelect){
-      kindSelect.addEventListener('change', function(){
-        syncTypeOptions();
-        submit();
-      });
-    }
-    if(typeSelect){
-      typeSelect.addEventListener('change', function(){
-        submit();
-      });
-    }
+    kindSelect.addEventListener('change', function(){
+      submit();
+    });
 
-    syncKindOptions();
-    syncTypeOptions();
+    form.addEventListener('keydown', function(e){
+      if(e.key !== 'Escape') return;
+      const target = e.target;
+      if(!(target instanceof HTMLElement)) return;
+      if(!target.closest('input,select,textarea')) return;
+      const fields = Array.from(form.querySelectorAll('input[name^=\"f_\"], select[name^=\"f_\"]'));
+      if(!fields.length) return;
+      fields.forEach(function(el){
+        if(!(el instanceof HTMLInputElement) && !(el instanceof HTMLSelectElement)) return;
+        if(el instanceof HTMLInputElement){
+          el.value = '';
+        }else{
+          el.value = '';
+        }
+      });
+      e.preventDefault();
+      submit();
+    });
   }
 
   function initImportMapCascadeDefaults(){

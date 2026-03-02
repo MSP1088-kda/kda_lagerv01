@@ -92,6 +92,9 @@
           Kundenansicht: {% if customer_view %}AN{% else %}AUS{% endif %}
         </button>
       </form>
+      {% if user.role == 'admin' %}
+      <a class="muted" href="/system/reset">System-Reset</a>
+      {% endif %}
       <span class="muted">Benutzer: {{ user.email }} ({{ user.role }}) | / Suche | Strg+K Kommando | F9 Kundenansicht</span>
       {% else %}
       <span class="muted">/ = Suche, Strg+K = Kommando</span>

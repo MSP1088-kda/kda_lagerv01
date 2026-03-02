@@ -243,6 +243,7 @@ class Product(Base):
     manufacturer_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     material_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    search_blob: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_url_1: Mapped[str | None] = mapped_column(String(600), nullable=True)
     image_url_2: Mapped[str | None] = mapped_column(String(600), nullable=True)
     image_url_3: Mapped[str | None] = mapped_column(String(600), nullable=True)
@@ -256,6 +257,7 @@ class Product(Base):
 
     manufacturer_ref = relationship("Manufacturer")
     attribute_values = relationship("ProductAttributeValue", back_populates="product", cascade="all, delete-orphan")
+    feature_values = relationship("FeatureValue", back_populates="product", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_products_name", "name"),
@@ -268,6 +270,7 @@ class Product(Base):
         Index("ix_products_area_kind_type", "area_id", "device_kind_id", "device_type_id"),
         Index("ix_products_manufacturer_id", "manufacturer_id"),
         Index("ix_products_price_source", "price_source"),
+        Index("ix_products_search_blob", "search_blob"),
     )
 
 
@@ -335,6 +338,99 @@ class ProductAttributeValue(Base):
     product = relationship("Product", back_populates="attribute_values")
 
     __table_args__ = (UniqueConstraint("product_id", "attribute_id", name="uq_product_attr"),)
+
+
+class FeatureDef(Base):
+    __tablename__ = "feature_defs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_kind_id: Mapped[int] = mapped_column(ForeignKey("device_kinds.id"), nullable=False)
+    key: Mapped[str] = mapped_column(String(120), nullable=False)
+    label_de: Mapped[str] = mapped_column(String(160), nullable=False)
+    data_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")  # text|number|bool
+    filterable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("device_kind_id", "key", name="uq_featuredef_kind_key"),
+        Index("ix_featuredef_kind_filterable", "device_kind_id", "filterable"),
+    )
+
+
+class FeatureValue(Base):
+    __tablename__ = "feature_values"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    feature_def_id: Mapped[int] = mapped_column(ForeignKey("feature_defs.id"), nullable=False)
+    value_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value_num: Mapped[float | None] = mapped_column(Float, nullable=True)
+    value_bool: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    value_norm: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    product = relationship("Product", back_populates="feature_values")
+    feature_def = relationship("FeatureDef")
+
+    __table_args__ = (
+        UniqueConstraint("product_id", "feature_def_id", name="uq_featurevalue_product_feature"),
+        Index("ix_featurevalue_feature", "feature_def_id"),
+        Index("ix_featurevalue_product", "product_id"),
+        Index("ix_featurevalue_norm", "value_norm"),
+        Index("ix_featurevalue_num", "value_num"),
+        Index("ix_featurevalue_bool", "value_bool"),
+    )
+
+
+class ImportProfile(Base):
+    __tablename__ = "import_profiles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    manufacturer_id: Mapped[int] = mapped_column(ForeignKey("manufacturers.id"), nullable=False)
+    device_kind_id: Mapped[int] = mapped_column(ForeignKey("device_kinds.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    delimiter: Mapped[str] = mapped_column(String(5), nullable=False, default=";")
+    encoding: Mapped[str] = mapped_column(String(40), nullable=False, default="utf-8")
+    has_header: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    ean_column: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("manufacturer_id", "device_kind_id", "name", name="uq_import_profile_mfg_kind_name"),
+        Index("ix_import_profile_lookup", "manufacturer_id", "device_kind_id"),
+        Index("ix_import_profile_last_used", "last_used_at"),
+    )
+
+
+class ImportProfileMap(Base):
+    __tablename__ = "import_profile_maps"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("import_profiles.id"), nullable=False)
+    map_type: Mapped[str] = mapped_column(String(30), nullable=False)  # product_field|feature
+    target_key: Mapped[str] = mapped_column(String(180), nullable=False)
+    source_column: Mapped[str] = mapped_column(String(200), nullable=False)
+    data_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "map_type", "target_key", name="uq_import_profile_map_target"),
+        Index("ix_import_profile_map_profile", "profile_id"),
+    )
+
+
+class ImportRun(Base):
+    __tablename__ = "import_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_id: Mapped[int | None] = mapped_column(ForeignKey("import_profiles.id"), nullable=True)
+    filename: Mapped[str] = mapped_column(String(260), nullable=False)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    inserted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    log_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_import_runs_started", "started_at"),
+        Index("ix_import_runs_profile", "profile_id"),
+    )
 
 
 class KindListAttribute(Base):

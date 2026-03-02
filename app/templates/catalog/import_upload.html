@@ -1,91 +1,61 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>CSV-Import Produkte</h1>
-
-  <h2>1. Import-Kontext wählen</h2>
-  <form method="get" action="/catalog/products/import" class="form" data-import-upload-form="1">
-    <label>Artikelart (Pflicht)</label>
-    <select name="item_type" required>
-      <option value="">Bitte wählen</option>
-      {% for it in item_types %}
-      <option value="{{ it }}" {% if selected_item_type == it %}selected{% endif %}>{{ item_type_labels.get(it, it) }}</option>
-      {% endfor %}
-    </select>
-
-    <label>Bereich (Pflicht)</label>
-    <select name="area_id" required>
-      <option value="">Bitte wählen</option>
-      {% for a in areas %}
-      <option value="{{ a.id }}" {% if selected_area_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+  <h1>CSV-Import V2</h1>
+  <form method="post" action="/catalog/products/import/preview" enctype="multipart/form-data" class="form" data-import-upload-form="1">
+    <label>Hersteller (Pflicht)</label>
+    <select name="manufacturer_id" required>
+      <option value="0">Bitte wählen</option>
+      {% for m in manufacturers %}
+      <option value="{{ m.id }}" {% if selected_manufacturer_id == m.id %}selected{% endif %}>{{ m.name }}</option>
       {% endfor %}
     </select>
 
     <label>Geräteart (Pflicht)</label>
     <select name="kind_id" required>
-      <option value="">Bitte wählen</option>
+      <option value="0">Bitte wählen</option>
       {% for k in kinds %}
-      <option value="{{ k.id }}" data-area-id="{{ k.area_id }}" {% if selected_kind_id == k.id %}selected{% endif %}>{{ k.name }}</option>
+      <option value="{{ k.id }}" {% if selected_kind_id == k.id %}selected{% endif %}>{{ k.name }}</option>
       {% endfor %}
     </select>
 
-    <div class="hint">
-      Erst wenn Artikelart, Bereich und Geräteart gewählt sind, kann die CSV-Datei ausgewählt werden.
-    </div>
+    <label>CSV-Datei</label>
+    <input type="file" name="csv_file" accept=".csv,text/csv" required>
 
-    <div class="row">
-      <button class="btn primary" type="submit">Kontext übernehmen</button>
-      <a class="btn" href="/catalog/products">Zurück</a>
-    </div>
-  </form>
-
-  <h2>2. CSV-Datei auswählen</h2>
-  {% if context_ready %}
-  <div class="box" style="margin-top:10px;">
-    <div class="box-body">
-      <div class="hint">
-        Aktiver Kontext:
-        <b>{{ item_type_labels.get(selected_item_type, selected_item_type) }}</b> /
-        <b>{{ selected_area.name }}</b> /
-        <b>{{ selected_kind.name }}</b>
-      </div>
-      <form method="post" action="/catalog/products/import/preview" enctype="multipart/form-data" class="form">
-        <input type="hidden" name="item_type" value="{{ selected_item_type }}">
-        <input type="hidden" name="area_id" value="{{ selected_area_id }}">
-        <input type="hidden" name="kind_id" value="{{ selected_kind_id }}">
-
-        <label>CSV-Datei</label>
-        <input type="file" name="csv_file" accept=".csv,text/csv" required>
-
+    <div class="grid3">
+      <div>
         <label>Trennzeichen</label>
         <select name="delimiter">
           <option value=";" selected>Semikolon (;)</option>
           <option value=",">Komma (,)</option>
         </select>
-
-        <label class="check">
-          <input type="checkbox" name="has_header" checked>
-          Erste Zeile enthält Spaltennamen
-        </label>
-
-        <div class="row">
-          <button class="btn primary" type="submit">Vorschau und Spaltenzuordnung</button>
-        </div>
-      </form>
+      </div>
+      <div>
+        <label>Encoding</label>
+        <select name="encoding">
+          <option value="utf-8" selected>utf-8</option>
+          <option value="utf-8-sig">utf-8-sig</option>
+          <option value="cp1252">cp1252</option>
+          <option value="latin-1">latin-1</option>
+        </select>
+      </div>
+      <div>
+        <label class="check"><input type="checkbox" name="has_header" checked> Erste Zeile enthält Header</label>
+      </div>
     </div>
-  </div>
-  {% else %}
-  <div class="hint">Bitte zuerst den Import-Kontext auswählen.</div>
-  {% endif %}
+
+    <div class="row">
+      <button class="btn primary" type="submit">Vorschau öffnen</button>
+      <a class="btn" href="/catalog/products">Zurück</a>
+    </div>
+  </form>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Der Import läuft in zwei Schritten: zuerst Kontext wählen, danach Datei hochladen.</li>
-  <li>Wähle Artikelart, Bereich und Geräteart immer vor der Dateiauswahl.</li>
-  <li>Lade die CSV-Datei nur für den gewählten Import-Kontext hoch.</li>
-  <li>Wähle das passende Trennzeichen deiner Datei.</li>
-  <li>Im nächsten Schritt ordnest du CSV-Spalten den Produktfeldern und den Geräteart-Attributen zu.</li>
+  <li>Wähle zuerst Hersteller und Geräteart.</li>
+  <li>Nach dem Upload erkennt das System passende Import-Profile automatisch.</li>
+  <li>Vor dem Schreiben wird immer eine Vorschau angezeigt.</li>
 </ul>
 {% endblock %}

@@ -1,16 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>CSV-Import: Spalten zuordnen</h1>
+  <h1>CSV-Import: Mapping</h1>
 
   <div class="hint">
-    Erkannte Zeilen: <b>{{ total_rows }}</b> |
+    Hersteller: <b>{{ manufacturer.name }}</b> |
+    Geräteart: <b>{{ selected_kind.name }}</b> |
+    Zeilen: <b>{{ total_rows }}</b> |
     Trennzeichen: <b>{{ delimiter }}</b> |
-    Kopfzeile: <b>{% if has_header %}Ja{% else %}Nein{% endif %}</b><br>
-    Import-Kontext: <b>{{ selected_item_type_label }}</b> /
-    <b>{{ selected_area.name }}</b> /
-    <b>{{ selected_kind.name }}</b>
+    Encoding: <b>{{ encoding }}</b>
   </div>
+
+  {% if matched_profiles %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Profil-Autodetektion</div>
+    <div class="box-body">
+      {% if auto_profile_id %}
+      <div class="hint">Passendes Profil wurde automatisch vorausgewählt.</div>
+      {% else %}
+      <div class="hint">Mehrere Profile passen. Bitte Profil auswählen oder neues Profil speichern.</div>
+      {% endif %}
+      <div class="mono">
+        {% for row in matched_profiles[:5] %}
+          #{{ row.profile.id }} {{ row.profile.name }} (Score {{ row.score }})<br>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <h2>Vorschau (erste 10 Zeilen)</h2>
   {% if preview_rows %}
@@ -24,263 +41,96 @@
   <div class="muted">Keine Datenzeilen erkannt.</div>
   {% endif %}
 
-  <h2>Zuordnung</h2>
   <form method="post" action="/catalog/products/import/run" class="form" data-import-map-form="1">
-    <div class="hint">
-      Für jedes Feld: CSV-Spalte zuordnen oder (falls keine passende Spalte existiert) einen manuellen Wert für alle Datensätze setzen.
-    </div>
-
-    <div class="table">
-      <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Feld</div>
-        <div>CSV-Spalte</div>
-        <div>Manuell (nur ohne Spalte)</div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Produktname (Pflicht)</div>
-        <div>
-          <select name="map_name" required>
-            <option value="">Bitte wählen</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('name') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="muted">CSV-Spalte ist Pflicht</div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Verkaufsbezeichnung</div>
-        <div>
-          <select name="map_sales_name">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('sales_name') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div><input type="text" name="manual_sales_name" placeholder="Optional"></div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Materialnummer</div>
-        <div>
-          <select name="map_material_no">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('material_no') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div><input type="text" name="manual_material_no" placeholder="Optional"></div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Hersteller</div>
-        <div>
-          <select name="map_manufacturer">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('manufacturer') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <select name="manual_manufacturer_id">
-            <option value="">Keine Vorgabe</option>
-            {% for m in manufacturers %}
-              <option value="{{ m.id }}">{{ m.name }}{% if not m.active %} (inaktiv){% endif %}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Herstellerbezeichnung</div>
-        <div>
-          <select name="map_manufacturer_name">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('manufacturer_name') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div><input type="text" name="manual_manufacturer_name" placeholder="Optional"></div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>SKU / Artikelnummer</div>
-        <div>
-          <select name="map_sku">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('sku') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div><input type="text" name="manual_sku" placeholder="Optional"></div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>EAN</div>
-        <div>
-          <select name="map_ean">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('ean') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div><input type="text" name="manual_ean" placeholder="Optional"></div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Gerätetyp</div>
-        <div>
-          <select name="map_type">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('type') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <select name="manual_type_id">
-            <option value="">Keine Vorgabe</option>
-            {% for t in types %}
-              <option value="{{ t.id }}">{{ t.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Tracking</div>
-        <div>
-          <select name="map_tracking">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('tracking') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <select name="manual_tracking">
-            <option value="">Keine Vorgabe</option>
-            <option value="serial">{{ 'serial'|de_label('track_mode') }}</option>
-            <option value="quantity">{{ 'quantity'|de_label('track_mode') }}</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Beschreibung</div>
-        <div>
-          <select name="map_description">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('description') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div><input type="text" name="manual_description" placeholder="Optional"></div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Aktiv (Ja/Nein)</div>
-        <div>
-          <select name="map_active">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('active') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <select name="manual_active">
-            <option value="">Keine Vorgabe</option>
-            <option value="ja">Ja</option>
-            <option value="nein">Nein</option>
-          </select>
-        </div>
-      </div>
-
-      {% for idx in range(1, 7) %}
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Bild-Link {{ idx }}</div>
-        <div>
-          <select name="map_image_url_{{ idx }}">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('image_url_' ~ idx) == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div><input type="text" name="manual_image_url_{{ idx }}" placeholder="https://..."></div>
-      </div>
+    <h2>Profil</h2>
+    <label>Bestehendes Profil</label>
+    <select name="profile_id">
+      <option value="0">Neues Profil erstellen</option>
+      {% for row in matched_profiles %}
+      <option value="{{ row.profile.id }}" {% if auto_profile_id == row.profile.id %}selected{% endif %}>{{ row.profile.name }}</option>
       {% endfor %}
-    </div>
+    </select>
 
-    <h2>Attribute für Geräteart: {{ selected_kind.name }}</h2>
-    {% if import_attrs %}
-    <div class="hint">
-      Attributwerte sollten aus der CSV kommen. Manuelle Werte gelten nur, wenn keine CSV-Spalte zugeordnet ist.
-    </div>
-    <div class="table">
-      <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Attribut</div>
-        <div>CSV-Spalte</div>
-        <div>Manuell (nur ohne Spalte)</div>
-      </div>
-      {% for a in import_attrs %}
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>
-          {{ a.name }}
-          {% if a.is_required %}<b>(Pflicht)</b>{% endif %}
-          <div class="muted">
-            Typ:
-            {% if a.value_type == 'bool' %}Ja/Nein{% elif a.value_type == 'number' %}Zahl{% elif a.value_type == 'enum' %}Auswahl{% else %}Text{% endif %}
-            {% if a.value_type == 'enum' and a.is_multi %} (Mehrfach, Trennung mit Komma){% endif %}
-            {% set opts = attr_options_map.get(a.id, []) %}
-            {% if opts %}
-              | Optionen: {{ opts|join(', ') }}
-            {% endif %}
-          </div>
-        </div>
-        <div>
-          <select name="map_attr_{{ a.id }}">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if attr_guesses.get(a.id) == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div><input type="text" name="manual_attr_{{ a.id }}" placeholder="Optional"></div>
-      </div>
+    <label>Profilname (für neues Profil)</label>
+    <input type="text" name="profile_name" value="{{ profile_name_default }}" placeholder="z. B. Bosch Geschirrspüler">
+
+    <h2>Pflicht-Mapping</h2>
+    <label>EAN-Spalte (Pflicht)</label>
+    <select name="ean_column" required>
+      <option value="">Bitte wählen</option>
+      {% for c in columns %}
+      <option value="{{ c }}" {% if ean_column == c %}selected{% endif %}>{{ c }}</option>
       {% endfor %}
-    </div>
-    {% else %}
-    <div class="muted">Für diese Geräteart sind aktuell keine Attribute hinterlegt.</div>
-    {% endif %}
+    </select>
 
-    <h2>Import-Optionen</h2>
-    <label class="check"><input type="checkbox" name="auto_create" checked> Fehlende Gerätetypen automatisch anlegen</label>
-
-    <div class="row">
-      <label class="radio"><input type="radio" name="duplicate_mode" value="skip" checked> Duplikate überspringen</label>
-      <label class="radio"><input type="radio" name="duplicate_mode" value="update"> Duplikate anhand SKU oder EAN aktualisieren</label>
-    </div>
-
-    <div class="grid2">
+    <h2>Produktfelder</h2>
+    <div class="grid3">
       <div>
-        <label>Aktiv-Werte (optional, kommagetrennt)</label>
-        <input type="text" name="active_true_values" placeholder="z. B. On market, live, im sortiment">
+        <label>Verkaufsbezeichnung</label>
+        <select name="map_sales_name">
+          <option value="">-</option>
+          {% for c in columns %}
+          <option value="{{ c }}" {% if product_field_map.get('sales_name') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
       </div>
       <div>
-        <label>Inaktiv-Werte (optional, kommagetrennt)</label>
-        <input type="text" name="active_false_values" placeholder="z. B. Phased out, ausgelistet">
+        <label>Materialnummer</label>
+        <select name="map_material_no">
+          <option value="">-</option>
+          {% for c in columns %}
+          <option value="{{ c }}" {% if product_field_map.get('material_no') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
       </div>
+      <div>
+        <label>Beschreibung</label>
+        <select name="map_description">
+          <option value="">-</option>
+          {% for c in columns %}
+          <option value="{{ c }}" {% if product_field_map.get('description') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <h2>Merkmale aus CSV</h2>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 1fr 120px 1.2fr 1fr 1fr;">
+        <div>CSV-Spalte</div>
+        <div>Importieren</div>
+        <div>Merkmal</div>
+        <div>Neuer Merkmalname</div>
+        <div>Datentyp</div>
+      </div>
+      {% for c in columns %}
+      {% set pre = feature_prefill_by_column.get(c, {}) %}
+      {% set use_checked = pre and pre.get('feature_key') %}
+      {% set idx = loop.index0 %}
+      <div class="tr" style="grid-template-columns: 1fr 120px 1.2fr 1fr 1fr;">
+        <div>{{ c }}</div>
+        <div><label class="check"><input type="checkbox" name="feature_use_{{ idx }}" {% if use_checked %}checked{% endif %}> Ja</label></div>
+        <div>
+          <select name="feature_existing_key_{{ idx }}">
+            <option value="">(bestehend)</option>
+            {% for f in feature_defs %}
+            <option value="{{ f.key }}" {% if pre.get('is_existing') == '1' and pre.get('feature_key') == f.key %}selected{% endif %}>{{ f.label_de }} ({{ f.key }})</option>
+            {% endfor %}
+            <option value="__neu__" {% if pre.get('is_existing') == '0' %}selected{% endif %}>Neues Merkmal</option>
+          </select>
+        </div>
+        <div>
+          <input type="text" name="feature_new_label_{{ idx }}" value="{% if pre.get('is_existing') == '0' %}{{ pre.get('feature_label','') }}{% endif %}" placeholder="nur bei neuem Merkmal">
+        </div>
+        <div>
+          <select name="feature_data_type_{{ idx }}">
+            <option value="text" {% if pre.get('data_type','text') == 'text' %}selected{% endif %}>Text</option>
+            <option value="number" {% if pre.get('data_type') == 'number' %}selected{% endif %}>Zahl</option>
+            <option value="bool" {% if pre.get('data_type') == 'bool' %}selected{% endif %}>Ja/Nein</option>
+          </select>
+        </div>
+      </div>
+      {% endfor %}
     </div>
 
     <div class="row">
@@ -293,10 +143,8 @@
 
 {% block help %}
 <ul>
-  <li>Artikelart, Bereich und Geräteart sind für diesen Import bereits fest vorgegeben.</li>
-  <li>Ordne gewünschte CSV-Spalten den Produktfeldern und Attributen der Geräteart zu.</li>
-  <li>Manuelle Werte werden nur verwendet, wenn für das Feld keine CSV-Spalte zugeordnet wurde.</li>
-  <li>Bild-Links müssen absolute URLs mit http:// oder https:// sein.</li>
-  <li>Aktiv/Inaktiv-Werte lassen sich optional frei definieren (z. B. On market / Phased out).</li>
+  <li>EAN-Spalte ist Pflicht, darüber erfolgt das Upsert.</li>
+  <li>Bestehende Profile werden erkannt und können direkt genutzt werden.</li>
+  <li>Merkmale kannst du pro Spalte als bestehendes oder neues Merkmal zuordnen.</li>
 </ul>
 {% endblock %}

@@ -3,250 +3,119 @@
 <div class="panel">
   <h1>Produktkatalog</h1>
 
-  <form method="get" action="/catalog/products" class="form compact" data-catalog-cascade-filter="1">
+  <form method="get" action="/catalog/products" class="form compact" data-catalog-v2-filter="1">
     <div class="grid3">
       <div>
-        <label>Suche</label>
-        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Suchen: Bezeichnung, Materialnummer, EAN, Hersteller, Attribute …">
-      </div>
-      <div>
-        <label>Artikelart</label>
-        <select name="item_type">
-          <option value="">Alle</option>
-          {% for it in item_type_labels.keys() %}
-            <option value="{{ it }}" {% if item_type==it %}selected{% endif %}>{{ item_type_labels.get(it) }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Bereich</label>
-        <select id="catalog_area_id" name="area_id">
-          <option value="0">Alle</option>
-          {% for a in areas %}
-            <option value="{{ a.id }}" {% if area_id==a.id %}selected{% endif %}>{{ a.name }}</option>
-          {% endfor %}
-        </select>
+        <label>Volltextsuche</label>
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Bezeichnung, EAN, Materialnummer, Hersteller, Merkmale ...">
       </div>
       <div>
         <label>Geräteart</label>
         <select id="catalog_kind_id" name="kind_id">
           <option value="0">Alle</option>
-          {% for k in all_kinds %}
-            {% set show_kind = (area_id == 0) or (k.area_id == area_id) %}
-            <option value="{{ k.id }}" data-area-id="{{ k.area_id }}" {% if kind_id==k.id %}selected{% endif %} {% if not show_kind %}hidden{% endif %}>{{ k.name }}</option>
+          {% for k in kinds %}
+            <option value="{{ k.id }}" {% if kind_id==k.id %}selected{% endif %}>{{ k.name }}</option>
           {% endfor %}
         </select>
       </div>
-      <div>
-        <label>Gerätetyp</label>
-        <select id="catalog_type_id" name="type_id">
-          <option value="0">Alle</option>
-          {% for t in all_types %}
-            {% set type_area_id = type_area_map.get(t.id, 0) %}
-            {% set show_type = (kind_id and t.device_kind_id == kind_id) or ((not kind_id) and ((area_id == 0) or (type_area_id == area_id))) %}
-            <option value="{{ t.id }}" data-kind-id="{{ t.device_kind_id }}" data-area-id="{{ type_area_id }}" {% if type_id==t.id %}selected{% endif %} {% if not show_type %}hidden{% endif %}>{{ t.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Hersteller</label>
-        <select name="manufacturer_id">
-          <option value="0">Alle</option>
-          {% for m in manufacturers %}
-            <option value="{{ m.id }}" {% if manufacturer_id==m.id %}selected{% endif %}>{{ m.name }}{% if not m.active %} (inaktiv){% endif %}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="row">
-        <label class="check"><input type="checkbox" name="in_stock_only" value="1" {% if in_stock_only==1 %}checked{% endif %}> Nur Geräte mit Lagerbestand</label>
-      </div>
-      {% if user.role == 'admin' %}
-      <div class="row">
-        <label class="check"><input type="checkbox" name="show_inactive" value="1" {% if show_inactive==1 %}checked{% endif %}> Inaktive anzeigen</label>
-      </div>
-      {% endif %}
     </div>
 
-    {% if kind_id or type_id %}
-    {% if filter_attrs %}
+    {% if kind_id and feature_filters %}
     <div class="box" style="margin-top:10px;">
-      <div class="box-title">Merkmale (Feinfilter)</div>
+      <div class="box-title">Merkmalfilter</div>
       <div class="box-body">
         <div class="grid3">
-          {% for a in filter_attrs %}
-            {% set slug = a.slug %}
-            {% set key = 'a_' ~ slug %}
-            <div>
-              <label>{{ a.name }}</label>
-              {% if a.value_type == 'bool' %}
-                <select name="{{ key }}">
-                  <option value="">-</option>
-                  <option value="true" {% if attr_filters.get(slug) == 'true' %}selected{% endif %}>Ja</option>
-                  <option value="false" {% if attr_filters.get(slug) == 'false' %}selected{% endif %}>Nein</option>
-                </select>
-              {% elif a.value_type == 'number' %}
-                {% set meta = numeric_filter_meta.get(slug) %}
-                <input id="{{ key }}_min" type="hidden" name="{{ key }}_min" value="{{ attr_filters.get(slug ~ '_min', '') }}">
-                <input id="{{ key }}_max" type="hidden" name="{{ key }}_max" value="{{ attr_filters.get(slug ~ '_max', '') }}">
-                {% if meta and meta['max'] > meta['min'] %}
-                <div class="trait-range-block">
-                  <div class="trait-range-summary muted">
-                    Bereich:
-                    <span id="{{ key }}_min_slider_value">{{ attr_filters.get(slug ~ '_min', meta['min']) }}</span>
-                    -
-                    <span id="{{ key }}_max_slider_value">{{ attr_filters.get(slug ~ '_max', meta['max']) }}</span>
-                  </div>
-                  <div class="trait-range-dual" data-trait-range-group="{{ key }}">
-                    <div class="trait-range-track"></div>
-                    <div class="trait-range-fill" data-trait-range-fill="{{ key }}"></div>
-                    <input
-                      class="trait-range-slider trait-range-slider-min"
-                      id="{{ key }}_min_slider"
-                      type="range"
-                      min="{{ meta['min'] }}"
-                      max="{{ meta['max'] }}"
-                      step="{{ meta['step'] }}"
-                      value="{{ attr_filters.get(slug ~ '_min', meta['min']) }}"
-                      data-trait-range-slider="1"
-                      data-trait-range-group="{{ key }}"
-                      data-trait-range-role="min"
-                      data-trait-range-target="{{ key }}_min"
-                      data-trait-range-value="{{ key }}_min_slider_value"
-                    >
-                    <input
-                      class="trait-range-slider trait-range-slider-max"
-                      id="{{ key }}_max_slider"
-                      type="range"
-                      min="{{ meta['min'] }}"
-                      max="{{ meta['max'] }}"
-                      step="{{ meta['step'] }}"
-                      value="{{ attr_filters.get(slug ~ '_max', meta['max']) }}"
-                      data-trait-range-slider="1"
-                      data-trait-range-group="{{ key }}"
-                      data-trait-range-role="max"
-                      data-trait-range-target="{{ key }}_max"
-                      data-trait-range-value="{{ key }}_max_slider_value"
-                    >
-                  </div>
-                </div>
-                {% endif %}
-              {% elif a.value_type == 'enum' and a.is_multi %}
-                {% set selected = attr_filters.get(slug, []) %}
-                <div class="row">
-                  {% for opt in options_by_slug.get(slug, []) %}
-                  <label class="check">
-                    <input type="checkbox" name="{{ key }}" value="{{ opt }}" {% if opt in selected %}checked{% endif %}>
-                    {{ opt }}
-                  </label>
-                  {% endfor %}
-                </div>
-              {% elif a.value_type == 'enum' %}
-                <select name="{{ key }}">
-                  <option value="">-</option>
-                  {% for opt in options_by_slug.get(slug, []) %}
-                    <option value="{{ opt }}" {% if attr_filters.get(slug) == opt %}selected{% endif %}>{{ opt }}</option>
-                  {% endfor %}
-                </select>
-              {% else %}
-                <input type="text" name="{{ key }}" value="{{ attr_filters.get(slug, '') }}" placeholder="Filterwert">
-              {% endif %}
+          {% for feature in feature_filters %}
+          <div>
+            <label>{{ feature.label }}</label>
+            {% if feature.data_type == 'number' %}
+            <div class="grid2">
+              <input type="text" name="f_{{ feature.id }}_min" value="{{ feature.min }}" placeholder="Min">
+              <input type="text" name="f_{{ feature.id }}_max" value="{{ feature.max }}" placeholder="Max">
             </div>
+            {% elif feature.data_type == 'bool' %}
+            <select name="f_{{ feature.id }}">
+              <option value="">Egal</option>
+              <option value="true" {% if feature.value in ['true','1','ja'] %}selected{% endif %}>Ja</option>
+              <option value="false" {% if feature.value in ['false','0','nein'] %}selected{% endif %}>Nein</option>
+            </select>
+            {% else %}
+            <input type="text" name="f_{{ feature.id }}" value="{{ feature.value }}" placeholder="enthält ...">
+            {% endif %}
+          </div>
           {% endfor %}
         </div>
       </div>
     </div>
+    {% elif kind_id %}
+    <div class="hint">Für diese Geräteart sind noch keine filterbaren Merkmale definiert.</div>
     {% else %}
-    <div class="hint">Für die gewählte Geräteart/Gerätetyp sind keine Merkmale hinterlegt.</div>
-    {% endif %}
-    {% else %}
-    <div class="hint">Für den Merkmal-Feinfilter zuerst Geräteart oder Gerätetyp wählen.</div>
+    <div class="hint">Merkmalfilter werden nach Auswahl einer Geräteart eingeblendet.</div>
     {% endif %}
 
-    <div class="row">
-      <a class="btn {% if not item_type %}primary{% endif %}" href="/catalog/products?q={{ q }}&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&in_stock_only={{ in_stock_only }}&show_inactive={{ show_inactive }}">Alle</a>
-      <a class="btn {% if item_type=='appliance' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=appliance&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&in_stock_only={{ in_stock_only }}&show_inactive={{ show_inactive }}">Großgeräte</a>
-      <a class="btn {% if item_type=='spare_part' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=spare_part&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&in_stock_only={{ in_stock_only }}&show_inactive={{ show_inactive }}">Ersatzteile</a>
-      <a class="btn {% if item_type=='accessory' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=accessory&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&in_stock_only={{ in_stock_only }}&show_inactive={{ show_inactive }}">Zubehör</a>
-      <a class="btn {% if item_type=='material' %}primary{% endif %}" href="/catalog/products?q={{ q }}&item_type=material&area_id={{ area_id }}&kind_id={{ kind_id }}&type_id={{ type_id }}&manufacturer_id={{ manufacturer_id }}&in_stock_only={{ in_stock_only }}&show_inactive={{ show_inactive }}">Material</a>
-    </div>
     <div class="row">
       <button class="btn primary" type="submit">Filtern</button>
       <a class="btn" href="/catalog/products">Zurücksetzen</a>
     </div>
+
     <div class="row right">
       {% if user.role == 'admin' %}
-        <a class="btn primary" href="/catalog/products/new">+ Neu</a>
-        <a class="btn" href="/catalog/products/import">CSV-Import</a>
+      <a class="btn primary" href="/catalog/products/new">+ Neu</a>
+      <a class="btn" href="/catalog/products/import">CSV-Import</a>
       {% endif %}
       <a class="btn" href="/catalog/sets">Sets</a>
-      <a class="btn" href="/catalog/structure">Struktur</a>
-      <a class="btn" href="/catalog/attributes">Attribute</a>
     </div>
   </form>
 
   <div class="table" data-kbd-list="true">
-    <div class="tr th" style="grid-template-columns: {{ table_grid }};">
-      {% for col in table_columns %}
-        <div>{{ col.label }}</div>
-      {% endfor %}
+    <div class="tr th" style="grid-template-columns: 2fr 1fr 1.2fr 2fr 130px 180px;">
+      <div>Produkt</div>
+      <div>Geräteart</div>
+      <div>Hersteller</div>
+      <div>Merkmale</div>
+      <div>Bestand</div>
+      <div>Aktion</div>
     </div>
+
     {% for p in products %}
-      {% set is_appliance = p.item_type == 'appliance' %}
-      {% set display_name = p.sales_name if is_appliance and p.sales_name else p.name %}
+      {% set display_name = p.sales_name if p.sales_name else p.name %}
       {% set brand = p.manufacturer if p.manufacturer else (p.manufacturer_name if p.manufacturer_name else '-') %}
-      {% set kind_label = kind_name_map.get(p.device_kind_id, '-') %}
-      {% set type_label = type_name_map.get(p.device_type_id, '-') %}
-      {% set traits = top_traits_map.get(p.id, []) %}
+      {% set feature_lines = feature_values_map.get(p.id, []) %}
       <div
         class="tr kbd-row"
-        style="grid-template-columns: {{ table_grid }};"
+        style="grid-template-columns: 2fr 1fr 1.2fr 2fr 130px 180px;"
         data-kbd-row="true"
         data-href="/catalog/products/{{ p.id }}"
         data-details-href="/catalog/products/{{ p.id }}"
-        {% if p.active %}data-book-href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}&return_to={{ return_to_q }}"{% endif %}
+        {% if p.active %}data-book-href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}"{% endif %}
         tabindex="0"
       >
-        {% for col in table_columns %}
-          {% if col.key == 'product' %}
-            <div>
-              <a href="/catalog/products/{{ p.id }}">{{ display_name }}</a>{% if not p.active %} <span class="muted">(archiviert)</span>{% endif %}
-              {% if not is_appliance and p.material_no %}<br><span class="muted">Materialnummer: {{ p.material_no }}</span>{% endif %}
-            </div>
-          {% elif col.key == 'brand' %}
-            <div>{% if is_appliance %}{{ brand }}{% else %}-{% endif %}</div>
-          {% elif col.key == 'kind_type' %}
-            <div>
-              {% if is_appliance %}
-                {{ kind_label }}{% if type_label != '-' %} / {{ type_label }}{% endif %}
-              {% else %}
-                {{ item_type_labels.get(p.item_type, 'Material') }}
-              {% endif %}
-            </div>
-          {% elif col.key == 'traits' %}
-            <div>
-              {% if is_appliance and traits %}
-                {% for trait in traits %}
-                  <div>{{ trait }}</div>
-                {% endfor %}
-              {% else %}
-                -
-              {% endif %}
-            </div>
-          {% elif col.key == 'stock_total' %}
-            <div>{{ stock_total_map.get(p.id, 0) }}</div>
-          {% elif col.key == 'actions' %}
-            <div>
-              <a class="btn small" href="/catalog/products/{{ p.id }}">Details</a>
-              {% if p.active %}
-                <a class="btn small" href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}&return_to={{ return_to_q }}">Einbuchen</a>
-              {% else %}
-                <span class="muted">Einbuchen gesperrt</span>
-              {% endif %}
-            </div>
+        <div>
+          <a href="/catalog/products/{{ p.id }}">{{ display_name }}</a>
+          {% if not p.active %}<span class="muted"> (archiviert)</span>{% endif %}
+          {% if p.material_no %}<br><span class="muted">Materialnummer: {{ p.material_no }}</span>{% endif %}
+        </div>
+        <div>{{ kind_name_map.get(p.device_kind_id, '-') }}</div>
+        <div>{{ brand }}</div>
+        <div>
+          {% if feature_lines %}
+            {% for line in feature_lines[:5] %}
+              <div>{{ line }}</div>
+            {% endfor %}
+          {% else %}
+            -
           {% endif %}
-        {% endfor %}
+        </div>
+        <div>{{ stock_total_map.get(p.id, 0) }}</div>
+        <div>
+          <a class="btn small" href="/catalog/products/{{ p.id }}">Details</a>
+          {% if p.active %}
+          <a class="btn small" href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}">Einbuchen</a>
+          {% endif %}
+        </div>
       </div>
     {% endfor %}
+
     {% if not products %}
       <div class="muted">Keine Treffer.</div>
     {% endif %}
@@ -256,12 +125,10 @@
 
 {% block help %}
 <ul>
-  <li>Enter: Details der markierten Zeile öffnen.</li>
-  <li>I: Als Bestand einbuchen (Wareneingang mit vorausgewähltem Produkt).</li>
-  <li>↑/↓: Zwischen den Produktzeilen wechseln.</li>
-  <li>Mit "Nur Geräte mit Lagerbestand" werden nur Produkte mit Bestand > 0 gezeigt.</li>
-  <li>Merkmale dienen als Feinfilter nach Auswahl von Geräteart/Gerätetyp.</li>
-  <li>Die Liste zeigt den Gesamtbestand; Zustandsdetails siehst du in der Produktdetailseite.</li>
-  <li>Bearbeiten und Archivieren findest du auf der Produktdetailseite.</li>
+  <li>Es gibt nur eine Volltextsuche für den gesamten Katalog.</li>
+  <li>Die einzige Struktur-Auswahl ist die Geräteart.</li>
+  <li>Merkmalfilter erscheinen nach Auswahl einer Geräteart.</li>
+  <li>Enter in einem Filterfeld führt die Filterung aus.</li>
+  <li>Mit "Zurücksetzen" werden alle Filter entfernt.</li>
 </ul>
 {% endblock %}

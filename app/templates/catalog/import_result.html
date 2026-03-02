@@ -8,8 +8,6 @@
     Aktualisiert: {{ updated_count }}<br>
     Übersprungen: {{ skipped_count }}<br>
     Fehler: {{ error_count }}<br>
-    Datenblätter lokal gespeichert: {{ datasheet_saved_count or 0 }}<br>
-    Datenblatt-Fehler: {{ datasheet_error_count or 0 }}<br>
   </div>
 
   <h2>Fehlerliste (maximal 50)</h2>
@@ -23,17 +21,6 @@
   <div class="muted">Keine Fehler aufgetreten.</div>
   {% endif %}
 
-  <h2>Datenblatt-Hinweise (maximal 50)</h2>
-  {% if datasheet_errors_preview %}
-  <div class="mono">
-    {% for e in datasheet_errors_preview %}
-      - {{ e }}<br>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="muted">Keine Datenblatt-Fehler aufgetreten.</div>
-  {% endif %}
-
   <div class="row">
     <a class="btn primary" href="/catalog/products">Zur Produktliste</a>
     <a class="btn" href="/catalog/products/import">Neuen Import starten</a>
@@ -43,8 +30,7 @@
 
 {% block help %}
 <ul>
-  <li>Prüfe hier, wie viele Datensätze angelegt oder aktualisiert wurden.</li>
-  <li>In der Fehlerliste stehen Zeilennummer und Ursache für übersprungene Zeilen.</li>
-  <li>Starte bei Bedarf direkt einen neuen Importlauf.</li>
+  <li>Der Import schreibt per EAN-Upsert: vorhandene Produkte werden aktualisiert.</li>
+  <li>Prüfe die Fehlerliste bei fehlender EAN oder ungültigen Wertformaten.</li>
 </ul>
 {% endblock %}

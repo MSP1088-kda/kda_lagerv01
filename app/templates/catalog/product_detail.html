@@ -14,6 +14,7 @@
       <div>Wert</div>
     </div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Artikelart</div><div>{{ item_type_labels.get(product.item_type, 'Material') }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Geräteart</div><div>{{ device_kind_name }}</div></div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Materialnummer</div><div>{{ product.material_no or '-' }}</div></div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>EAN</div><div>{{ product.ean or '-' }}</div></div>
     {% for row in attribute_detail_rows %}
