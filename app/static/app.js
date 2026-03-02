@@ -672,7 +672,8 @@
         minTarget: null,
         maxTarget: null,
         minValueEl: null,
-        maxValueEl: null
+        maxValueEl: null,
+        fillEl: null
       };
       if(role === 'min'){
         group.minSlider = slider;
@@ -683,8 +684,28 @@
         group.maxTarget = targetInput;
         group.maxValueEl = valueEl;
       }
+      if(!group.fillEl){
+        group.fillEl = document.querySelector('[data-trait-range-fill="' + groupKey + '"]');
+      }
       groups[groupKey] = group;
     });
+
+    const syncRangeFill = function(group){
+      if(!group.fillEl || !group.minSlider || !group.maxSlider) return;
+      const sliderMin = parseFloat(String(group.minSlider.min || ''));
+      const sliderMax = parseFloat(String(group.minSlider.max || ''));
+      const minValue = parseFloat(String(group.minSlider.value || ''));
+      const maxValue = parseFloat(String(group.maxSlider.value || ''));
+      if(!Number.isFinite(sliderMin) || !Number.isFinite(sliderMax) || sliderMax <= sliderMin){
+        group.fillEl.style.left = '0%';
+        group.fillEl.style.width = '0%';
+        return;
+      }
+      const left = ((minValue - sliderMin) / (sliderMax - sliderMin)) * 100;
+      const right = ((maxValue - sliderMin) / (sliderMax - sliderMin)) * 100;
+      group.fillEl.style.left = Math.max(0, Math.min(100, left)) + '%';
+      group.fillEl.style.width = Math.max(0, Math.min(100, right) - Math.max(0, Math.min(100, left))) + '%';
+    };
 
     const normalizePair = function(group, sourceRole){
       if(!group.minSlider || !group.maxSlider) return;
@@ -706,6 +727,7 @@
       if(group.maxValueEl){
         group.maxValueEl.textContent = formatTraitRangeValue(group.maxSlider.value);
       }
+      syncRangeFill(group);
     };
 
     const commitToInputs = function(group){
@@ -721,6 +743,12 @@
       const group = groups[key];
       if(!group.minSlider || !group.maxSlider) return;
 
+      const setActiveSlider = function(role){
+        if(!group.minSlider || !group.maxSlider) return;
+        group.minSlider.style.zIndex = (role === 'min') ? '6' : '4';
+        group.maxSlider.style.zIndex = (role === 'max') ? '6' : '5';
+      };
+
       if(group.minTarget && String(group.minTarget.value || '').trim() !== ''){
         group.minSlider.value = String(group.minTarget.value || group.minSlider.value);
       }
@@ -728,14 +756,23 @@
         group.maxSlider.value = String(group.maxTarget.value || group.maxSlider.value);
       }
       normalizePair(group, '');
+      setActiveSlider('');
 
       group.minSlider.addEventListener('input', function(){
+        setActiveSlider('min');
         normalizePair(group, 'min');
         commitToInputs(group);
       });
       group.maxSlider.addEventListener('input', function(){
+        setActiveSlider('max');
         normalizePair(group, 'max');
         commitToInputs(group);
+      });
+      group.minSlider.addEventListener('pointerdown', function(){
+        setActiveSlider('min');
+      });
+      group.maxSlider.addEventListener('pointerdown', function(){
+        setActiveSlider('max');
       });
     });
   }

@@ -86,29 +86,21 @@
                 </select>
               {% elif a.value_type == 'number' %}
                 {% set meta = numeric_filter_meta.get(slug) %}
-                <div class="grid2 trait-number-inputs">
-                  <input
-                    id="{{ key }}_min"
-                    type="number"
-                    step="any"
-                    name="{{ key }}_min"
-                    value="{{ attr_filters.get(slug ~ '_min', '') }}"
-                    placeholder="Min"
-                  >
-                  <input
-                    id="{{ key }}_max"
-                    type="number"
-                    step="any"
-                    name="{{ key }}_max"
-                    value="{{ attr_filters.get(slug ~ '_max', '') }}"
-                    placeholder="Max"
-                  >
-                </div>
+                <input id="{{ key }}_min" type="hidden" name="{{ key }}_min" value="{{ attr_filters.get(slug ~ '_min', '') }}">
+                <input id="{{ key }}_max" type="hidden" name="{{ key }}_max" value="{{ attr_filters.get(slug ~ '_max', '') }}">
                 {% if meta and meta['max'] > meta['min'] %}
                 <div class="trait-range-block">
-                  <div class="trait-range-row">
-                    <label class="muted" for="{{ key }}_min_slider">Min: <span id="{{ key }}_min_slider_value">{{ attr_filters.get(slug ~ '_min', meta['min']) }}</span></label>
+                  <div class="trait-range-summary muted">
+                    Bereich:
+                    <span id="{{ key }}_min_slider_value">{{ attr_filters.get(slug ~ '_min', meta['min']) }}</span>
+                    -
+                    <span id="{{ key }}_max_slider_value">{{ attr_filters.get(slug ~ '_max', meta['max']) }}</span>
+                  </div>
+                  <div class="trait-range-dual" data-trait-range-group="{{ key }}">
+                    <div class="trait-range-track"></div>
+                    <div class="trait-range-fill" data-trait-range-fill="{{ key }}"></div>
                     <input
+                      class="trait-range-slider trait-range-slider-min"
                       id="{{ key }}_min_slider"
                       type="range"
                       min="{{ meta['min'] }}"
@@ -121,10 +113,8 @@
                       data-trait-range-target="{{ key }}_min"
                       data-trait-range-value="{{ key }}_min_slider_value"
                     >
-                  </div>
-                  <div class="trait-range-row">
-                    <label class="muted" for="{{ key }}_max_slider">Max: <span id="{{ key }}_max_slider_value">{{ attr_filters.get(slug ~ '_max', meta['max']) }}</span></label>
                     <input
+                      class="trait-range-slider trait-range-slider-max"
                       id="{{ key }}_max_slider"
                       type="range"
                       min="{{ meta['min'] }}"
