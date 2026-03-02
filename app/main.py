@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 from typing import Optional
 from urllib import error as url_error, request as url_request
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlencode
 import uuid
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -2511,31 +2511,114 @@ def _enum_options_from_json(raw: str | None) -> list[str]:
 
 
 @app.get("/catalog/attributes", response_class=HTMLResponse)
-def attributes_list(request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
-    attrs = db.query(AttributeDef).order_by(AttributeDef.group_name.asc(), AttributeDef.name.asc()).all()
-    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc()).all()
-    types = db.query(DeviceType).order_by(DeviceType.name.asc()).all()
+def attributes_list(
+    request: Request,
+    user=Depends(require_user),
+    q: str = "",
+    group_filter: str = "",
+    db: Session = Depends(db_session),
+):
+    all_attrs = db.query(AttributeDef).order_by(AttributeDef.group_name.asc(), AttributeDef.name.asc()).all()
+    areas = db.query(Area).order_by(Area.name.asc(), Area.id.asc()).all()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    types = db.query(DeviceType).order_by(DeviceType.name.asc(), DeviceType.id.asc()).all()
     scopes = db.query(AttributeScope).all()
-    # map for display
-    kind_map = {k.id: k for k in kinds}
-    type_map = {t.id: t for t in types}
+
+    area_name_map = {int(a.id): str(a.name or "").strip() for a in areas}
+    kind_map = {int(k.id): k for k in kinds}
+    type_map = {int(t.id): t for t in types}
+
+    kind_label_map: dict[int, str] = {}
+    kind_option_rows: list[dict[str, str | int]] = []
+    for kind in kinds:
+        area_name = area_name_map.get(int(kind.area_id or 0), "")
+        kind_name = str(kind.name or "").strip()
+        label = f"{area_name} / {kind_name}" if area_name else kind_name
+        kind_label_map[int(kind.id)] = label
+        kind_option_rows.append({"id": int(kind.id), "label": label})
+
+    type_option_rows: list[dict[str, str | int]] = []
+    for dtype in types:
+        kind = kind_map.get(int(dtype.device_kind_id or 0))
+        kind_label = kind_label_map.get(int(kind.id), str(kind.name or "").strip()) if kind else ""
+        dtype_name = str(dtype.name or "").strip()
+        label = f"{kind_label} / {dtype_name}" if kind_label else dtype_name
+        type_option_rows.append({"id": int(dtype.id), "label": label})
+    type_label_map = {int(row["id"]): str(row["label"]) for row in type_option_rows}
+
+    q_norm = (q or "").strip().lower()
+    selected_group_filter = (group_filter or "").strip()
+    group_choices = sorted(
+        {str(a.group_name or "").strip() for a in all_attrs if str(a.group_name or "").strip()},
+        key=lambda v: v.lower(),
+    )
+
+    attrs: list[AttributeDef] = []
+    for attr in all_attrs:
+        group_name_raw = str(attr.group_name or "").strip()
+        if selected_group_filter == "__none__":
+            if group_name_raw:
+                continue
+        elif selected_group_filter:
+            if group_name_raw.lower() != selected_group_filter.lower():
+                continue
+        if q_norm:
+            haystack = " ".join(
+                [
+                    str(attr.name or ""),
+                    str(attr.slug or ""),
+                    group_name_raw,
+                ]
+            ).lower()
+            if q_norm not in haystack:
+                continue
+        attrs.append(attr)
+
     options_map: dict[int, list[str]] = {}
     grouped: dict[str, list[AttributeDef]] = {}
     scope_map: dict[int, list[dict[str, str | int]]] = {}
-    for s in scopes:
-        rows = scope_map.setdefault(s.attribute_id, [])
+    value_usage_rows = (
+        db.query(
+            ProductAttributeValue.attribute_id,
+            func.count(ProductAttributeValue.id),
+        )
+        .group_by(ProductAttributeValue.attribute_id)
+        .all()
+    )
+    list_usage_rows = (
+        db.query(
+            KindListAttribute.attribute_def_id,
+            func.count(KindListAttribute.id),
+        )
+        .group_by(KindListAttribute.attribute_def_id)
+        .all()
+    )
+    value_usage_map = {int(attr_id): int(cnt or 0) for attr_id, cnt in value_usage_rows}
+    list_usage_map = {int(attr_id): int(cnt or 0) for attr_id, cnt in list_usage_rows}
+    usage_map: dict[int, dict[str, int]] = {}
+    for scope in scopes:
+        rows = scope_map.setdefault(int(scope.attribute_id), [])
         label = ""
-        if s.device_type_id and s.device_type_id in type_map:
-            label = f"Typ: {type_map[s.device_type_id].name}"
-        elif s.device_kind_id and s.device_kind_id in kind_map:
-            label = f"Art: {kind_map[s.device_kind_id].name}"
+        if scope.device_type_id and int(scope.device_type_id) in type_map:
+            dtype = type_map[int(scope.device_type_id)]
+            label = f"Typ: {type_label_map.get(int(dtype.id), str(dtype.name or ''))}"
+        elif scope.device_kind_id and int(scope.device_kind_id) in kind_map:
+            fallback_kind_name = str(kind_map[int(scope.device_kind_id)].name or "").strip()
+            label = f"Art: {kind_label_map.get(int(scope.device_kind_id), fallback_kind_name)}"
         if label:
-            rows.append({"id": int(s.id), "label": label})
-    for a in attrs:
-        options_map[a.id] = _enum_options_from_json(a.enum_options_json)
-        group_name = (a.group_name or "").strip() or "Ohne Gruppe"
-        grouped.setdefault(group_name, []).append(a)
+            rows.append({"id": int(scope.id), "label": label})
+    for rows in scope_map.values():
+        rows.sort(key=lambda row: str(row.get("label") or "").lower())
+    for attr in attrs:
+        options_map[int(attr.id)] = _enum_options_from_json(attr.enum_options_json)
+        group_name = (attr.group_name or "").strip() or "Ohne Gruppe"
+        grouped.setdefault(group_name, []).append(attr)
+        usage_map[int(attr.id)] = {
+            "values": int(value_usage_map.get(int(attr.id), 0)),
+            "list_slots": int(list_usage_map.get(int(attr.id), 0)),
+        }
     attrs_grouped = sorted(grouped.items(), key=lambda item: (item[0] != "Ohne Gruppe", item[0].lower()))
+
     return templates.TemplateResponse(
         "catalog/attributes.html",
         _ctx(
@@ -2545,8 +2628,15 @@ def attributes_list(request: Request, user=Depends(require_user), db: Session = 
             attrs_grouped=attrs_grouped,
             kinds=kinds,
             types=types,
+            kind_option_rows=kind_option_rows,
+            type_option_rows=type_option_rows,
             scope_map=scope_map,
             options_map=options_map,
+            usage_map=usage_map,
+            q=q,
+            group_filter=selected_group_filter,
+            group_choices=group_choices,
+            total_attrs=len(all_attrs),
         ),
     )
 
@@ -2561,6 +2651,7 @@ def attributes_add(
     enum_options: str = Form(""),
     group_name: str = Form(""),
     is_required: Optional[str] = Form(None),
+    scope_kind_ids: list[int] = Form([]),
     scope_kind_id: int = Form(0),
     scope_type_id: int = Form(0),
     db: Session = Depends(db_session),
@@ -2579,6 +2670,25 @@ def attributes_add(
 
     if value_type not in _ALLOWED_ATTRIBUTE_TYPES:
         _flash(request, "Ungültiger Attribut-Typ.", "error")
+        return RedirectResponse("/catalog/attributes", status_code=302)
+
+    selected_kind_ids = {int(v) for v in (scope_kind_ids or []) if int(v or 0) > 0}
+    if int(scope_kind_id or 0) > 0:
+        selected_kind_ids.add(int(scope_kind_id))
+    valid_kind_ids: set[int] = set()
+    if selected_kind_ids:
+        valid_kind_ids = {
+            int(row_id)
+            for row_id, in db.query(DeviceKind.id).filter(DeviceKind.id.in_(list(selected_kind_ids))).all()
+        }
+        invalid_kind_ids = sorted(selected_kind_ids - valid_kind_ids)
+        if invalid_kind_ids:
+            _flash(request, "Ungültige Geräteart im Geltungsbereich gewählt.", "error")
+            return RedirectResponse("/catalog/attributes", status_code=302)
+
+    scope_type_row = db.get(DeviceType, int(scope_type_id or 0)) if int(scope_type_id or 0) > 0 else None
+    if int(scope_type_id or 0) > 0 and not scope_type_row:
+        _flash(request, "Ungültiger Gerätetyp im Geltungsbereich gewählt.", "error")
         return RedirectResponse("/catalog/attributes", status_code=302)
 
     enum_json = None
@@ -2604,12 +2714,121 @@ def attributes_add(
     db.add(attr)
     db.flush()
 
-    if scope_kind_id or scope_type_id:
-        sc = AttributeScope(attribute_id=attr.id, device_kind_id=(scope_kind_id or None), device_type_id=(scope_type_id or None))
-        db.add(sc)
+    for kind_id in sorted(valid_kind_ids):
+        db.add(AttributeScope(attribute_id=attr.id, device_kind_id=kind_id, device_type_id=None))
+    if scope_type_row:
+        db.add(AttributeScope(attribute_id=attr.id, device_kind_id=None, device_type_id=int(scope_type_row.id)))
 
     db.commit()
-    _flash(request, "Attribut angelegt.", "info")
+    scopes_added = len(valid_kind_ids) + (1 if scope_type_row else 0)
+    if scopes_added:
+        _flash(request, f"Attribut angelegt und {scopes_added} Geltungsbereich(e) gesetzt.", "info")
+    else:
+        _flash(request, "Attribut angelegt.", "info")
+    return RedirectResponse("/catalog/attributes", status_code=302)
+
+
+@app.post("/catalog/attributes/{attr_id}/edit")
+def attributes_edit(
+    attr_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    name: str = Form(...),
+    value_type: str = Form(...),
+    is_multi: Optional[str] = Form(None),
+    enum_options: str = Form(""),
+    group_name: str = Form(""),
+    is_required: Optional[str] = Form(None),
+    db: Session = Depends(db_session),
+):
+    attr = db.get(AttributeDef, attr_id)
+    if not attr:
+        raise HTTPException(status_code=404)
+
+    name_clean = (name or "").strip()
+    if not name_clean:
+        _flash(request, "Name fehlt.", "error")
+        return RedirectResponse("/catalog/attributes", status_code=302)
+
+    value_type_clean = str(value_type or "").strip().lower()
+    if value_type_clean not in _ALLOWED_ATTRIBUTE_TYPES:
+        _flash(request, "Ungültiger Attribut-Typ.", "error")
+        return RedirectResponse("/catalog/attributes", status_code=302)
+
+    existing_value_count = (
+        db.query(ProductAttributeValue)
+        .filter(ProductAttributeValue.attribute_id == int(attr_id))
+        .count()
+    )
+    if value_type_clean != str(attr.value_type or "").strip().lower() and existing_value_count > 0:
+        _flash(
+            request,
+            "Der Typ kann nicht geändert werden, solange bereits Attributwerte zu Produkten existieren.",
+            "error",
+        )
+        return RedirectResponse("/catalog/attributes", status_code=302)
+
+    enum_json = None
+    options = _parse_enum_options(enum_options)
+    if value_type_clean == "enum":
+        if not options:
+            _flash(request, "Auswahlattribute brauchen mindestens eine Option.", "error")
+            return RedirectResponse("/catalog/attributes", status_code=302)
+        enum_json = json.dumps(options, ensure_ascii=False)
+    else:
+        is_multi = None
+
+    attr.name = name_clean
+    attr.value_type = value_type_clean
+    attr.is_multi = bool(is_multi == "on")
+    attr.enum_options_json = enum_json
+    attr.group_name = (group_name or "").strip() or None
+    attr.is_required = bool(is_required == "on")
+    db.add(attr)
+    db.commit()
+    _flash(request, f"Attribut '{name_clean}' aktualisiert.", "info")
+    return RedirectResponse("/catalog/attributes", status_code=302)
+
+
+@app.post("/catalog/attributes/{attr_id}/delete")
+def attributes_delete(attr_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    attr = db.get(AttributeDef, attr_id)
+    if not attr:
+        raise HTTPException(status_code=404)
+
+    attr_name = str(attr.name or f"Attribut #{int(attr_id)}")
+    scope_count = (
+        db.query(AttributeScope)
+        .filter(AttributeScope.attribute_id == int(attr_id))
+        .count()
+    )
+    value_count = (
+        db.query(ProductAttributeValue)
+        .filter(ProductAttributeValue.attribute_id == int(attr_id))
+        .count()
+    )
+    list_slot_count = (
+        db.query(KindListAttribute)
+        .filter(KindListAttribute.attribute_def_id == int(attr_id))
+        .count()
+    )
+
+    try:
+        db.query(ProductAttributeValue).filter(ProductAttributeValue.attribute_id == int(attr_id)).delete(synchronize_session=False)
+        db.query(KindListAttribute).filter(KindListAttribute.attribute_def_id == int(attr_id)).delete(synchronize_session=False)
+        db.query(AttributeScope).filter(AttributeScope.attribute_id == int(attr_id)).delete(synchronize_session=False)
+        db.delete(attr)
+        db.commit()
+    except Exception:
+        db.rollback()
+        _flash(request, f"Attribut '{attr_name}' konnte nicht gelöscht werden.", "error")
+        return RedirectResponse("/catalog/attributes", status_code=302)
+
+    _flash(
+        request,
+        f"Attribut '{attr_name}' gelöscht (Scopes: {scope_count}, Attributwerte: {value_count}, Listen-Slots: {list_slot_count}).",
+        "info",
+    )
     return RedirectResponse("/catalog/attributes", status_code=302)
 
 
@@ -2618,26 +2837,81 @@ def attributes_scope_add(
     attr_id: int,
     request: Request,
     user=Depends(require_admin),
+    scope_kind_ids: list[int] = Form([]),
     scope_kind_id: int = Form(0),
     scope_type_id: int = Form(0),
     db: Session = Depends(db_session),
 ):
-    if not scope_kind_id and not scope_type_id:
+    if not db.get(AttributeDef, attr_id):
+        raise HTTPException(status_code=404)
+
+    selected_kind_ids = {int(v) for v in (scope_kind_ids or []) if int(v or 0) > 0}
+    if int(scope_kind_id or 0) > 0:
+        selected_kind_ids.add(int(scope_kind_id))
+    selected_type_id = int(scope_type_id or 0)
+
+    if not selected_kind_ids and not selected_type_id:
         _flash(request, "Bitte Geräteart oder Gerätetyp wählen.", "error")
         return RedirectResponse("/catalog/attributes", status_code=302)
 
-    exists = (
-        db.query(AttributeScope)
-        .filter(AttributeScope.attribute_id == attr_id, AttributeScope.device_kind_id == (scope_kind_id or None), AttributeScope.device_type_id == (scope_type_id or None))
-        .count()
-    )
-    if exists:
-        _flash(request, "Scope existiert bereits.", "error")
+    valid_kind_ids: set[int] = set()
+    if selected_kind_ids:
+        valid_kind_ids = {
+            int(row_id)
+            for row_id, in db.query(DeviceKind.id).filter(DeviceKind.id.in_(list(selected_kind_ids))).all()
+        }
+        if valid_kind_ids != selected_kind_ids:
+            _flash(request, "Mindestens eine gewählte Geräteart ist ungültig.", "error")
+            return RedirectResponse("/catalog/attributes", status_code=302)
+
+    scope_type_row = db.get(DeviceType, selected_type_id) if selected_type_id else None
+    if selected_type_id and not scope_type_row:
+        _flash(request, "Gewählter Gerätetyp ist ungültig.", "error")
         return RedirectResponse("/catalog/attributes", status_code=302)
 
-    db.add(AttributeScope(attribute_id=attr_id, device_kind_id=(scope_kind_id or None), device_type_id=(scope_type_id or None)))
-    db.commit()
-    _flash(request, "Scope hinzugefügt.", "info")
+    added_count = 0
+    existing_count = 0
+
+    for kind_id in sorted(valid_kind_ids):
+        exists = (
+            db.query(AttributeScope)
+            .filter(
+                AttributeScope.attribute_id == attr_id,
+                AttributeScope.device_kind_id == kind_id,
+                AttributeScope.device_type_id.is_(None),
+            )
+            .count()
+        )
+        if exists:
+            existing_count += 1
+            continue
+        db.add(AttributeScope(attribute_id=attr_id, device_kind_id=kind_id, device_type_id=None))
+        added_count += 1
+
+    if scope_type_row:
+        exists = (
+            db.query(AttributeScope)
+            .filter(
+                AttributeScope.attribute_id == attr_id,
+                AttributeScope.device_kind_id.is_(None),
+                AttributeScope.device_type_id == int(scope_type_row.id),
+            )
+            .count()
+        )
+        if exists:
+            existing_count += 1
+        else:
+            db.add(AttributeScope(attribute_id=attr_id, device_kind_id=None, device_type_id=int(scope_type_row.id)))
+            added_count += 1
+
+    if added_count > 0:
+        db.commit()
+    if added_count and existing_count:
+        _flash(request, f"{added_count} Geltungsbereich(e) hinzugefügt, {existing_count} bereits vorhanden.", "info")
+    elif added_count:
+        _flash(request, f"{added_count} Geltungsbereich(e) hinzugefügt.", "info")
+    else:
+        _flash(request, "Alle gewählten Geltungsbereiche sind bereits vorhanden.", "info")
     return RedirectResponse("/catalog/attributes", status_code=302)
 
 
@@ -2939,6 +3213,105 @@ def _guess_column(columns: list[str], candidates: tuple[str, ...]) -> str:
         if c in norm_map:
             return norm_map[c]
     return ""
+
+
+def _csv_import_back_url(item_type: str = "", area_id: int = 0, kind_id: int = 0) -> str:
+    params: dict[str, str] = {}
+    normalized_item_type = _normalize_item_type(item_type, fallback="")
+    if normalized_item_type:
+        params["item_type"] = normalized_item_type
+    if int(area_id or 0) > 0:
+        params["area_id"] = str(int(area_id))
+    if int(kind_id or 0) > 0:
+        params["kind_id"] = str(int(kind_id))
+    if not params:
+        return "/catalog/products/import"
+    return f"/catalog/products/import?{urlencode(params)}"
+
+
+def _guess_attribute_column(columns: list[str], attr: AttributeDef) -> str:
+    candidates: list[str] = []
+    name = str(attr.name or "").strip().lower()
+    slug = str(attr.slug or "").strip().lower()
+    if name:
+        candidates.extend(
+            [
+                name,
+                name.replace(" ", "_"),
+                name.replace(" ", "-"),
+                name.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"),
+            ]
+        )
+    if slug:
+        candidates.extend([slug, slug.replace("_", " "), slug.replace("-", " ")])
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return _guess_column(columns, tuple(ordered))
+
+
+def _enum_match_option(raw_value: str, options: list[str]) -> str | None:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None
+    for option in options:
+        if raw == option:
+            return option
+    lowered = raw.lower()
+    for option in options:
+        if lowered == str(option or "").strip().lower():
+            return option
+    return None
+
+
+def _parse_import_attribute_value(attr: AttributeDef, raw_value: str) -> str:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return ""
+    label = str(attr.name or f"Attribut {int(attr.id)}")
+
+    if attr.value_type == "bool":
+        lowered = raw.lower()
+        if lowered in ("1", "true", "ja", "j", "on", "x"):
+            return "true"
+        if lowered in ("0", "false", "nein", "n", "off"):
+            return "false"
+        raise ValueError(f"Ungültiger Ja/Nein-Wert bei Attribut '{label}': {raw}")
+
+    if attr.value_type == "number":
+        try:
+            parsed = float(raw.replace(",", "."))
+            return str(int(parsed)) if parsed.is_integer() else str(parsed)
+        except Exception as exc:
+            raise ValueError(f"Ungültige Zahl bei Attribut '{label}': {raw}") from exc
+
+    if attr.value_type == "enum":
+        options = _enum_options_from_json(attr.enum_options_json)
+        if not options:
+            return raw
+        if bool(attr.is_multi):
+            selected: list[str] = []
+            for token in re.split(r"[,\n;|]+", raw):
+                token_clean = str(token or "").strip()
+                if not token_clean:
+                    continue
+                matched = _enum_match_option(token_clean, options)
+                if not matched:
+                    raise ValueError(f"Ungültiger Optionswert bei Attribut '{label}': {token_clean}")
+                if matched not in selected:
+                    selected.append(matched)
+            return json.dumps(selected, ensure_ascii=False) if selected else ""
+        matched = _enum_match_option(raw, options)
+        if not matched:
+            raise ValueError(f"Ungültiger Optionswert bei Attribut '{label}': {raw}")
+        return matched
+
+    return raw
 
 
 ITEM_TYPE_CHOICES = ("appliance", "spare_part", "accessory", "material")
@@ -3443,6 +3816,166 @@ def _format_list_attribute_value(attr: AttributeDef, raw_value: str | None) -> s
     return raw
 
 
+def _flush_description_text_block(out: list[dict[str, object]], lines: list[str]) -> None:
+    if not lines:
+        return
+    text = " ".join(str(line or "").strip() for line in lines if str(line or "").strip()).strip()
+    lines.clear()
+    if text:
+        out.append({"kind": "text", "text": text})
+
+
+def _flush_description_list_block(out: list[dict[str, object]], items: list[str]) -> None:
+    if not items:
+        return
+    cleaned = [str(item or "").strip() for item in items if str(item or "").strip()]
+    items.clear()
+    if cleaned:
+        out.append({"kind": "list", "items": cleaned})
+
+
+def _flush_description_kv_block(out: list[dict[str, object]], rows: list[dict[str, str]]) -> None:
+    if not rows:
+        return
+    cleaned: list[dict[str, str]] = []
+    for row in rows:
+        label = str(row.get("label") or "").strip()
+        value = str(row.get("value") or "").strip()
+        if not label or not value:
+            continue
+        cleaned.append({"label": label, "value": value})
+    rows.clear()
+    if cleaned:
+        out.append({"kind": "kv", "rows": cleaned})
+
+
+DESCRIPTION_SECTION_HEADINGS = {
+    "leistung und verbrauch",
+    "programme und sonderfunktionen",
+    "spül- / trocknungstechnologie",
+    "spül-/trocknungstechnologie",
+    "korbsystem",
+    "anzeige und bedienung",
+    "technische informationen und zubehör",
+    "zubehör",
+    "maße",
+    "masse",
+}
+
+
+def _description_heading_key(raw: str) -> str:
+    return re.sub(r"\s+", " ", str(raw or "").strip().casefold())
+
+
+def _description_is_section_heading(line: str) -> bool:
+    raw = str(line or "").strip()
+    if not raw:
+        return False
+    if raw.endswith(":") and raw.count(":") == 1 and len(raw) <= 90:
+        return True
+    key = _description_heading_key(raw)
+    if key in DESCRIPTION_SECTION_HEADINGS:
+        return True
+    if ":" in raw:
+        return False
+    word_count = len([w for w in raw.split(" ") if w])
+    if word_count < 2 or word_count > 6:
+        return False
+    if " und " in key or "/" in raw:
+        return True
+    if key.endswith("technologie") or key.endswith("zubehör"):
+        return True
+    return False
+
+
+def _description_logical_lines(raw_text: str | None) -> tuple[list[str], bool]:
+    text = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    dense_mode = False
+    out: list[str] = []
+    for base_line in text.split("\n"):
+        raw_line = str(base_line or "")
+        if not raw_line.strip():
+            out.append("")
+            continue
+        parts = [p.strip() for p in re.split(r"\s{2,}", raw_line) if p.strip()]
+        if len(parts) > 1:
+            dense_mode = True
+        if parts:
+            out.extend(parts)
+        else:
+            out.append(raw_line.strip())
+    return out, dense_mode
+
+
+def _split_product_description(raw_text: str | None) -> list[dict[str, object]]:
+    lines, dense_mode = _description_logical_lines(raw_text)
+    if not any(str(line or "").strip() for line in lines):
+        return []
+
+    out: list[dict[str, object]] = []
+    paragraph_lines: list[str] = []
+    list_items: list[str] = []
+    kv_rows: list[dict[str, str]] = []
+    bullet_re = re.compile(r"^(?:[-*•]|\d+[.)])\s+(.+)$")
+
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line:
+            _flush_description_list_block(out, list_items)
+            _flush_description_kv_block(out, kv_rows)
+            _flush_description_text_block(out, paragraph_lines)
+            continue
+
+        bullet_match = bullet_re.match(line)
+        if bullet_match:
+            _flush_description_kv_block(out, kv_rows)
+            _flush_description_text_block(out, paragraph_lines)
+            item = str(bullet_match.group(1) or "").strip()
+            if item:
+                list_items.append(item)
+            continue
+
+        if _description_is_section_heading(line):
+            _flush_description_list_block(out, list_items)
+            _flush_description_kv_block(out, kv_rows)
+            _flush_description_text_block(out, paragraph_lines)
+            heading = line[:-1].strip() if line.endswith(":") else line.strip()
+            if heading:
+                out.append({"kind": "heading", "text": heading})
+                continue
+
+        if ":" in line and "://" not in line:
+            left, right = line.split(":", 1)
+            key = left.strip()
+            value = right.strip()
+            if (
+                key
+                and value
+                and len(key) <= 56
+                and re.search(r"[A-Za-zÄÖÜäöü]", key)
+                and not key.endswith(".")
+            ):
+                _flush_description_list_block(out, list_items)
+                _flush_description_text_block(out, paragraph_lines)
+                kv_rows.append({"label": key, "value": value})
+                continue
+
+        if dense_mode:
+            _flush_description_kv_block(out, kv_rows)
+            _flush_description_text_block(out, paragraph_lines)
+            list_items.append(line)
+            continue
+
+        _flush_description_list_block(out, list_items)
+        _flush_description_kv_block(out, kv_rows)
+        paragraph_lines.append(line)
+
+    _flush_description_list_block(out, list_items)
+    _flush_description_kv_block(out, kv_rows)
+    _flush_description_text_block(out, paragraph_lines)
+    return out
+
+
 def _top_traits_for_products(db: Session, products: list[Product]) -> dict[int, list[str]]:
     product_ids = [int(p.id) for p in products]
     if not product_ids:
@@ -3572,6 +4105,7 @@ def products_list(
     kind_id: int = 0,
     type_id: int = 0,
     manufacturer_id: int = 0,
+    in_stock_only: int = 0,
     show_inactive: int = 0,
     db: Session = Depends(db_session),
 ):
@@ -3610,10 +4144,73 @@ def products_list(
         query = query.filter(Product.device_type_id == type_id)
     if manufacturer_id:
         query = query.filter(Product.manufacturer_id == manufacturer_id)
+    in_stock_only = 1 if int(in_stock_only or 0) == 1 else 0
+    if in_stock_only == 1:
+        stock_positive_exists = (
+            db.query(StockBalance.product_id)
+            .filter(StockBalance.product_id == Product.id)
+            .group_by(StockBalance.product_id)
+            .having(func.coalesce(func.sum(StockBalance.quantity), 0) > 0)
+            .exists()
+        )
+        query = query.filter(
+            stock_positive_exists
+        )
 
     filter_attrs = _applicable_attributes(db, kind_id or None, type_id or None) if (kind_id or type_id) else []
     attr_filters: dict[str, str | list[str]] = {}
     options_by_slug: dict[str, list[str]] = {}
+    numeric_filter_meta: dict[str, dict[str, float]] = {}
+
+    numeric_attr_ids = [int(a.id) for a in filter_attrs if str(a.value_type or "") == "number"]
+    if numeric_attr_ids:
+        base_product_id_subq = query.with_entities(Product.id).subquery()
+        numeric_rows = (
+            db.query(ProductAttributeValue.attribute_id, ProductAttributeValue.value_text)
+            .filter(
+                ProductAttributeValue.attribute_id.in_(numeric_attr_ids),
+                ProductAttributeValue.product_id.in_(db.query(base_product_id_subq.c.id)),
+            )
+            .all()
+        )
+        numeric_values_by_attr: dict[int, list[float]] = {}
+        for attr_id_raw, raw_value in numeric_rows:
+            attr_id = int(attr_id_raw or 0)
+            raw = str(raw_value or "").strip().replace(",", ".")
+            if not raw:
+                continue
+            try:
+                parsed = float(raw)
+            except Exception:
+                continue
+            if not parsed == parsed:  # NaN guard
+                continue
+            numeric_values_by_attr.setdefault(attr_id, []).append(parsed)
+
+        for attr in filter_attrs:
+            if str(attr.value_type or "") != "number":
+                continue
+            values = numeric_values_by_attr.get(int(attr.id), [])
+            if not values:
+                continue
+            min_value = min(values)
+            max_value = max(values)
+            decimals_present = any(abs(v - round(v)) > 1e-9 for v in values)
+            spread = abs(max_value - min_value)
+            if decimals_present:
+                if spread <= 2:
+                    step = 0.01
+                elif spread <= 20:
+                    step = 0.1
+                else:
+                    step = 1.0
+            else:
+                step = 1.0
+            numeric_filter_meta[str(attr.slug or "").strip()] = {
+                "min": round(min_value, 4),
+                "max": round(max_value, 4),
+                "step": step,
+            }
 
     for a in filter_attrs:
         slug = a.slug
@@ -3776,10 +4373,12 @@ def products_list(
             type_id=type_id,
             manufacturers=manufacturers,
             manufacturer_id=manufacturer_id,
+            in_stock_only=in_stock_only,
             show_inactive=(1 if include_inactive else 0),
             filter_attrs=filter_attrs,
             attr_filters=attr_filters,
             options_by_slug=options_by_slug,
+            numeric_filter_meta=numeric_filter_meta,
             sets_enabled_product_ids=sets_enabled_product_ids,
             kind_name_map=kind_name_map,
             type_name_map=type_name_map,
@@ -3794,13 +4393,75 @@ def products_list(
 
 
 @app.get("/catalog/products/import", response_class=HTMLResponse)
-def products_import_get(request: Request, user=Depends(require_admin)):
-    return templates.TemplateResponse("catalog/import_upload.html", _ctx(request, user=user))
+def products_import_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    state = request.session.get("csv_import_state") or {}
+    selected_item_type = _normalize_item_type(request.query_params.get("item_type"), fallback="")
+    if not selected_item_type:
+        selected_item_type = _normalize_item_type(state.get("item_type"), fallback="")
+
+    selected_area_id = _to_int(request.query_params.get("area_id"), 0)
+    if not selected_area_id:
+        selected_area_id = _to_int(state.get("area_id"), 0)
+
+    selected_kind_id = _to_int(request.query_params.get("kind_id"), 0)
+    if not selected_kind_id:
+        selected_kind_id = _to_int(state.get("kind_id"), 0)
+
+    areas = db.query(Area).order_by(Area.name.asc(), Area.id.asc()).all()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+
+    selected_area = db.get(Area, selected_area_id) if selected_area_id else None
+    if selected_area_id and not selected_area:
+        selected_area_id = 0
+
+    selected_kind = db.get(DeviceKind, selected_kind_id) if selected_kind_id else None
+    if selected_kind_id and (not selected_kind or int(selected_kind.area_id or 0) != int(selected_area_id or 0)):
+        selected_kind_id = 0
+        selected_kind = None
+
+    context_ready = bool(selected_item_type and selected_area and selected_kind)
+
+    return templates.TemplateResponse(
+        "catalog/import_upload.html",
+        _ctx(
+            request,
+            user=user,
+            item_types=ITEM_TYPE_CHOICES,
+            item_type_labels=ITEM_TYPE_LABELS,
+            areas=areas,
+            kinds=kinds,
+            selected_item_type=selected_item_type,
+            selected_area_id=selected_area_id,
+            selected_kind_id=selected_kind_id,
+            selected_area=selected_area,
+            selected_kind=selected_kind,
+            context_ready=context_ready,
+        ),
+    )
 
 
 @app.post("/catalog/products/import/preview")
 async def products_import_preview(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     form = await request.form()
+    selected_item_type = _normalize_item_type(form.get("item_type"), fallback="")
+    selected_area_id = _to_int(form.get("area_id"), 0)
+    selected_kind_id = _to_int(form.get("kind_id"), 0)
+    back_url = _csv_import_back_url(selected_item_type, selected_area_id, selected_kind_id)
+
+    if not selected_item_type:
+        _flash(request, "Bitte zuerst eine Artikelart wählen.", "error")
+        return RedirectResponse(back_url, status_code=302)
+
+    selected_area = db.get(Area, selected_area_id) if selected_area_id else None
+    if not selected_area:
+        _flash(request, "Bitte einen gültigen Bereich wählen.", "error")
+        return RedirectResponse(back_url, status_code=302)
+
+    selected_kind = db.get(DeviceKind, selected_kind_id) if selected_kind_id else None
+    if not selected_kind or int(selected_kind.area_id or 0) != int(selected_area.id):
+        _flash(request, "Bitte eine gültige Geräteart im gewählten Bereich wählen.", "error")
+        return RedirectResponse(back_url, status_code=302)
+
     delimiter = (form.get("delimiter") or ";").strip()
     if delimiter not in (";", ","):
         delimiter = ";"
@@ -3809,12 +4470,12 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
     upload: UploadFile = form.get("csv_file")  # type: ignore
     if not upload or not getattr(upload, "filename", ""):
         _flash(request, "Bitte eine CSV-Datei auswählen.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
     raw = await upload.read()
     if not raw:
         _flash(request, "Die CSV-Datei ist leer.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
     dirs = ensure_dirs()
     tmp_name = f"products_import_{dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}.csv"
@@ -3825,22 +4486,23 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
         columns, rows = _read_csv_rows(tmp_path, delimiter=delimiter, has_header=has_header)
     except Exception as e:
         _flash(request, f"CSV konnte nicht gelesen werden: {e}", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
     if not columns:
         _flash(request, "Keine Spalten erkannt. Bitte Trennzeichen prüfen.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
     guesses = {
         "name": _guess_column(columns, ("produktname", "name", "produkt")),
         "sales_name": _guess_column(columns, ("verkaufsbezeichnung", "sales_name", "display_name")),
         "material_no": _guess_column(columns, ("materialnummer", "material_no", "material", "matnr", "mat_nr")),
         "manufacturer": _guess_column(columns, ("hersteller", "manufacturer")),
+        "manufacturer_name": _guess_column(
+            columns,
+            ("herstellerbezeichnung", "manufacturer_name", "markenname", "brand_name", "brand"),
+        ),
         "sku": _guess_column(columns, ("sku", "artikelnummer", "artikel_nr", "artikel-nr")),
         "ean": _guess_column(columns, ("ean", "gtin")),
-        "item_type": _guess_column(columns, ("artikelart", "item_type", "typ")),
-        "area": _guess_column(columns, ("bereich", "area")),
-        "kind": _guess_column(columns, ("geräteart", "geraeteart", "kind")),
         "type": _guess_column(columns, ("gerätetyp", "geraetetyp", "type")),
         "tracking": _guess_column(columns, ("tracking", "modus", "track_mode")),
         "description": _guess_column(columns, ("beschreibung", "description")),
@@ -3859,17 +4521,24 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
                 f"foto_url_{idx}",
             ),
         )
-    areas = db.query(Area).order_by(Area.name.asc(), Area.id.asc()).all()
-    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
-    types = db.query(DeviceType).order_by(DeviceType.name.asc(), DeviceType.id.asc()).all()
-    kind_area_map = {int(k.id): int(k.area_id or 0) for k in kinds}
-    type_area_map = {int(t.id): int(kind_area_map.get(int(t.device_kind_id or 0), 0) or 0) for t in types}
+    types = (
+        db.query(DeviceType)
+        .filter(DeviceType.device_kind_id == int(selected_kind.id))
+        .order_by(DeviceType.name.asc(), DeviceType.id.asc())
+        .all()
+    )
     manufacturers = db.query(Manufacturer).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
+    import_attrs = _applicable_attributes(db, int(selected_kind.id), None)
+    attr_guesses = {int(attr.id): _guess_attribute_column(columns, attr) for attr in import_attrs}
+    attr_options_map = {int(attr.id): _enum_options_from_json(attr.enum_options_json) for attr in import_attrs}
 
     request.session["csv_import_state"] = {
         "path": str(tmp_path),
         "delimiter": delimiter,
         "has_header": has_header,
+        "item_type": selected_item_type,
+        "area_id": int(selected_area.id),
+        "kind_id": int(selected_kind.id),
     }
 
     return templates.TemplateResponse(
@@ -3883,11 +4552,15 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
             total_rows=len(rows),
             delimiter=delimiter,
             has_header=has_header,
-            areas=areas,
-            kinds=kinds,
             types=types,
-            type_area_map=type_area_map,
             manufacturers=manufacturers,
+            selected_item_type=selected_item_type,
+            selected_item_type_label=ITEM_TYPE_LABELS.get(selected_item_type, selected_item_type),
+            selected_area=selected_area,
+            selected_kind=selected_kind,
+            import_attrs=import_attrs,
+            attr_guesses=attr_guesses,
+            attr_options_map=attr_options_map,
         ),
     )
 
@@ -3899,13 +4572,29 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
         _flash(request, "Keine Import-Vorschau gefunden. Bitte erneut hochladen.", "error")
         return RedirectResponse("/catalog/products/import", status_code=302)
 
+    selected_item_type = _normalize_item_type(state.get("item_type"), fallback="")
+    selected_area_id = _to_int(state.get("area_id"), 0)
+    selected_kind_id = _to_int(state.get("kind_id"), 0)
+    back_url = _csv_import_back_url(selected_item_type, selected_area_id, selected_kind_id)
+    if not selected_item_type or not selected_area_id or not selected_kind_id:
+        _flash(request, "Import-Kontext fehlt. Bitte Artikelart, Bereich und Geräteart neu wählen.", "error")
+        request.session.pop("csv_import_state", None)
+        return RedirectResponse("/catalog/products/import", status_code=302)
+
+    selected_area_row = db.get(Area, selected_area_id)
+    selected_kind_row = db.get(DeviceKind, selected_kind_id)
+    if (not selected_area_row) or (not selected_kind_row) or int(selected_kind_row.area_id or 0) != int(selected_area_row.id):
+        _flash(request, "Import-Kontext ist ungültig. Bitte Auswahl neu starten.", "error")
+        request.session.pop("csv_import_state", None)
+        return RedirectResponse("/catalog/products/import", status_code=302)
+
     dirs = ensure_dirs()
     tmp_dir = dirs["tmp"].resolve()
     csv_path = Path(state.get("path") or "").resolve()
     if not str(csv_path).startswith(str(tmp_dir)) or not csv_path.exists():
         _flash(request, "Importdatei nicht mehr vorhanden. Bitte erneut hochladen.", "error")
         request.session.pop("csv_import_state", None)
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
     delimiter = state.get("delimiter") or ";"
     has_header = bool(state.get("has_header"))
@@ -3915,24 +4604,22 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     except Exception as e:
         _flash(request, f"CSV konnte nicht gelesen werden: {e}", "error")
         request.session.pop("csv_import_state", None)
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
     form = await request.form()
     map_name = (form.get("map_name") or "").strip()
     if not map_name:
         _flash(request, "Bitte mindestens die Zuordnung für den Produktnamen wählen.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
     mapping = {
         "name": map_name,
         "sales_name": (form.get("map_sales_name") or "").strip() or None,
         "material_no": (form.get("map_material_no") or "").strip() or None,
         "manufacturer": (form.get("map_manufacturer") or "").strip() or None,
+        "manufacturer_name": (form.get("map_manufacturer_name") or "").strip() or None,
         "sku": (form.get("map_sku") or "").strip() or None,
         "ean": (form.get("map_ean") or "").strip() or None,
-        "item_type": (form.get("map_item_type") or "").strip() or None,
-        "area": (form.get("map_area") or "").strip() or None,
-        "kind": (form.get("map_kind") or "").strip() or None,
         "type": (form.get("map_type") or "").strip() or None,
         "tracking": (form.get("map_tracking") or "").strip() or None,
         "description": (form.get("map_description") or "").strip() or None,
@@ -3945,34 +4632,16 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     manual_manufacturer_id, manual_manufacturer_row = _parse_manufacturer_id(db, manual_manufacturer_id_raw)
     if manual_manufacturer_id_raw and not manual_manufacturer_row:
         _flash(request, "Ungültiger Hersteller für den manuellen Standardwert.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
-    manual_area_id = _to_int(form.get("manual_area_id"), 0)
-    manual_kind_id = _to_int(form.get("manual_kind_id"), 0)
     manual_type_id = _to_int(form.get("manual_type_id"), 0)
-    manual_area_row = db.get(Area, manual_area_id) if manual_area_id else None
-    manual_kind_row = db.get(DeviceKind, manual_kind_id) if manual_kind_id else None
     manual_type_row = db.get(DeviceType, manual_type_id) if manual_type_id else None
-    if manual_area_id and not manual_area_row:
-        _flash(request, "Ungültiger Bereich für den manuellen Standardwert.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
-    if manual_kind_id and not manual_kind_row:
-        _flash(request, "Ungültige Geräteart für den manuellen Standardwert.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
     if manual_type_id and not manual_type_row:
         _flash(request, "Ungültiger Gerätetyp für den manuellen Standardwert.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
-
-    if manual_type_row and not manual_kind_row:
-        manual_kind_row = db.get(DeviceKind, int(manual_type_row.device_kind_id or 0))
-    if manual_kind_row and not manual_area_row:
-        manual_area_row = db.get(Area, int(manual_kind_row.area_id or 0))
-    if manual_kind_row and manual_area_row and int(manual_kind_row.area_id or 0) != int(manual_area_row.id):
-        _flash(request, "Manueller Bereich passt nicht zur gewählten Geräteart.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
-    if manual_type_row and manual_kind_row and int(manual_type_row.device_kind_id or 0) != int(manual_kind_row.id):
+        return RedirectResponse(back_url, status_code=302)
+    if manual_type_row and int(manual_type_row.device_kind_id or 0) != int(selected_kind_row.id):
         _flash(request, "Manueller Gerätetyp passt nicht zur gewählten Geräteart.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
+        return RedirectResponse(back_url, status_code=302)
 
     def _token_set(raw: str) -> set[str]:
         out: set[str] = set()
@@ -3988,9 +4657,9 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     manual_values: dict[str, str] = {
         "sales_name": (form.get("manual_sales_name") or "").strip(),
         "material_no": (form.get("manual_material_no") or "").strip(),
+        "manufacturer_name": (form.get("manual_manufacturer_name") or "").strip(),
         "sku": (form.get("manual_sku") or "").strip(),
         "ean": (form.get("manual_ean") or "").strip(),
-        "item_type": (form.get("manual_item_type") or "").strip(),
         "tracking": (form.get("manual_tracking") or "").strip(),
         "description": (form.get("manual_description") or "").strip(),
         "active": (form.get("manual_active") or "").strip(),
@@ -3998,12 +4667,28 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
         manual_values[f"image_url_{idx}"] = (form.get(f"manual_image_url_{idx}") or "").strip()
 
+    import_attrs = _applicable_attributes(db, int(selected_kind_row.id), None)
+    attr_mapping: dict[int, str | None] = {}
+    manual_attr_values: dict[int, str] = {}
+    attr_source_has: dict[int, bool] = {}
+    for attr in import_attrs:
+        map_col = (form.get(f"map_attr_{int(attr.id)}") or "").strip() or None
+        manual_attr = (form.get(f"manual_attr_{int(attr.id)}") or "").strip()
+        attr_mapping[int(attr.id)] = map_col
+        manual_attr_values[int(attr.id)] = manual_attr
+        attr_source_has[int(attr.id)] = bool(map_col) or bool(manual_attr)
+
     for key, col in mapping.items():
         if not col:
             continue
         if col not in columns:
             _flash(request, f"Ungültige Spaltenzuordnung für {key}.", "error")
-            return RedirectResponse("/catalog/products/import", status_code=302)
+            return RedirectResponse(back_url, status_code=302)
+    for attr in import_attrs:
+        col = attr_mapping.get(int(attr.id))
+        if col and col not in columns:
+            _flash(request, f"Ungültige Spaltenzuordnung für Attribut '{attr.name}'.", "error")
+            return RedirectResponse(back_url, status_code=302)
 
     auto_create = form.get("auto_create") == "on"
     duplicate_mode = (form.get("duplicate_mode") or "skip").strip()
@@ -4031,10 +4716,6 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             source_has = {key: bool(mapping.get(key)) or bool(manual_values.get(key)) for key in mapping.keys()}
             if not mapping.get("manufacturer"):
                 source_has["manufacturer"] = bool(manual_manufacturer_id)
-            if not mapping.get("area"):
-                source_has["area"] = bool(manual_area_row)
-            if not mapping.get("kind"):
-                source_has["kind"] = bool(manual_kind_row)
             if not mapping.get("type"):
                 source_has["type"] = bool(manual_type_row)
 
@@ -4047,17 +4728,11 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             sales_name = picked_value("sales_name")
             material_no = picked_value("material_no")
             manufacturer = picked_value("manufacturer")
+            manufacturer_name = picked_value("manufacturer_name")
             sku = picked_value("sku")
             raw_ean = picked_value("ean")
             ean = normalize_ean(raw_ean) if raw_ean else None
-            item_type_raw = picked_value("item_type")
-            area_name = picked_value("area")
-            kind_name = picked_value("kind")
             type_name = picked_value("type")
-            if not area_name and not mapping.get("area") and manual_area_row:
-                area_name = str(manual_area_row.name or "").strip()
-            if not kind_name and not mapping.get("kind") and manual_kind_row:
-                kind_name = str(manual_kind_row.name or "").strip()
             if not type_name and not mapping.get("type") and manual_type_row:
                 type_name = str(manual_type_row.name or "").strip()
             tracking_raw = picked_value("tracking")
@@ -4081,16 +4756,24 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 skipped += 1
                 continue
 
-            area, kind, dtype = _resolve_catalog_refs(
-                db,
-                area_name=area_name,
-                kind_name=kind_name,
-                type_name=type_name,
-                auto_create=auto_create,
-                fallback_area=manual_area_row,
-                fallback_kind=manual_kind_row,
-                fallback_type=manual_type_row,
-            )
+            dtype: DeviceType | None = None
+            if type_name:
+                dtype = (
+                    db.query(DeviceType)
+                    .filter(
+                        DeviceType.device_kind_id == int(selected_kind_row.id),
+                        func.lower(DeviceType.name) == type_name.lower(),
+                    )
+                    .one_or_none()
+                )
+                if not dtype and auto_create:
+                    dtype = DeviceType(device_kind_id=int(selected_kind_row.id), name=type_name)
+                    db.add(dtype)
+                    db.flush()
+                if not dtype:
+                    raise ValueError(f"Gerätetyp nicht gefunden: {type_name}")
+            elif manual_type_row:
+                dtype = manual_type_row
 
             if duplicate_mode == "update" and existing:
                 product = existing
@@ -4122,26 +4805,27 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             if (not product.id) or source_has.get("manufacturer", False):
                 product.manufacturer = manufacturer_row.name if manufacturer_row else (manufacturer or None)
                 product.manufacturer_id = int(manufacturer_row.id) if manufacturer_row else None
+            if (not product.id) or source_has.get("manufacturer_name", False):
+                product.manufacturer_name = manufacturer_name or None
             if (not product.id) or source_has.get("sku", False):
                 product.sku = sku or None
             if (not product.id) or source_has.get("ean", False):
                 product.ean = ean
-            if (not product.id) or source_has.get("area", False):
-                product.area_id = area.id if area else None
-            if (not product.id) or source_has.get("kind", False):
-                product.device_kind_id = kind.id if kind else None
+            product.area_id = int(selected_area_row.id)
+            product.device_kind_id = int(selected_kind_row.id)
             if (not product.id) or source_has.get("type", False):
                 product.device_type_id = dtype.id if dtype else None
+            elif product.device_type_id:
+                existing_type = db.get(DeviceType, int(product.device_type_id))
+                if existing_type and int(existing_type.device_kind_id or 0) != int(selected_kind_row.id):
+                    product.device_type_id = None
 
             if source_has.get("tracking", False):
                 product.track_mode = _parse_track_mode(tracking_raw, default_track_mode)
             elif not product.id:
                 product.track_mode = default_track_mode
 
-            if source_has.get("item_type", False):
-                product.item_type = _normalize_item_type(item_type_raw, fallback="material")
-            elif not product.id:
-                product.item_type = _normalize_item_type(getattr(product, "item_type", None), fallback="material")
+            product.item_type = selected_item_type
 
             if (not product.id) or source_has.get("description", False):
                 product.description = description or None
@@ -4158,7 +4842,41 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                     true_values=active_true_values,
                     false_values=active_false_values,
                 )
+
+            parsed_attr_values: dict[int, str] = {}
+            for attr in import_attrs:
+                attr_id = int(attr.id)
+                if not attr_source_has.get(attr_id):
+                    if bool(attr.is_required):
+                        raise ValueError(f"Pflichtattribut fehlt: {attr.name}")
+                    continue
+                mapped_col = attr_mapping.get(attr_id)
+                raw_attr_value = _csv_value(row, mapped_col) if mapped_col else manual_attr_values.get(attr_id, "")
+                parsed_attr = _parse_import_attribute_value(attr, raw_attr_value)
+                if bool(attr.is_required) and not parsed_attr:
+                    raise ValueError(f"Pflichtattribut fehlt: {attr.name}")
+                parsed_attr_values[attr_id] = parsed_attr
+
             db.add(product)
+            db.flush()
+            for attr in import_attrs:
+                attr_id = int(attr.id)
+                if not attr_source_has.get(attr_id):
+                    continue
+                value_text = parsed_attr_values.get(attr_id, "")
+                pav = (
+                    db.query(ProductAttributeValue)
+                    .filter(ProductAttributeValue.product_id == product.id, ProductAttributeValue.attribute_id == attr_id)
+                    .one_or_none()
+                )
+                if value_text != "":
+                    if pav:
+                        pav.value_text = value_text
+                        db.add(pav)
+                    else:
+                        db.add(ProductAttributeValue(product_id=product.id, attribute_id=attr_id, value_text=value_text))
+                elif pav:
+                    db.delete(pav)
             db.commit()
             try:
                 datasheet_saved, _source_url = _fetch_and_store_product_datasheet(
@@ -4899,6 +5617,43 @@ def product_detail_get(
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404)
+    detail_attrs = _applicable_attributes(
+        db,
+        int(product.device_kind_id or 0) or None,
+        int(product.device_type_id or 0) or None,
+    )
+    detail_attr_ids = {int(a.id) for a in detail_attrs}
+    value_rows = (
+        db.query(ProductAttributeValue.attribute_id, ProductAttributeValue.value_text)
+        .filter(ProductAttributeValue.product_id == int(product_id))
+        .all()
+    )
+    value_map = {int(attr_id): str(value_text or "") for attr_id, value_text in value_rows}
+    extra_attr_ids = sorted({int(attr_id) for attr_id in value_map.keys() if int(attr_id) not in detail_attr_ids})
+    if extra_attr_ids:
+        extra_attrs = db.query(AttributeDef).filter(AttributeDef.id.in_(extra_attr_ids)).all()
+        detail_attrs.extend(extra_attrs)
+    detail_attrs = sorted(
+        {int(a.id): a for a in detail_attrs}.values(),
+        key=lambda row: (str(row.group_name or "").lower(), str(row.name or "").lower(), int(row.id)),
+    )
+    attribute_detail_rows: list[dict[str, str]] = []
+    for attr in detail_attrs:
+        raw_value = value_map.get(int(attr.id), "")
+        formatted_value = _format_list_attribute_value(attr, raw_value)
+        if not str(formatted_value or "").strip():
+            continue
+        label = str(attr.name or "").strip() or f"Attribut #{int(attr.id)}"
+        group_name = str(attr.group_name or "").strip()
+        if group_name:
+            label = f"{group_name} / {label}"
+        attribute_detail_rows.append(
+            {
+                "label": label,
+                "value": formatted_value,
+            }
+        )
+    description_blocks = _split_product_description(product.description)
     manufacturer_row = db.get(Manufacturer, int(product.manufacturer_id or 0)) if product.manufacturer_id else None
     image_urls = _product_image_urls(product)
     datasheet_source_url = _build_product_datasheet_url(manufacturer_row, product)
@@ -5039,6 +5794,8 @@ def product_detail_get(
             image_urls=image_urls,
             datasheet_source_url=datasheet_source_url,
             datasheet_local_attachment=datasheet_local_attachment,
+            attribute_detail_rows=attribute_detail_rows,
+            description_blocks=description_blocks,
             return_to=return_to,
             return_to_q=return_to_q,
             receipt_saved=(int(receipt_saved or 0) == 1),

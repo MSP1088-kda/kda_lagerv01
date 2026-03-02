@@ -4,7 +4,12 @@
   <h1>CSV-Import: Spalten zuordnen</h1>
 
   <div class="hint">
-    Erkannte Zeilen: <b>{{ total_rows }}</b> | Trennzeichen: <b>{{ delimiter }}</b> | Kopfzeile: <b>{% if has_header %}Ja{% else %}Nein{% endif %}</b>
+    Erkannte Zeilen: <b>{{ total_rows }}</b> |
+    Trennzeichen: <b>{{ delimiter }}</b> |
+    Kopfzeile: <b>{% if has_header %}Ja{% else %}Nein{% endif %}</b><br>
+    Import-Kontext: <b>{{ selected_item_type_label }}</b> /
+    <b>{{ selected_area.name }}</b> /
+    <b>{{ selected_kind.name }}</b>
   </div>
 
   <h2>Vorschau (erste 10 Zeilen)</h2>
@@ -92,6 +97,19 @@
       </div>
 
       <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
+        <div>Herstellerbezeichnung</div>
+        <div>
+          <select name="map_manufacturer_name">
+            <option value="">-</option>
+            {% for c in columns %}
+              <option value="{{ c }}" {% if guesses.get('manufacturer_name') == c %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div><input type="text" name="manual_manufacturer_name" placeholder="Optional"></div>
+      </div>
+
+      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
         <div>SKU / Artikelnummer</div>
         <div>
           <select name="map_sku">
@@ -118,67 +136,6 @@
       </div>
 
       <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Artikelart</div>
-        <div>
-          <select name="map_item_type">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('item_type') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <select name="manual_item_type">
-            <option value="">Keine Vorgabe</option>
-            <option value="appliance">Großgerät</option>
-            <option value="spare_part">Ersatzteil</option>
-            <option value="accessory">Zubehör</option>
-            <option value="material">Material</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Bereich</div>
-        <div>
-          <select name="map_area">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('area') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <select name="manual_area_id">
-            <option value="">Keine Vorgabe</option>
-            {% for a in areas %}
-              <option value="{{ a.id }}">{{ a.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
-        <div>Geräteart</div>
-        <div>
-          <select name="map_kind">
-            <option value="">-</option>
-            {% for c in columns %}
-              <option value="{{ c }}" {% if guesses.get('kind') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <select name="manual_kind_id">
-            <option value="">Keine Vorgabe</option>
-            {% for k in kinds %}
-              <option value="{{ k.id }}" data-area-id="{{ k.area_id }}">{{ k.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-
-      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
         <div>Gerätetyp</div>
         <div>
           <select name="map_type">
@@ -192,7 +149,7 @@
           <select name="manual_type_id">
             <option value="">Keine Vorgabe</option>
             {% for t in types %}
-              <option value="{{ t.id }}" data-kind-id="{{ t.device_kind_id }}" data-area-id="{{ type_area_map.get(t.id, 0) }}">{{ t.name }}</option>
+              <option value="{{ t.id }}">{{ t.name }}</option>
             {% endfor %}
           </select>
         </div>
@@ -265,8 +222,50 @@
       {% endfor %}
     </div>
 
+    <h2>Attribute für Geräteart: {{ selected_kind.name }}</h2>
+    {% if import_attrs %}
+    <div class="hint">
+      Attributwerte sollten aus der CSV kommen. Manuelle Werte gelten nur, wenn keine CSV-Spalte zugeordnet ist.
+    </div>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr;">
+        <div>Attribut</div>
+        <div>CSV-Spalte</div>
+        <div>Manuell (nur ohne Spalte)</div>
+      </div>
+      {% for a in import_attrs %}
+      <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
+        <div>
+          {{ a.name }}
+          {% if a.is_required %}<b>(Pflicht)</b>{% endif %}
+          <div class="muted">
+            Typ:
+            {% if a.value_type == 'bool' %}Ja/Nein{% elif a.value_type == 'number' %}Zahl{% elif a.value_type == 'enum' %}Auswahl{% else %}Text{% endif %}
+            {% if a.value_type == 'enum' and a.is_multi %} (Mehrfach, Trennung mit Komma){% endif %}
+            {% set opts = attr_options_map.get(a.id, []) %}
+            {% if opts %}
+              | Optionen: {{ opts|join(', ') }}
+            {% endif %}
+          </div>
+        </div>
+        <div>
+          <select name="map_attr_{{ a.id }}">
+            <option value="">-</option>
+            {% for c in columns %}
+              <option value="{{ c }}" {% if attr_guesses.get(a.id) == c %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div><input type="text" name="manual_attr_{{ a.id }}" placeholder="Optional"></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="muted">Für diese Geräteart sind aktuell keine Attribute hinterlegt.</div>
+    {% endif %}
+
     <h2>Import-Optionen</h2>
-    <label class="check"><input type="checkbox" name="auto_create" checked> Fehlende Bereiche, Gerätearten und Gerätetypen automatisch anlegen</label>
+    <label class="check"><input type="checkbox" name="auto_create" checked> Fehlende Gerätetypen automatisch anlegen</label>
 
     <div class="row">
       <label class="radio"><input type="radio" name="duplicate_mode" value="skip" checked> Duplikate überspringen</label>
@@ -294,12 +293,10 @@
 
 {% block help %}
 <ul>
-  <li>Ordne jede gewünschte Zielspalte einer CSV-Spalte zu.</li>
-  <li>Der Produktname ist Pflicht, alle anderen Felder sind optional.</li>
-  <li>Manuelle Werte werden nur genutzt, wenn keine CSV-Spalte für das Feld zugeordnet ist.</li>
-  <li>Bereich, Geräteart und Gerätetyp können als Kaskaden-Standardwerte gewählt werden und greifen bei fehlender/ungültiger CSV-Zuordnung.</li>
+  <li>Artikelart, Bereich und Geräteart sind für diesen Import bereits fest vorgegeben.</li>
+  <li>Ordne gewünschte CSV-Spalten den Produktfeldern und Attributen der Geräteart zu.</li>
+  <li>Manuelle Werte werden nur verwendet, wenn für das Feld keine CSV-Spalte zugeordnet wurde.</li>
   <li>Bild-Links müssen absolute URLs mit http:// oder https:// sein.</li>
   <li>Aktiv/Inaktiv-Werte lassen sich optional frei definieren (z. B. On market / Phased out).</li>
-  <li>Wähle die Duplikatstrategie und starte danach den Import.</li>
 </ul>
 {% endblock %}

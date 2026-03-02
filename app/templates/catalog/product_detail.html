@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel" data-page="product-detail">
-  <h1>{{ product.sales_name or product.name }}{% if not product.active %} <span class="muted">(archiviert)</span>{% endif %}</h1>
+  {% set detail_heading = product.manufacturer_name or product.sales_name or product.name or ('Produkt #' ~ product.id) %}
+  <h1>{{ detail_heading }}{% if not product.active %} <span class="muted">(archiviert)</span>{% endif %}</h1>
   {% set ofd = order_form_data or {} %}
   {% if receipt_saved %}
   <div class="flash-item flash-info">Produkt wurde gespeichert und direkt eingebucht.</div>
@@ -15,8 +16,47 @@
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Artikelart</div><div>{{ item_type_labels.get(product.item_type, 'Material') }}</div></div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Materialnummer</div><div>{{ product.material_no or '-' }}</div></div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>EAN</div><div>{{ product.ean or '-' }}</div></div>
-    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Herstellerbezeichnung</div><div>{{ product.manufacturer_name or '-' }}</div></div>
+    {% for row in attribute_detail_rows %}
+    <div class="tr" style="grid-template-columns: 220px 1fr;">
+      <div>{{ row.label }}</div>
+      <div>{{ row.value }}</div>
+    </div>
+    {% endfor %}
   </div>
+
+  <details class="box collapse-box" style="margin-top:10px;">
+    <summary class="box-title">Artikelbeschreibung</summary>
+    <div class="box-body">
+      {% if description_blocks %}
+      <div class="description-structured">
+        {% for block in description_blocks %}
+          {% if block["kind"] == "heading" %}
+          <h3 class="description-heading">{{ block["text"] }}</h3>
+          {% elif block["kind"] == "kv" %}
+          <div class="description-kv-table">
+            {% for row in block["rows"] %}
+            <div class="description-kv-row">
+              <div class="description-kv-label">{{ row["label"] }}</div>
+              <div>{{ row["value"] }}</div>
+            </div>
+            {% endfor %}
+          </div>
+          {% elif block["kind"] == "list" %}
+          <ul class="description-list">
+            {% for item in block["items"] %}
+            <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="description-paragraph">{{ block["text"] }}</p>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="muted">Keine Beschreibung hinterlegt.</div>
+      {% endif %}
+    </div>
+  </details>
 
   <details class="box collapse-box" style="margin-top:10px;">
     <summary class="box-title">Bilder</summary>
@@ -24,7 +64,7 @@
       {% if image_urls %}
       <div class="image-grid">
         {% for url in image_urls %}
-        <a class="image-card" href="{{ url }}" target="_blank" rel="noopener">
+        <a class="image-card" href="{{ url }}" data-product-image-open="1">
           <img src="{{ url }}" alt="Produktbild {{ loop.index }}" loading="lazy">
           <span>Bild {{ loop.index }}</span>
         </a>
@@ -35,6 +75,22 @@
       {% endif %}
     </div>
   </details>
+
+  <div id="productImageOverlay" class="image-lightbox" hidden aria-hidden="true">
+    <div class="image-lightbox-backdrop" data-image-lightbox-close="1"></div>
+    <div class="image-lightbox-panel" role="dialog" aria-modal="true" aria-label="Bildansicht">
+      <div class="image-lightbox-controls">
+        <div class="image-lightbox-nav">
+          <button id="productImageOverlayPrev" class="btn" type="button">Vorheriges Bild</button>
+          <button id="productImageOverlayNext" class="btn" type="button">Nächstes Bild</button>
+        </div>
+        <div id="productImageOverlayCounter" class="muted image-lightbox-counter"></div>
+        <button id="productImageOverlayClose" class="btn" type="button">Zurück zur Detailseite</button>
+      </div>
+      <img id="productImageOverlayImage" src="" alt="">
+      <div class="muted">Esc schließt, Pfeil links/rechts wechselt das Bild</div>
+    </div>
+  </div>
 
   <details class="box collapse-box" style="margin-top:10px;">
     <summary class="box-title">Datenblatt</summary>

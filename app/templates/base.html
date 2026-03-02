@@ -65,6 +65,14 @@
       <div class="hint">Enter: Öffnen | Esc: Schließen</div>
     </div>
   </div>
+  <div id="pageLoadingOverlay" class="page-loading-overlay" hidden aria-hidden="true">
+    <div class="page-loading-panel" role="status" aria-live="polite" aria-atomic="true">
+      <div class="page-loading-spinner" aria-hidden="true"></div>
+      <div id="pageLoadingMessage" class="page-loading-title">Seite wird geladen...</div>
+      <div id="pageLoadingDetail" class="muted">Bitte warten.</div>
+      <div id="pageLoadingElapsed" class="muted"></div>
+    </div>
+  </div>
   {% if user %}
   <script>
     window.__navCommands = {{ nav_commands | tojson }};
