@@ -4915,6 +4915,7 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     feature_defs = _feature_defs_for_kind(db, int(selected_kind_row.id))
     feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
     feature_maps: list[dict[str, str]] = []
+    seen_feature_keys: set[str] = set()
     for idx, column in enumerate(columns):
         if form.get(f"feature_use_{idx}") != "on":
             continue
@@ -4938,6 +4939,10 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 return RedirectResponse(back_url, status_code=302)
             feature_key = _sanitize_feature_key(new_label)
             feature_label = new_label
+        if feature_key in seen_feature_keys:
+            _flash(request, f"Merkmal '{feature_key}' wurde mehrfach zugeordnet.", "error")
+            return RedirectResponse(back_url, status_code=302)
+        seen_feature_keys.add(feature_key)
         feature_maps.append(
             {
                 "source_column": column,
@@ -7479,6 +7484,7 @@ async def repair_new_post(request: Request, user=Depends(require_lager_access), 
         )
         db.add(product)
         db.flush()
+        _refresh_product_search_blob(db, product)
         product_id = int(product.id)
         created_product_id = int(product.id)
     else:
