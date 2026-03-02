@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>System-Reset (Hard-Reset)</h1>
+
+  <div class="box" style="margin-top:10px; border-color:#b10000;">
+    <div class="box-title">Warnung</div>
+    <div class="box-body">
+      <p>Dieser Vorgang erstellt ein Backup und setzt die Datenbank auf einen frischen Zustand zurück.</p>
+      <p><b>Alle aktuellen Daten werden aus der aktiven Datenbank entfernt.</b></p>
+      <p>Erforderlich:</p>
+      <ul>
+        <li>ENV <code>ALLOW_HARD_RESET=1</code></li>
+        <li>Exakter Bestätigungstext</li>
+      </ul>
+      <p>
+        Status Schutzschalter:
+        {% if env_enabled %}
+          <b>AKTIV</b>
+        {% else %}
+          <b>NICHT AKTIV</b>
+        {% endif %}
+      </p>
+    </div>
+  </div>
+
+  <form method="post" action="/system/reset" class="form" style="margin-top:12px;">
+    <label>Bestätigungstext eingeben</label>
+    <input type="text" name="confirmation" placeholder="{{ confirm_text }}" autocomplete="off" required>
+
+    <div class="row">
+      <button class="btn" type="submit" {% if not env_enabled %}disabled{% endif %}>Reset ausführen</button>
+      <a class="btn" href="/menu">Abbrechen</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der Hard-Reset ist nur für Administratoren vorgesehen.</li>
+  <li>Ohne gesetzten ENV-Schutzschalter wird kein Reset ausgeführt.</li>
+  <li>Nach erfolgreichem Reset startet der Setup-Ablauf erneut.</li>
+</ul>
+{% endblock %}
