@@ -67,58 +67,69 @@
     </div>
   </form>
 
-  <div class="table" data-kbd-list="true">
-    <div class="tr th" style="grid-template-columns: 2fr 1fr 1.2fr 2fr 130px 180px;">
-      <div>Produkt</div>
-      <div>Geräteart</div>
-      <div>Hersteller</div>
-      <div>Merkmale</div>
-      <div>Bestand</div>
-      <div>Aktion</div>
-    </div>
-
-    {% for p in products %}
-      {% set display_name = p.sales_name if p.sales_name else p.name %}
-      {% set brand = p.manufacturer if p.manufacturer else (p.manufacturer_name if p.manufacturer_name else '-') %}
-      {% set feature_lines = feature_values_map.get(p.id, []) %}
-      <div
-        class="tr kbd-row"
-        style="grid-template-columns: 2fr 1fr 1.2fr 2fr 130px 180px;"
-        data-kbd-row="true"
-        data-href="/catalog/products/{{ p.id }}"
-        data-details-href="/catalog/products/{{ p.id }}"
-        {% if p.active %}data-book-href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}"{% endif %}
-        tabindex="0"
-      >
-        <div>
-          <a href="/catalog/products/{{ p.id }}">{{ display_name }}</a>
-          {% if not p.active %}<span class="muted"> (archiviert)</span>{% endif %}
-          {% if p.material_no %}<br><span class="muted">Materialnummer: {{ p.material_no }}</span>{% endif %}
-        </div>
-        <div>{{ kind_name_map.get(p.device_kind_id, '-') }}</div>
-        <div>{{ brand }}</div>
-        <div>
-          {% if feature_lines %}
-            {% for line in feature_lines[:5] %}
-              <div>{{ line }}</div>
-            {% endfor %}
-          {% else %}
-            -
-          {% endif %}
-        </div>
-        <div>{{ stock_total_map.get(p.id, 0) }}</div>
-        <div>
-          <a class="btn small" href="/catalog/products/{{ p.id }}">Details</a>
-          {% if p.active %}
-          <a class="btn small" href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}">Einbuchen</a>
-          {% endif %}
-        </div>
-      </div>
-    {% endfor %}
-
-    {% if not products %}
-      <div class="muted">Keine Treffer.</div>
-    {% endif %}
+  <div class="catalog-table-shell">
+    <table class="catalog-table catalog-products-table" data-kbd-list="true">
+      <colgroup>
+        <col style="width:24%">
+        <col style="width:12%">
+        <col style="width:32%">
+        <col style="width:10%">
+        <col style="width:6%">
+        <col style="width:16%">
+      </colgroup>
+      <thead>
+        <tr>
+          <th title="Produkt">Produkt</th>
+          <th title="Hersteller">Hersteller</th>
+          <th title="Merkmale">Merkmale</th>
+          <th title="Verkaufspreis brutto">VK (brutto)</th>
+          <th title="Bestand">Bestand</th>
+          <th title="Aktion">Aktion</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in products %}
+          {% set base_name = p.sales_name if p.sales_name else p.name %}
+          {% set product_text = base_name %}
+          {% if p.material_no %}{% set product_text = product_text ~ ' | MatNr: ' ~ p.material_no %}{% endif %}
+          {% if not p.active %}{% set product_text = product_text ~ ' (archiviert)' %}{% endif %}
+          {% set brand = p.manufacturer if p.manufacturer else (p.manufacturer_name if p.manufacturer_name else '-') %}
+          {% set feature_lines = feature_values_map.get(p.id, []) %}
+          {% set feature_text = (feature_lines[:3]|join(' | ')) if feature_lines else '-' %}
+          {% set price_text = p.sale_price_cents|eur_cents if p.sale_price_cents is not none else '-' %}
+          {% set stock_text = stock_total_map.get(p.id, 0) %}
+        <tr
+          class="kbd-row"
+          data-kbd-row="true"
+          data-href="/catalog/products/{{ p.id }}"
+          data-details-href="/catalog/products/{{ p.id }}"
+          {% if p.active %}data-book-href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}"{% endif %}
+          tabindex="0"
+        >
+          <td class="catalog-col-product" title="{{ product_text }}">
+            <a href="/catalog/products/{{ p.id }}" title="{{ product_text }}">{{ product_text }}</a>
+          </td>
+          <td title="{{ brand }}">{{ brand }}</td>
+          <td class="catalog-col-features" title="{{ feature_text }}">{{ feature_text }}</td>
+          <td title="{{ price_text }}">{{ price_text }}</td>
+          <td title="{{ stock_text }}">{{ stock_text }}</td>
+          <td class="catalog-col-actions">
+            <div class="act-inline">
+              <a class="btn small" href="/catalog/products/{{ p.id }}">Details</a>
+              {% if p.active %}
+              <a class="btn small" href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}">Einbuchen</a>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not products %}
+        <tr>
+          <td class="muted" colspan="6">Keine Treffer.</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
   </div>
 </div>
 {% endblock %}
