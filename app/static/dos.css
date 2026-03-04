@@ -195,6 +195,66 @@ h3{ margin-top:12px; font-size:16px; }
 }
 .th{ font-weight:700; background: rgba(0,255,102,0.1); }
 .tr.wh-tr{ grid-template-columns: 60px 1.2fr 1.8fr 120px; }
+.catalog-table-shell{
+  margin-top:10px;
+  border:1px solid var(--border);
+  overflow:hidden;
+}
+.catalog-table{
+  width:100%;
+  table-layout:fixed;
+  border-collapse:collapse;
+}
+.catalog-table th,
+.catalog-table td{
+  padding:8px 10px;
+  border-top:1px solid var(--border);
+  white-space:nowrap !important;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  word-break:normal !important;
+  overflow-wrap:normal !important;
+  vertical-align:middle;
+}
+.catalog-table thead th{
+  border-top:0;
+  font-weight:700;
+  background: rgba(0,255,102,0.1);
+}
+.catalog-table td *{
+  white-space:inherit !important;
+  word-break:inherit !important;
+  overflow-wrap:inherit !important;
+}
+.catalog-products-table .catalog-col-actions{
+  overflow:visible;
+}
+.catalog-products-table .act-inline{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-wrap:nowrap;
+}
+.catalog-products-table .act-inline .btn,
+.catalog-products-table .catalog-col-actions .btn{
+  white-space:nowrap;
+  flex:0 0 auto;
+}
+.catalog-table [data-kbd-row="true"].kbd-selected > td,
+.catalog-table .kbd-row:focus > td,
+.catalog-table .kbd-row:focus-visible > td{
+  background: var(--fg);
+  color: var(--bg);
+}
+.catalog-table [data-kbd-row="true"].kbd-selected a,
+.catalog-table [data-kbd-row="true"].kbd-selected .btn,
+.catalog-table .kbd-row:focus a,
+.catalog-table .kbd-row:focus .btn,
+.catalog-table .kbd-row:focus-visible a,
+.catalog-table .kbd-row:focus-visible .btn{
+  color: var(--bg);
+  border-color: var(--bg);
+}
 
 [data-kbd-row="true"]{ cursor:pointer; }
 [data-kbd-row="true"].kbd-selected > div,
@@ -536,6 +596,17 @@ body.page-loading-open{
 .image-card span{
   color:var(--fg);
   font-size:0.9rem;
+}
+.image-card-empty{
+  justify-content:center;
+  align-items:center;
+  min-height:170px;
+  background:rgba(0,255,102,0.06);
+}
+.image-card-empty-note{
+  color:var(--muted);
+  font-size:0.85rem;
+  text-align:center;
 }
 
 .description-structured{
