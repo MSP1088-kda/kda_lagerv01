@@ -30,17 +30,33 @@
             <label>{{ feature.label }}</label>
             {% if feature.data_type == 'number' %}
             <div class="grid2">
-              <input type="text" name="f_{{ feature.id }}_min" value="{{ feature.min }}" placeholder="Min">
-              <input type="text" name="f_{{ feature.id }}_max" value="{{ feature.max }}" placeholder="Max">
+              <select name="f_{{ feature.id }}_min">
+                <option value="">Min</option>
+                {% for row in feature.min_options %}
+                <option value="{{ row.value }}" {% if feature.min == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
+                {% endfor %}
+              </select>
+              <select name="f_{{ feature.id }}_max">
+                <option value="">Max</option>
+                {% for row in feature.max_options %}
+                <option value="{{ row.value }}" {% if feature.max == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
+                {% endfor %}
+              </select>
             </div>
             {% elif feature.data_type == 'bool' %}
             <select name="f_{{ feature.id }}">
               <option value="">Egal</option>
-              <option value="true" {% if feature.value in ['true','1','ja'] %}selected{% endif %}>Ja</option>
-              <option value="false" {% if feature.value in ['false','0','nein'] %}selected{% endif %}>Nein</option>
+              {% for row in feature.bool_options %}
+              <option value="{{ row.value }}" {% if feature.value == row.value %}selected{% endif %}>{{ row.label }}</option>
+              {% endfor %}
             </select>
             {% else %}
-            <input type="text" name="f_{{ feature.id }}" value="{{ feature.value }}" placeholder="enthält ...">
+            <select name="f_{{ feature.id }}">
+              <option value="">Egal</option>
+              {% for row in feature.options %}
+              <option value="{{ row.value }}" {% if feature.value == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
+              {% endfor %}
+            </select>
             {% endif %}
           </div>
           {% endfor %}
