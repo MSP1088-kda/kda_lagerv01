@@ -849,7 +849,7 @@
   }
 
   function initCatalogListCascadeFilter(){
-    const form = document.querySelector('form[data-catalog-v2-filter="1"]') || document.querySelector('form[data-catalog-cascade-filter="1"]');
+    const form = document.querySelector('form[data-catalog-v2-filter="1"]');
     if(!form) return;
     const kindSelect = form.querySelector('#catalog_kind_id');
     if(!kindSelect) return;
