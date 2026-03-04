@@ -185,12 +185,13 @@ RECEIPT_DEFAULT_SUPPLIER_ID = "receipt_default_supplier_id"
 RECEIPT_DEFAULT_QTY = "receipt_default_qty"
 RECEIPT_LOCK_WAREHOUSE = "receipt_lock_warehouse"
 VAT_RATE_STANDARD = 0.19
-PRODUCT_IMAGE_URL_MAX = 6
+PRODUCT_IMAGE_URL_MAX = 10
 PRODUCT_DATASHEET_ATTACHMENT_TYPE = "product_datasheet"
 PRODUCT_DATASHEET_MAX_BYTES = 15 * 1024 * 1024
 HARD_RESET_CONFIRM_TEXT = "ICH_WEISS_WAS_ICH_TUE"
 CSV_IMPORT_STATE_KEY = "csv_import_v2_state"
 ALLOWED_FEATURE_DATA_TYPES = {"text", "number", "bool"}
+FEATURE_FILTER_OPTION_LIMIT = 300
 
 REPAIR_ATTACHMENT_ALLOWED_MIME = {
     "image/jpeg": ".jpg",
@@ -211,18 +212,16 @@ PRODUCT_FORM_FIELD_IDS = {
     "sku": "product_sku",
     "sales_name": "product_sales_name",
     "manufacturer_name": "product_manufacturer_name",
+    "product_title_1": "product_product_title_1",
+    "product_title_2": "product_product_title_2",
     "ean": "product_ean",
     "area_id": "product_area_id",
     "device_kind_id": "product_device_kind_id",
     "device_type_id": "product_device_type_id",
     "description": "product_description",
-    "image_url_1": "product_image_url_1",
-    "image_url_2": "product_image_url_2",
-    "image_url_3": "product_image_url_3",
-    "image_url_4": "product_image_url_4",
-    "image_url_5": "product_image_url_5",
-    "image_url_6": "product_image_url_6",
 }
+for _idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+    PRODUCT_FORM_FIELD_IDS[f"image_url_{_idx}"] = f"product_image_url_{_idx}"
 PRODUCT_RECEIPT_FIELD_IDS = {
     "receipt_quantity": "receipt_quantity",
     "receipt_warehouse_to_id": "receipt_warehouse_to_id",
@@ -345,11 +344,25 @@ def _product_image_url_keys() -> list[str]:
 def _product_image_urls(product: Product | None) -> list[str]:
     if not product:
         return []
-    out: list[str] = []
-    for key in _product_image_url_keys():
-        value = _normalize_absolute_url(getattr(product, key, None))
-        if value:
-            out.append(value)
+    return [str(slot["url"]) for slot in _product_image_slots(product) if slot.get("url")]
+
+
+def _product_image_slots(product: Product | None) -> list[dict[str, object]]:
+    if not product:
+        return []
+    out: list[dict[str, object]] = []
+    for idx, key in enumerate(_product_image_url_keys(), start=1):
+        raw_value = str(getattr(product, key, "") or "").strip()
+        normalized = _normalize_absolute_url(raw_value)
+        out.append(
+            {
+                "index": int(idx),
+                "key": key,
+                "raw_value": raw_value,
+                "has_value": bool(raw_value),
+                "url": normalized or "",
+            }
+        )
     return out
 
 
@@ -668,6 +681,7 @@ def _ctx(request: Request, user=None, **kwargs):
         "nav_mobile_items": nav_mobile,
         "nav_commands": nav_commands,
         "nav_hotkeys": nav_hotkeys,
+        "product_image_url_max": PRODUCT_IMAGE_URL_MAX,
         **kwargs,
     }
 
@@ -772,10 +786,18 @@ def _ensure_products_extra_columns() -> None:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN sales_name VARCHAR(200)")
         if "manufacturer_name" not in cols:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN manufacturer_name VARCHAR(200)")
+        if "product_title_1" not in cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN product_title_1 VARCHAR(200)")
+        if "product_title_2" not in cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN product_title_2 VARCHAR(200)")
         if "material_no" not in cols:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN material_no VARCHAR(120)")
         if "active" not in cols:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN active BOOLEAN DEFAULT 1")
+        for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+            col_name = f"image_url_{idx}"
+            if col_name not in cols:
+                conn.exec_driver_sql(f"ALTER TABLE products ADD COLUMN {col_name} VARCHAR(600)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_material_no ON products(material_no)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_item_type ON products(item_type)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_active ON products(active)")
@@ -1203,6 +1225,7 @@ def _ensure_catalog_v2_schema() -> None:
         if "search_blob" not in p_cols:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN search_blob TEXT")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_search_blob ON products(search_blob)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_device_kind_id ON products(device_kind_id)")
 
         conn.exec_driver_sql(
             """
@@ -1244,6 +1267,9 @@ def _ensure_catalog_v2_schema() -> None:
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_norm ON feature_values(value_norm)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_num ON feature_values(value_num)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_bool ON feature_values(value_bool)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_text ON feature_values(feature_def_id, value_text)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_num ON feature_values(feature_def_id, value_num)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_bool ON feature_values(feature_def_id, value_bool)")
 
         conn.exec_driver_sql(
             """
@@ -1749,20 +1775,33 @@ def _extract_po_numbers(text: str | None) -> list[str]:
 
 def _seed_item_type_field_rules(db: Session) -> None:
     for item_type in ITEM_TYPE_CHOICES:
-        has_rows = db.query(ItemTypeFieldRule.id).filter(ItemTypeFieldRule.item_type == item_type).first()
-        if has_rows:
-            continue
         defaults = DEFAULT_ITEM_TYPE_RULES.get(item_type, {})
+        existing_rows = (
+            db.query(ItemTypeFieldRule)
+            .filter(ItemTypeFieldRule.item_type == item_type)
+            .order_by(ItemTypeFieldRule.sort_order.asc(), ItemTypeFieldRule.id.asc())
+            .all()
+        )
+        existing_keys = {str(row.field_key) for row in existing_rows}
+        max_sort_order = 0
+        for row in existing_rows:
+            try:
+                max_sort_order = max(max_sort_order, int(row.sort_order or 0))
+            except Exception:
+                continue
         for idx, field in enumerate(FORM_FIELDS, start=1):
             key = str(field["key"])
+            if key in existing_keys:
+                continue
             cfg = defaults.get(key, {})
+            max_sort_order += 10
             db.add(
                 ItemTypeFieldRule(
                     item_type=item_type,
                     field_key=key,
                     visible=bool(cfg.get("visible", False)),
                     required=bool(cfg.get("required", False)),
-                    sort_order=idx * 10,
+                    sort_order=max_sort_order if max_sort_order > 0 else idx * 10,
                     section=str(field.get("section_default") or "Identifikation"),
                     help_text_de=None,
                 )
@@ -2612,6 +2651,195 @@ def catalog_type_add(
     db.commit()
     _flash(request, "Gerätetyp angelegt.", "info")
     return RedirectResponse("/catalog/structure", status_code=302)
+
+
+# ---------------------------
+# Catalog: Features
+# ---------------------------
+
+@app.get("/catalog/features", response_class=HTMLResponse)
+def feature_defs_list(
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = 0,
+    q: str = "",
+    db: Session = Depends(db_session),
+):
+    areas = db.query(Area).order_by(Area.name.asc(), Area.id.asc()).all()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    area_name_map = {int(a.id): str(a.name or "").strip() for a in areas}
+
+    kind_option_rows: list[dict[str, str | int]] = []
+    kind_label_map: dict[int, str] = {}
+    for kind in kinds:
+        area_name = area_name_map.get(int(kind.area_id or 0), "")
+        kind_name = str(kind.name or "").strip()
+        label = f"{area_name} / {kind_name}" if area_name else kind_name
+        kind_label_map[int(kind.id)] = label
+        kind_option_rows.append({"id": int(kind.id), "label": label})
+
+    selected_kind_id = int(kind_id or 0)
+    if selected_kind_id and selected_kind_id not in kind_label_map:
+        selected_kind_id = 0
+
+    features_q = db.query(FeatureDef)
+    if selected_kind_id:
+        features_q = features_q.filter(FeatureDef.device_kind_id == selected_kind_id)
+    all_rows = features_q.order_by(FeatureDef.device_kind_id.asc(), FeatureDef.label_de.asc(), FeatureDef.id.asc()).all()
+
+    value_usage_rows = (
+        db.query(
+            FeatureValue.feature_def_id,
+            func.count(FeatureValue.id),
+        )
+        .group_by(FeatureValue.feature_def_id)
+        .all()
+    )
+    value_usage_map = {int(feature_def_id): int(cnt or 0) for feature_def_id, cnt in value_usage_rows}
+
+    profile_usage_rows = (
+        db.query(
+            ImportProfile.device_kind_id,
+            ImportProfileMap.target_key,
+            func.count(ImportProfileMap.id),
+        )
+        .join(ImportProfile, ImportProfile.id == ImportProfileMap.profile_id)
+        .filter(ImportProfileMap.map_type == "feature")
+        .group_by(ImportProfile.device_kind_id, ImportProfileMap.target_key)
+        .all()
+    )
+    profile_usage_map = {
+        (int(device_kind_id or 0), str(target_key or "").strip().lower()): int(cnt or 0)
+        for device_kind_id, target_key, cnt in profile_usage_rows
+    }
+
+    q_norm = (q or "").strip().lower()
+    rows: list[dict[str, object]] = []
+    for feature in all_rows:
+        kind_label = kind_label_map.get(int(feature.device_kind_id or 0), f"Geräteart #{int(feature.device_kind_id or 0)}")
+        if q_norm:
+            haystack = " ".join(
+                [
+                    str(feature.label_de or ""),
+                    str(feature.key or ""),
+                    kind_label,
+                ]
+            ).lower()
+            if q_norm not in haystack:
+                continue
+        rows.append(
+            {
+                "row": feature,
+                "kind_label": kind_label,
+                "value_count": int(value_usage_map.get(int(feature.id), 0)),
+                "profile_count": int(
+                    profile_usage_map.get(
+                        (int(feature.device_kind_id or 0), str(feature.key or "").strip().lower()),
+                        0,
+                    )
+                ),
+            }
+        )
+
+    return templates.TemplateResponse(
+        "catalog/features.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            total_rows=len(all_rows),
+            q=q,
+            selected_kind_id=selected_kind_id,
+            kind_option_rows=kind_option_rows,
+        ),
+    )
+
+
+@app.post("/catalog/features/{feature_id}/edit")
+def feature_defs_edit(
+    feature_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    label_de: str = Form(...),
+    key: str = Form(""),
+    data_type: str = Form("text"),
+    filterable: Optional[str] = Form(None),
+    db: Session = Depends(db_session),
+):
+    feature = db.get(FeatureDef, feature_id)
+    if not feature:
+        raise HTTPException(status_code=404)
+
+    label_clean = (label_de or "").strip()
+    if not label_clean:
+        _flash(request, "Merkmalname ist Pflicht.", "error")
+        return RedirectResponse(f"/catalog/features?kind_id={int(feature.device_kind_id or 0)}", status_code=302)
+
+    key_clean = _sanitize_feature_key((key or "").strip() or label_clean)
+    if not key_clean:
+        _flash(request, "Merkmalschlüssel ist ungültig.", "error")
+        return RedirectResponse(f"/catalog/features?kind_id={int(feature.device_kind_id or 0)}", status_code=302)
+
+    data_type_clean = str(data_type or "").strip().lower()
+    if data_type_clean not in ALLOWED_FEATURE_DATA_TYPES:
+        _flash(request, "Ungültiger Datentyp für Merkmal.", "error")
+        return RedirectResponse(f"/catalog/features?kind_id={int(feature.device_kind_id or 0)}", status_code=302)
+
+    value_count = (
+        db.query(FeatureValue.id)
+        .filter(FeatureValue.feature_def_id == int(feature.id))
+        .count()
+    )
+    if data_type_clean != str(feature.data_type or "").strip().lower() and value_count > 0:
+        _flash(
+            request,
+            "Der Datentyp kann nicht geändert werden, solange bereits Merkmalswerte existieren.",
+            "error",
+        )
+        return RedirectResponse(f"/catalog/features?kind_id={int(feature.device_kind_id or 0)}", status_code=302)
+
+    duplicate = (
+        db.query(FeatureDef.id)
+        .filter(
+            FeatureDef.id != int(feature.id),
+            FeatureDef.device_kind_id == int(feature.device_kind_id),
+            func.lower(FeatureDef.key) == key_clean.lower(),
+        )
+        .first()
+    )
+    if duplicate:
+        _flash(request, f"Merkmalschlüssel '{key_clean}' existiert in dieser Geräteart bereits.", "error")
+        return RedirectResponse(f"/catalog/features?kind_id={int(feature.device_kind_id or 0)}", status_code=302)
+
+    old_key = str(feature.key or "").strip()
+    if old_key.lower() != key_clean.lower():
+        profile_ids = [
+            int(profile_id)
+            for profile_id, in db.query(ImportProfile.id).filter(
+                ImportProfile.device_kind_id == int(feature.device_kind_id)
+            ).all()
+        ]
+        if profile_ids:
+            db.query(ImportProfileMap).filter(
+                ImportProfileMap.profile_id.in_(profile_ids),
+                ImportProfileMap.map_type == "feature",
+                func.lower(ImportProfileMap.target_key) == old_key.lower(),
+            ).update({ImportProfileMap.target_key: key_clean}, synchronize_session=False)
+
+    feature.label_de = label_clean
+    feature.key = key_clean
+    feature.data_type = data_type_clean
+    feature.filterable = bool(filterable == "on")
+    db.add(feature)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        _flash(request, f"Merkmal '{label_clean}' konnte nicht gespeichert werden.", "error")
+        return RedirectResponse(f"/catalog/features?kind_id={int(feature.device_kind_id or 0)}", status_code=302)
+
+    _flash(request, f"Merkmal '{label_clean}' aktualisiert.", "info")
+    return RedirectResponse(f"/catalog/features?kind_id={int(feature.device_kind_id or 0)}", status_code=302)
 
 
 # ---------------------------
@@ -3498,17 +3726,6 @@ def _save_import_profile_maps(
                 data_type=data_type if data_type in ALLOWED_FEATURE_DATA_TYPES else "text",
             )
         )
-    params: dict[str, str] = {}
-    normalized_item_type = _normalize_item_type(item_type, fallback="")
-    if normalized_item_type:
-        params["item_type"] = normalized_item_type
-    if int(area_id or 0) > 0:
-        params["area_id"] = str(int(area_id))
-    if int(kind_id or 0) > 0:
-        params["kind_id"] = str(int(kind_id))
-    if not params:
-        return "/catalog/products/import"
-    return f"/catalog/products/import?{urlencode(params)}"
 
 
 def _guess_attribute_column(columns: list[str], attr: AttributeDef) -> str:
@@ -3614,6 +3831,8 @@ PRODUCT_FORM_FIELD_SPECS = (
     {"key": "sku", "label": "SKU / Artikelnummer"},
     {"key": "sales_name", "label": "Verkaufsbezeichnung"},
     {"key": "manufacturer_name", "label": "Herstellerbezeichnung"},
+    {"key": "product_title_1", "label": "Produkttitel 1"},
+    {"key": "product_title_2", "label": "Produkttitel 2"},
     {"key": "ean", "label": "EAN"},
     {"key": "device_kind_id", "label": "Geräteart"},
     {"key": "description", "label": "Beschreibung"},
@@ -3850,6 +4069,139 @@ def _feature_value_display_value(
     return str(value_text or "").strip()
 
 
+def _format_feature_number_option(value: float | int | None) -> str:
+    if value is None:
+        return ""
+    try:
+        num = float(value)
+    except Exception:
+        return ""
+    if num.is_integer():
+        return str(int(num))
+    return f"{num:.12f}".rstrip("0").rstrip(".")
+
+
+def _feature_filter_text_options(
+    db: Session,
+    *,
+    device_kind_id: int,
+    feature_def_id: int,
+    limit: int = FEATURE_FILTER_OPTION_LIMIT,
+) -> tuple[list[str], bool]:
+    rows = (
+        db.query(FeatureValue.value_text)
+        .join(Product, Product.id == FeatureValue.product_id)
+        .filter(
+            Product.active == True,
+            Product.device_kind_id == int(device_kind_id),
+            FeatureValue.feature_def_id == int(feature_def_id),
+            FeatureValue.value_text.isnot(None),
+            func.length(func.trim(FeatureValue.value_text)) > 0,
+        )
+        .order_by(func.lower(func.trim(FeatureValue.value_text)).asc(), func.trim(FeatureValue.value_text).asc())
+        .distinct()
+        .limit(int(limit) + 1)
+        .all()
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for value_text, in rows:
+        value = str(value_text or "").strip()
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    has_more = len(rows) > int(limit)
+    if len(out) > int(limit):
+        out = out[: int(limit)]
+        has_more = True
+    return out, has_more
+
+
+def _feature_filter_number_options(
+    db: Session,
+    *,
+    device_kind_id: int,
+    feature_def_id: int,
+    limit: int = FEATURE_FILTER_OPTION_LIMIT,
+) -> tuple[list[float], bool]:
+    rows = (
+        db.query(FeatureValue.value_num)
+        .join(Product, Product.id == FeatureValue.product_id)
+        .filter(
+            Product.active == True,
+            Product.device_kind_id == int(device_kind_id),
+            FeatureValue.feature_def_id == int(feature_def_id),
+            FeatureValue.value_num.isnot(None),
+        )
+        .order_by(FeatureValue.value_num.asc())
+        .distinct()
+        .limit(int(limit) + 1)
+        .all()
+    )
+    out: list[float] = []
+    seen: set[float] = set()
+    for value_num, in rows:
+        if value_num is None:
+            continue
+        try:
+            numeric = float(value_num)
+        except Exception:
+            continue
+        if numeric in seen:
+            continue
+        seen.add(numeric)
+        out.append(numeric)
+    has_more = len(rows) > int(limit)
+    if len(out) > int(limit):
+        out = out[: int(limit)]
+        has_more = True
+    return out, has_more
+
+
+def _feature_filter_bool_options(
+    db: Session,
+    *,
+    device_kind_id: int,
+    feature_def_id: int,
+) -> set[bool]:
+    rows = (
+        db.query(FeatureValue.value_bool)
+        .join(Product, Product.id == FeatureValue.product_id)
+        .filter(
+            Product.active == True,
+            Product.device_kind_id == int(device_kind_id),
+            FeatureValue.feature_def_id == int(feature_def_id),
+            FeatureValue.value_bool.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    out: set[bool] = set()
+    for value_bool, in rows:
+        if value_bool is None:
+            continue
+        out.add(bool(value_bool))
+    return out
+
+
+def _resolve_number_filter_selection(raw_value: str | None, available_values: list[float]) -> tuple[str, float] | None:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = float(raw.replace(",", "."))
+    except Exception:
+        return None
+    for value in available_values:
+        if abs(float(value) - parsed) < 1e-9:
+            return (_format_feature_number_option(value), float(value))
+    return None
+
+
 def _parse_feature_raw_value(data_type: str, raw_value: str) -> tuple[str | None, float | None, bool | None, str]:
     raw = str(raw_value or "").strip()
     if not raw:
@@ -3948,6 +4300,8 @@ def _refresh_product_search_blob(db: Session, product: Product) -> None:
     parts = [
         product.name,
         product.sales_name,
+        product.product_title_1,
+        product.product_title_2,
         product.ean,
         product.material_no,
         product.description,
@@ -4570,47 +4924,84 @@ def products_list(
             "value": "",
             "min": "",
             "max": "",
+            "options": [],
+            "min_options": [],
+            "max_options": [],
+            "bool_options": [],
         }
 
         if data_type == "number":
+            number_values, has_more = _feature_filter_number_options(
+                db,
+                device_kind_id=int(kind_id),
+                feature_def_id=fid,
+                limit=FEATURE_FILTER_OPTION_LIMIT,
+            )
+            number_options = [
+                {"value": _format_feature_number_option(value), "label": _format_feature_number_option(value), "disabled": False}
+                for value in number_values
+            ]
+            if has_more:
+                number_options.append({"value": "", "label": "(weitere Werte vorhanden ...)", "disabled": True})
+            filter_row["min_options"] = list(number_options)
+            filter_row["max_options"] = list(number_options)
+
             raw_min = (request.query_params.get(f"f_{fid}_min") or "").strip()
             raw_max = (request.query_params.get(f"f_{fid}_max") or "").strip()
-            filter_row["min"] = raw_min
-            filter_row["max"] = raw_max
-            if raw_min:
-                try:
-                    min_value = float(raw_min.replace(",", "."))
-                    query = query.filter(
-                        exists().where(
-                            and_(
-                                FeatureValue.product_id == Product.id,
-                                FeatureValue.feature_def_id == fid,
-                                FeatureValue.value_num.isnot(None),
-                                FeatureValue.value_num >= min_value,
-                            )
+            min_selected = _resolve_number_filter_selection(raw_min, number_values)
+            max_selected = _resolve_number_filter_selection(raw_max, number_values)
+
+            min_label = str(min_selected[0]) if min_selected else ""
+            max_label = str(max_selected[0]) if max_selected else ""
+            min_value = float(min_selected[1]) if min_selected else None
+            max_value = float(max_selected[1]) if max_selected else None
+
+            if min_value is not None and max_value is not None and min_value > max_value:
+                min_label, max_label = max_label, min_label
+                min_value, max_value = max_value, min_value
+                _flash(
+                    request,
+                    f"Bei Merkmal '{filter_row['label']}' war Min größer als Max. Werte wurden getauscht.",
+                    "warn",
+                )
+
+            filter_row["min"] = min_label
+            filter_row["max"] = max_label
+
+            if min_value is not None:
+                query = query.filter(
+                    exists().where(
+                        and_(
+                            FeatureValue.product_id == Product.id,
+                            FeatureValue.feature_def_id == fid,
+                            FeatureValue.value_num.isnot(None),
+                            FeatureValue.value_num >= min_value,
                         )
                     )
-                except Exception:
-                    filter_row["min"] = ""
-            if raw_max:
-                try:
-                    max_value = float(raw_max.replace(",", "."))
-                    query = query.filter(
-                        exists().where(
-                            and_(
-                                FeatureValue.product_id == Product.id,
-                                FeatureValue.feature_def_id == fid,
-                                FeatureValue.value_num.isnot(None),
-                                FeatureValue.value_num <= max_value,
-                            )
+                )
+            if max_value is not None:
+                query = query.filter(
+                    exists().where(
+                        and_(
+                            FeatureValue.product_id == Product.id,
+                            FeatureValue.feature_def_id == fid,
+                            FeatureValue.value_num.isnot(None),
+                            FeatureValue.value_num <= max_value,
                         )
                     )
-                except Exception:
-                    filter_row["max"] = ""
+                )
         elif data_type == "bool":
+            bool_values = _feature_filter_bool_options(db, device_kind_id=int(kind_id), feature_def_id=fid)
+            bool_options: list[dict[str, object]] = []
+            if True in bool_values:
+                bool_options.append({"value": "1", "label": "Ja", "disabled": False})
+            if False in bool_values:
+                bool_options.append({"value": "0", "label": "Nein", "disabled": False})
+            filter_row["bool_options"] = bool_options
+
             raw_bool = (request.query_params.get(f"f_{fid}") or "").strip().lower()
-            filter_row["value"] = raw_bool
-            if raw_bool in ("1", "true", "ja"):
+            if raw_bool in ("1", "true", "ja") and True in bool_values:
+                filter_row["value"] = "1"
                 query = query.filter(
                     exists().where(
                         and_(
@@ -4620,7 +5011,8 @@ def products_list(
                         )
                     )
                 )
-            elif raw_bool in ("0", "false", "nein"):
+            elif raw_bool in ("0", "false", "nein") and False in bool_values:
+                filter_row["value"] = "0"
                 query = query.filter(
                     exists().where(
                         and_(
@@ -4630,25 +5022,33 @@ def products_list(
                         )
                     )
                 )
-            else:
-                filter_row["value"] = ""
         else:
+            text_values, has_more = _feature_filter_text_options(
+                db,
+                device_kind_id=int(kind_id),
+                feature_def_id=fid,
+                limit=FEATURE_FILTER_OPTION_LIMIT,
+            )
+            text_options = [{"value": value, "label": value, "disabled": False} for value in text_values]
+            if has_more:
+                text_options.append({"value": "", "label": "(weitere Werte vorhanden ...)", "disabled": True})
+            filter_row["options"] = text_options
+
             raw_text = (request.query_params.get(f"f_{fid}") or "").strip()
-            filter_row["value"] = raw_text
             if raw_text:
-                norm = _normalize_search_text(raw_text)
-                if norm:
+                selected_value = next((value for value in text_values if value.casefold() == raw_text.casefold()), "")
+                if selected_value:
+                    filter_row["value"] = selected_value
                     query = query.filter(
                         exists().where(
                             and_(
                                 FeatureValue.product_id == Product.id,
                                 FeatureValue.feature_def_id == fid,
-                                FeatureValue.value_norm.ilike(f"%{norm}%"),
+                                FeatureValue.value_text.isnot(None),
+                                func.lower(func.trim(FeatureValue.value_text)) == selected_value.casefold(),
                             )
                         )
                     )
-                else:
-                    filter_row["value"] = ""
         feature_filters.append(filter_row)
 
     products = query.order_by(Product.id.desc()).limit(300).all()
@@ -4694,8 +5094,6 @@ def products_list(
             if not label:
                 continue
             feature_values_map.setdefault(int(product_id), []).append(f"{label}: {value}")
-    kind_name_map = {int(k.id): str(k.name or "") for k in kinds}
-
     return templates.TemplateResponse(
         "catalog/products_list.html",
         _ctx(
@@ -4706,7 +5104,6 @@ def products_list(
             kinds=kinds,
             kind_id=kind_id,
             feature_filters=feature_filters,
-            kind_name_map=kind_name_map,
             feature_values_map=feature_values_map,
             stock_total_map=stock_total_map,
         ),
@@ -4793,8 +5190,36 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
     product_field_map = {
         "sales_name": _guess_column(columns, ("verkaufsbezeichnung", "sales_name", "name", "produktname")),
         "material_no": _guess_column(columns, ("materialnummer", "material_no", "matnr", "mat_nr")),
+        "manufacturer_name": _guess_column(
+            columns,
+            ("herstellerbezeichnung", "manufacturer_name", "brand_name", "modellbezeichnung"),
+        ),
+        "product_title_1": _guess_column(columns, ("produkttitel1", "produkttitel_1", "product_title_1", "title1", "titel1")),
+        "product_title_2": _guess_column(columns, ("produkttitel2", "produkttitel_2", "product_title_2", "title2", "titel2")),
         "description": _guess_column(columns, ("beschreibung", "description")),
+        "sale_price": _guess_column(
+            columns,
+            ("verkaufspreis", "verkaufspreis_brutto", "sale_price", "sale_price_gross", "vk", "preis"),
+        ),
     }
+    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+        key = f"image_url_{idx}"
+        product_field_map[key] = _guess_column(
+            columns,
+            (
+                f"bild{idx}",
+                f"bild_{idx}",
+                f"bildurl{idx}",
+                f"bild_url_{idx}",
+                f"image{idx}",
+                f"image_{idx}",
+                f"imageurl{idx}",
+                f"image_url_{idx}",
+                f"img{idx}",
+                f"img_{idx}",
+                f"url_bild_{idx}",
+            ),
+        )
     ean_column = _guess_column(columns, ("ean", "gtin", "gtin13", "barcode"))
     feature_prefill_by_column: dict[str, dict[str, str]] = {}
 
@@ -4845,6 +5270,7 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
             auto_profile_id=auto_profile_id,
             profile_name_default=f"{manufacturer.name} {selected_kind.name}",
             product_field_map=product_field_map,
+            image_field_indices=list(range(1, PRODUCT_IMAGE_URL_MAX + 1)),
             ean_column=ean_column,
             feature_defs=feature_defs,
             feature_prefill_by_column=feature_prefill_by_column,
@@ -4902,9 +5328,16 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
     product_field_map = {
         "sales_name": (form.get("map_sales_name") or "").strip(),
         "material_no": (form.get("map_material_no") or "").strip(),
+        "manufacturer_name": (form.get("map_manufacturer_name") or "").strip(),
+        "product_title_1": (form.get("map_product_title_1") or "").strip(),
+        "product_title_2": (form.get("map_product_title_2") or "").strip(),
         "description": (form.get("map_description") or "").strip(),
+        "sale_price": (form.get("map_sale_price") or "").strip(),
         "ean": ean_column,
     }
+    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+        key = f"image_url_{idx}"
+        product_field_map[key] = (form.get(f"map_{key}") or "").strip()
     for key, value in list(product_field_map.items()):
         if not value:
             continue
@@ -4976,6 +5409,10 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                 manufacturer_id=int(manufacturer_row.id),
                 device_kind_id=int(selected_kind_row.id),
                 name=profile_name,
+                delimiter=delimiter,
+                encoding=str(encoding or "utf-8"),
+                has_header=bool(has_header),
+                ean_column=ean_column,
             )
             db.add(profile)
             db.flush()
@@ -5038,13 +5475,24 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
 
             sales_name = _csv_value(row, product_field_map.get("sales_name"))
             material_no = _csv_value(row, product_field_map.get("material_no"))
+            manufacturer_name = _csv_value(row, product_field_map.get("manufacturer_name"))
+            product_title_1 = _csv_value(row, product_field_map.get("product_title_1"))
+            product_title_2 = _csv_value(row, product_field_map.get("product_title_2"))
             description = _csv_value(row, product_field_map.get("description"))
+            sale_price_raw = _csv_value(row, product_field_map.get("sale_price"))
+            sale_price_cents = _parse_eur_to_cents(sale_price_raw, "Verkaufspreis") if sale_price_raw else None
 
             product.ean = ean_digits
             product.sales_name = sales_name or product.sales_name
             product.material_no = material_no or product.material_no
+            product.manufacturer_name = manufacturer_name or product.manufacturer_name
+            product.product_title_1 = product_title_1 or product.product_title_1
+            product.product_title_2 = product_title_2 or product.product_title_2
             product.description = description or product.description
-            product.name = sales_name or product.name or f"Produkt {ean_digits}"
+            if sale_price_cents is not None:
+                product.sale_price_cents = int(sale_price_cents)
+                product.price_source = "csv"
+            product.name = sales_name or product_title_1 or product_title_2 or product.name or f"Produkt {ean_digits}"
             product.item_type = "appliance"
             product.track_mode = "quantity"
             product.manufacturer_id = int(manufacturer_row.id)
@@ -5055,6 +5503,15 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             product.device_type_id = None
             product.area_id = None
             product.active = True
+            for image_key in _product_image_url_keys():
+                image_raw = _csv_value(row, product_field_map.get(image_key))
+                if not image_raw:
+                    continue
+                image_url = _normalize_absolute_url(image_raw)
+                if not image_url:
+                    errors.append(f"Zeile {i}: Ungültige Bild-URL in Feld '{image_key}': {image_raw}")
+                    continue
+                setattr(product, image_key, image_url)
 
             db.add(product)
             db.flush()
@@ -5317,6 +5774,8 @@ async def products_new_post(request: Request, user=Depends(require_admin), db: S
 
     sales_name = text_values.get("sales_name") or None if "sales_name" in visible_fields else None
     manufacturer_name = text_values.get("manufacturer_name") or None if "manufacturer_name" in visible_fields else None
+    product_title_1 = text_values.get("product_title_1") or None if "product_title_1" in visible_fields else None
+    product_title_2 = text_values.get("product_title_2") or None if "product_title_2" in visible_fields else None
     sku = text_values.get("sku") or None if "sku" in visible_fields else None
     description = text_values.get("description") or None if "description" in visible_fields else None
 
@@ -5328,6 +5787,8 @@ async def products_new_post(request: Request, user=Depends(require_admin), db: S
         material_no=material_no,
         sales_name=sales_name,
         manufacturer_name=manufacturer_name,
+        product_title_1=product_title_1,
+        product_title_2=product_title_2,
         sku=sku,
         ean=ean,
         track_mode="quantity",
@@ -5592,6 +6053,10 @@ async def products_edit_post(product_id: int, request: Request, user=Depends(req
         p.sales_name = text_values.get("sales_name") or None
     if "manufacturer_name" in visible_fields:
         p.manufacturer_name = text_values.get("manufacturer_name") or None
+    if "product_title_1" in visible_fields:
+        p.product_title_1 = text_values.get("product_title_1") or None
+    if "product_title_2" in visible_fields:
+        p.product_title_2 = text_values.get("product_title_2") or None
     if "sku" in visible_fields:
         p.sku = text_values.get("sku") or None
     if "ean" in visible_fields:
@@ -5857,7 +6322,8 @@ def product_detail_get(
             attribute_detail_rows.append({"label": str(label or "Attribut"), "value": value})
     description_blocks = _split_product_description(product.description)
     manufacturer_row = db.get(Manufacturer, int(product.manufacturer_id or 0)) if product.manufacturer_id else None
-    image_urls = _product_image_urls(product)
+    image_slots = _product_image_slots(product)
+    image_urls = [str(row.get("url") or "") for row in image_slots if str(row.get("url") or "").strip()]
     datasheet_source_url = _build_product_datasheet_url(manufacturer_row, product)
     datasheet_local_attachment = _latest_product_datasheet(db, int(product_id))
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
@@ -5999,6 +6465,7 @@ def product_detail_get(
             stock_condition_rows=stock_condition_rows,
             purchase_status_label=_purchase_status_label,
             image_urls=image_urls,
+            image_slots=image_slots,
             datasheet_source_url=datasheet_source_url,
             datasheet_local_attachment=datasheet_local_attachment,
             attribute_detail_rows=attribute_detail_rows,
@@ -6428,6 +6895,16 @@ def set_item_delete(set_id: int, item_id: int, request: Request, user=Depends(re
 # ---------------------------
 # Stammdaten
 # ---------------------------
+
+@app.get("/stammdaten/geraetearten")
+def stammdaten_geraetearten_redirect(user=Depends(require_admin)):
+    return RedirectResponse("/catalog/structure", status_code=302)
+
+
+@app.get("/stammdaten/merkmale")
+def stammdaten_merkmale_redirect(user=Depends(require_admin)):
+    return RedirectResponse("/catalog/features", status_code=302)
+
 
 def _manufacturer_datasheet_fields_from_form(form) -> dict[str, str | None]:
     return {
@@ -9551,13 +10028,21 @@ def _write_loadbee_api_key(api_key: str) -> None:
 
 
 def _loadbee_settings(db: Session, include_secret: bool = False) -> dict[str, str | bool]:
-    enabled = _bool_from_setting(_system_setting_get(db, LOADBEE_SETTING_ENABLED, "0"), default=False)
+    enabled_raw = _system_setting_get(db, LOADBEE_SETTING_ENABLED, None)
     locales = (_system_setting_get(db, LOADBEE_SETTING_LOCALES, "de_DE") or "de_DE").strip() or "de_DE"
-    load_mode = (_system_setting_get(db, LOADBEE_SETTING_LOAD_MODE, "on_demand") or "on_demand").strip().lower()
+    api_key = _read_loadbee_api_key()
+    load_mode_raw = _system_setting_get(db, LOADBEE_SETTING_LOAD_MODE, None)
+    if load_mode_raw is None:
+        load_mode = "auto" if api_key else "on_demand"
+    else:
+        load_mode = str(load_mode_raw or "on_demand").strip().lower()
     if load_mode not in ("on_demand", "auto"):
         load_mode = "on_demand"
     debug_mode = _bool_from_setting(_system_setting_get(db, LOADBEE_SETTING_DEBUG, "0"), default=False)
-    api_key = _read_loadbee_api_key()
+    if enabled_raw is None:
+        enabled = bool(api_key)
+    else:
+        enabled = _bool_from_setting(enabled_raw, default=False)
     return {
         "enabled": enabled,
         "api_key_set": bool(api_key),

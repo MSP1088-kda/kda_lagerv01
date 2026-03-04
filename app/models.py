@@ -241,6 +241,8 @@ class Product(Base):
     item_type: Mapped[str] = mapped_column(String(30), nullable=False, default="material")  # appliance|spare_part|accessory|material
     sales_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     manufacturer_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    product_title_1: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    product_title_2: Mapped[str | None] = mapped_column(String(200), nullable=True)
     material_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     search_blob: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -250,6 +252,10 @@ class Product(Base):
     image_url_4: Mapped[str | None] = mapped_column(String(600), nullable=True)
     image_url_5: Mapped[str | None] = mapped_column(String(600), nullable=True)
     image_url_6: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_7: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_8: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_9: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    image_url_10: Mapped[str | None] = mapped_column(String(600), nullable=True)
     sale_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     price_source: Mapped[str] = mapped_column(String(30), nullable=False, default="manuell")
@@ -266,6 +272,7 @@ class Product(Base):
         Index("ix_products_material_no", "material_no"),
         Index("ix_products_active", "active"),
         Index("ix_products_item_type", "item_type"),
+        Index("ix_products_device_kind_id", "device_kind_id"),
         Index("ix_products_active_item_type", "active", "item_type"),
         Index("ix_products_area_kind_type", "area_id", "device_kind_id", "device_type_id"),
         Index("ix_products_manufacturer_id", "manufacturer_id"),
@@ -376,6 +383,9 @@ class FeatureValue(Base):
         Index("ix_featurevalue_norm", "value_norm"),
         Index("ix_featurevalue_num", "value_num"),
         Index("ix_featurevalue_bool", "value_bool"),
+        Index("ix_featurevalue_feature_text", "feature_def_id", "value_text"),
+        Index("ix_featurevalue_feature_num", "feature_def_id", "value_num"),
+        Index("ix_featurevalue_feature_bool", "feature_def_id", "value_bool"),
     )
 
 
