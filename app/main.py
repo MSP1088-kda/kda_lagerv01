@@ -18173,6 +18173,85 @@ def _sevdesk_list_all(fetch_fn, *, page_size: int = 200, max_rows: int = 5000) -
     return rows[:max_rows]
 
 
+def _customer_init_outsmart_payload_key(payload: dict) -> str:
+    return (
+        _outsmart_row_id(payload)
+        or _outsmart_workorder_key(payload)
+        or _outsmart_project_key(payload)
+        or _outsmart_relation_key(payload)
+        or json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    )
+
+
+def _customer_init_collect_outsmart_workorders(settings: dict[str, str | bool]) -> tuple[list[dict], list[str]]:
+    warnings: list[str] = []
+    rows: list[dict] = []
+    seen: set[str] = set()
+
+    def add_batch(batch: list[dict]) -> int:
+        added = 0
+        for payload in batch:
+            key = _customer_init_outsmart_payload_key(payload)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(payload)
+            added += 1
+        return added
+
+    def fetch_status_batches(status_value: str, label: str) -> None:
+        page_size = 200
+        offset = 0
+        for page_no in range(1, 26):
+            try:
+                batch = _outsmart_extract_rows(
+                    outsmart_fetch_workorders(
+                        settings,
+                        status=status_value,
+                        update_status=False,
+                        limit=page_size,
+                        offset=offset,
+                    )
+                )
+            except Exception as exc:
+                message = str(exc)
+                if "timed out" in message.lower():
+                    warnings.append(f"{label} hat das Zeitlimit überschritten. Der Lauf verwendet nur die bis dahin lesbaren Arbeitsaufträge.")
+                    return
+                if "OutSmart-Fehler 404" in message and "\"code\":1001" in message:
+                    warnings.append(f"{label} ist in dieser OutSmart-Instanz nicht verfügbar.")
+                    return
+                if page_no > 1:
+                    warnings.append(f"{label} konnte ab Seite {page_no} nicht weiter gelesen werden: {message}")
+                    return
+                raise
+            if not batch:
+                return
+            before = len(seen)
+            add_batch(batch)
+            if len(batch) < page_size:
+                return
+            if len(seen) == before:
+                return
+            offset += page_size
+
+    fetch_status_batches("", "GetWorkorders")
+    if len(rows) <= 1:
+        for status_value, label in (
+            ("Compleet", "GetWorkorders Status Compleet"),
+            ("Gepland", "GetWorkorders Status Gepland"),
+            ("Open", "GetWorkorders Status Open"),
+            ("Nieuw", "GetWorkorders Status Nieuw"),
+            ("InBehandeling", "GetWorkorders Status InBehandeling"),
+            ("Gesloten", "GetWorkorders Status Gesloten"),
+            ("Completed", "GetWorkorders Status Completed"),
+            ("Planned", "GetWorkorders Status Planned"),
+            ("Closed", "GetWorkorders Status Closed"),
+        ):
+            fetch_status_batches(status_value, label)
+    return rows, warnings
+
+
 def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
     settings = _outsmart_settings(db, include_secret=True)
     job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="customer_init_outsmart", log_text="Kunden-Initialisierung: OutSmart")
@@ -18199,14 +18278,8 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
                 summary["warnings"].append("GetProjects ist in dieser OutSmart-Instanz nicht verfügbar. Projekte werden soweit möglich aus Arbeitsaufträgen abgeleitet.")
             else:
                 raise
-        try:
-            workorder_rows = _outsmart_extract_rows(outsmart_fetch_workorders(settings, status="", update_status=False))
-        except Exception as exc:
-            message = str(exc)
-            if "timed out" in message.lower():
-                summary["warnings"].append("GetWorkorders hat das Zeitlimit überschritten. Arbeitsaufträge werden in diesem Lauf ausgelassen.")
-            else:
-                raise
+        workorder_rows, workorder_warnings = _customer_init_collect_outsmart_workorders(settings)
+        summary["warnings"].extend(workorder_warnings)
         for payload in relation_rows:
             try:
                 state = _customer_init_upsert_outsmart_relation_stage(db, payload)
@@ -18214,6 +18287,7 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
                     summary["relations"] += 1
             except Exception:
                 summary["errors"] += 1
+        relations_before_projects = int(db.query(OutsmartRelationStage).count())
         for payload in project_rows:
             try:
                 state = _customer_init_upsert_outsmart_project_stage(db, payload)
@@ -18221,6 +18295,7 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
                     summary["projects"] += 1
             except Exception:
                 summary["errors"] += 1
+        relations_before_workorders = int(db.query(OutsmartRelationStage).count())
         projects_before_workorders = int(db.query(OutsmartProjectStage).count())
         for payload in workorder_rows:
             try:
@@ -18232,6 +18307,12 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
         projects_after_workorders = int(db.query(OutsmartProjectStage).count())
         if projects_after_workorders > projects_before_workorders:
             summary["projects"] += projects_after_workorders - projects_before_workorders
+        relations_after_projects = relations_before_workorders
+        if relations_after_projects > relations_before_projects:
+            summary["relations"] += relations_after_projects - relations_before_projects
+        relations_after_workorders = int(db.query(OutsmartRelationStage).count())
+        if relations_after_workorders > relations_before_workorders:
+            summary["relations"] += relations_after_workorders - relations_before_workorders
         if not relation_rows and not project_rows and not workorder_rows:
             raise ValueError("OutSmart lieferte keine Seed-Daten für die Kunden-Initialisierung.")
         _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))

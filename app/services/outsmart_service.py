@@ -137,13 +137,23 @@ def fetch_objects(settings: dict[str, str | bool]):
     return request_json(settings, endpoint="GetObjects", method="GET")
 
 
-def fetch_workorders(settings: dict[str, str | bool], status: str = "", update_status: bool = False):
+def fetch_workorders(
+    settings: dict[str, str | bool],
+    status: str = "",
+    update_status: bool = False,
+    limit: int | None = None,
+    offset: int | None = None,
+):
     query: dict[str, str] = {}
     status_clean = str(status or "").strip()
     if status_clean:
         query["status"] = status_clean
     if update_status:
         query["update_status"] = "true"
+    if int(limit or 0) > 0:
+        query["limit"] = str(int(limit))
+    if int(offset or 0) > 0:
+        query["offset"] = str(int(offset))
     return request_json(settings, endpoint="GetWorkorders", method="GET", query=query or None)
 
 
