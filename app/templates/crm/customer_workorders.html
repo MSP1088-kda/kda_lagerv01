@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>OutSmart-Arbeitsaufträge</h1>
+      <div class="hint">{{ customer.customer_no_internal }} | {{ party.display_name }}</div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      <a class="btn" href="/crm/kunden/{{ customer.id }}">Zur Kundenakte</a>
+    </div>
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 180px 140px 180px 1.1fr 1.1fr 200px;">
+      <div>Workorder</div>
+      <div>Status</div>
+      <div>Termin</div>
+      <div>Vorgang</div>
+      <div>Objekt / Beschreibung</div>
+      <div>Aktionen</div>
+    </div>
+    {% for item in rows %}
+      <div class="tr" style="grid-template-columns: 180px 140px 180px 1.1fr 1.1fr 200px; align-items:start;">
+        <div><a href="/outsmart/arbeitsauftraege/{{ item.row.id }}"><b>{{ item.row.workorder_no }}</b></a></div>
+        <div>{{ item.row.status or '-' }}</div>
+        <div>{{ format_date(item.row.scheduled_start) if item.row.scheduled_start else '-' }}</div>
+        <div>
+          {% if item.crm_case %}
+            <a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
+          {% else %}
+            -
+          {% endif %}
+        </div>
+        <div>
+          {% if item.customer_object %}
+            <div>{{ item.customer_object.brand_label or item.customer_object.supplier_label or 'Objekt' }} {{ item.customer_object.model_label or item.customer_object.type_label or item.customer_object.external_object_code }}</div>
+            <div class="muted">Seriennummer: {{ item.customer_object.serial_no or '-' }}</div>
+          {% elif item.row.short_description or item.row.work_description %}
+            <div>{{ item.row.short_description or item.row.work_description }}</div>
+          {% else %}
+            -
+          {% endif %}
+        </div>
+        <div class="row" style="gap:8px; flex-wrap:wrap;">
+          <a class="btn small" href="/outsmart/arbeitsauftraege/{{ item.row.id }}">Details</a>
+          {% if item.row.deep_link_url %}<a class="btn small" href="{{ item.row.deep_link_url }}" target="_blank" rel="noopener">OutSmart</a>{% endif %}
+          {% if item.row.pdf_url %}<a class="btn small" href="{{ item.row.pdf_url }}" target="_blank" rel="noopener">PDF</a>{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Noch keine lokalen OutSmart-Arbeitsaufträge an diesem Kunden vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier siehst du alle lokal verknüpften OutSmart-Arbeitsaufträge des Kunden.</li>
+  <li>Die Detailansicht bleibt lokal, der OutSmart-Link springt bei Bedarf ins Fremdsystem.</li>
+</ul>
+{% endblock %}

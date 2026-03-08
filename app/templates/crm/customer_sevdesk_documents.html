@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>sevDesk-Belege</h1>
+      <div class="hint">{{ customer.customer_no_internal }} | {{ party.display_name }}</div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      <a class="btn" href="/crm/kunden/{{ customer.id }}">Zur Kundenakte</a>
+      <a class="btn" href="/crm/angebote?customer_id={{ customer.id }}">Nur Angebote</a>
+      <a class="btn" href="/crm/rechnungen?customer_id={{ customer.id }}">Nur Rechnungen</a>
+    </div>
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 130px 190px 160px 1fr 180px 220px;">
+      <div>Typ</div>
+      <div>Nummer</div>
+      <div>Status</div>
+      <div>Vorgang</div>
+      <div>Aktualisiert</div>
+      <div>Aktionen</div>
+    </div>
+    {% for item in rows %}
+      <div class="tr" style="grid-template-columns: 130px 190px 160px 1fr 180px 220px; align-items:start;">
+        <div>{{ item.type_label }}</div>
+        <div><a href="{{ item.detail_url }}"><b>{{ item.number_label }}</b></a></div>
+        <div>{{ item.status_label }}</div>
+        <div>
+          {% if item.crm_case %}
+            <a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
+          {% else %}
+            -
+          {% endif %}
+        </div>
+        <div>{{ format_date(item.updated_at) if item.updated_at else '-' }}</div>
+        <div class="row" style="gap:8px; flex-wrap:wrap;">
+          <a class="btn small" href="{{ item.detail_url }}">Details</a>
+          {% if item.pdf_url %}<a class="btn small" href="{{ item.pdf_url }}" target="_blank" rel="noopener">PDF</a>{% endif %}
+          {% if item.external_url %}<a class="btn small" href="{{ item.external_url }}" target="_blank" rel="noopener">sevDesk</a>{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Noch keine lokalen sevDesk-Angebote oder Rechnungen an diesem Kunden vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Liste bündelt lokale Angebote und Rechnungen mit Bezug zu sevDesk.</li>
+  <li>Öffne zuerst die lokale Detailseite, von dort aus bei Bedarf PDF oder sevDesk-Link.</li>
+</ul>
+{% endblock %}

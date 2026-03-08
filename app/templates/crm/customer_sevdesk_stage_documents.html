@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>sevDesk-Belege aus Initialisierung</h1>
+      <div class="hint">{{ customer.customer_no_internal }} | {{ party.display_name }}</div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      <a class="btn" href="/crm/kunden/{{ customer.id }}">Zur Kundenakte</a>
+      <a class="btn" href="/system/kunden-initialisierung/review">Review</a>
+    </div>
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 160px 190px 160px 180px 150px 1fr;">
+      <div>Typ</div>
+      <div>Nummer</div>
+      <div>Status</div>
+      <div>Datum</div>
+      <div>Betrag</div>
+      <div>Externe ID</div>
+    </div>
+    {% for item in rows %}
+      <div class="tr" style="grid-template-columns: 160px 190px 160px 180px 150px 1fr; align-items:start;">
+        <div>{{ item.type_label }}</div>
+        <div><b>{{ item.number_label }}</b></div>
+        <div>{{ item.status_label }}</div>
+        <div>{{ format_date(item.event_date) if item.event_date else '-' }}</div>
+        <div>{{ item.amount_cents|eur_cents if item.amount_cents is not none else '-' }}</div>
+        <div>
+          {% if item.kind == 'order_stage' %}
+            {{ item.row.sevdesk_order_id }}
+          {% else %}
+            {{ item.row.sevdesk_invoice_id }}
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine sevDesk-Belege aus der Kunden-Initialisierung gefunden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Diese Liste zeigt Stage-Daten aus dem sevDesk-Initialimport, bevor lokale Angebote oder Rechnungen erzeugt wurden.</li>
+  <li>Für lokale Belege nutze weiter den separaten Einstieg auf der Kundenakte.</li>
+</ul>
+{% endblock %}

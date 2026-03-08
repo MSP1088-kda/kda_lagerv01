@@ -16164,6 +16164,8 @@ def crm_customer_detail(
             _flash(request, f"sevDesk-Suche fehlgeschlagen: {exc}", "error")
     paperless_settings = _paperless_settings(db, include_secret=False)
     recent_case_rows = _crm_recent_case_rows(db, int(customer.id))
+    outsmart_workorders_preview = _customer_outsmart_workorder_rows(db, int(customer.id), limit=8)
+    sevdesk_documents_preview = _customer_sevdesk_document_rows(db, int(customer.id), limit=8)
     related_case_ids = [int(item["row"].id) for item in recent_case_rows if int(item["row"].id or 0) > 0]
     ai_related_logs = (
         db.query(AiDecisionLog)
@@ -16196,6 +16198,10 @@ def crm_customer_detail(
             sevdesk_search_results=sevdesk_results,
             recent_case_rows=recent_case_rows,
             customer_objects=_customer_objects_for_customer(db, int(customer.id), limit=8),
+            outsmart_workorders_preview=outsmart_workorders_preview,
+            outsmart_workorders_total=int(db.query(OutsmartWorkorder).filter(OutsmartWorkorder.master_customer_id == int(customer.id)).count()),
+            sevdesk_documents_preview=sevdesk_documents_preview,
+            sevdesk_documents_total=int(db.query(OfferDraft).filter(OfferDraft.master_customer_id == int(customer.id)).count()) + int(db.query(InvoiceDraft).filter(InvoiceDraft.master_customer_id == int(customer.id)).count()),
             timeline_rows=_crm_timeline_rows_for_customer(db, int(customer.id), limit=20, timeline_filter=timeline_filter),
             timeline_filter=(timeline_filter or "all").strip().lower() or "all",
             outsmart_enabled=bool(outsmart_settings.get("enabled")),
@@ -16205,6 +16211,86 @@ def crm_customer_detail(
             paperless_links=_paperless_links_for_object(db, "customer", int(customer.id)),
             local_attachments=_attachments_for_entity(db, "customer", int(customer.id)),
             paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+        ),
+    )
+
+
+@app.get("/crm/kunden/{customer_id}/arbeitsauftraege", response_class=HTMLResponse)
+def crm_customer_workorders(customer_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(
+        "crm/customer_workorders.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            rows=_customer_outsmart_workorder_rows(db, int(customer.id), limit=240),
+        ),
+    )
+
+
+@app.get("/crm/kunden/{customer_id}/sevdesk-belege", response_class=HTMLResponse)
+def crm_customer_sevdesk_documents(customer_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(
+        "crm/customer_sevdesk_documents.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            rows=_customer_sevdesk_document_rows(db, int(customer.id), limit=240),
+        ),
+    )
+
+
+@app.get("/crm/kunden/{customer_id}/initialisierung/outsmart-workorders", response_class=HTMLResponse)
+def crm_customer_outsmart_stage_workorders(customer_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(
+        "crm/customer_outsmart_stage_workorders.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            rows=_customer_outsmart_stage_workorder_rows(db, int(customer.id), limit=240),
+        ),
+    )
+
+
+@app.get("/crm/kunden/{customer_id}/initialisierung/sevdesk-belege", response_class=HTMLResponse)
+def crm_customer_sevdesk_stage_documents(customer_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(
+        "crm/customer_sevdesk_stage_documents.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            rows=_customer_sevdesk_stage_document_rows(db, int(customer.id), limit=240),
         ),
     )
 
@@ -19030,23 +19116,136 @@ def _customer_init_review_rows(db: Session, status: str = "") -> list[dict[str, 
     return out
 
 
-def _customer_init_customer_summary(db: Session, customer_id: int) -> dict[str, object]:
+def _customer_init_stage_refs(db: Session, customer_id: int) -> dict[str, object]:
     identities = db.query(ExternalIdentity).filter(ExternalIdentity.master_customer_id == int(customer_id)).all()
-    outsmart_keys = {str(row.external_key or "").strip() for row in identities if _crm_normalize_key(row.system_name) == "outsmart"}
-    sevdesk_keys = {str(row.external_key or row.external_id or "").strip() for row in identities if _crm_normalize_key(row.system_name) == "sevdesk"}
-    outsmart_relations = db.query(OutsmartRelationStage).filter(or_(OutsmartRelationStage.relation_no.in_(list(outsmart_keys) or [""]), OutsmartRelationStage.debtor_no.in_(list(outsmart_keys) or [""]))).all() if outsmart_keys else []
-    sevdesk_contacts = db.query(SevdeskContactStage).filter(or_(SevdeskContactStage.sevdesk_contact_id.in_(list(sevdesk_keys) or [""]), SevdeskContactStage.customer_number.in_(list(sevdesk_keys) or [""]))).all() if sevdesk_keys else []
+    outsmart_keys = {str(row.external_key or row.external_id or "").strip() for row in identities if _crm_normalize_key(row.system_name) == "outsmart" and str(row.external_key or row.external_id or "").strip()}
+    sevdesk_keys = {str(row.external_key or row.external_id or "").strip() for row in identities if _crm_normalize_key(row.system_name) == "sevdesk" and str(row.external_key or row.external_id or "").strip()}
+    outsmart_relations = (
+        db.query(OutsmartRelationStage)
+        .filter(or_(OutsmartRelationStage.relation_no.in_(list(outsmart_keys) or [""]), OutsmartRelationStage.debtor_no.in_(list(outsmart_keys) or [""])))
+        .all()
+    ) if outsmart_keys else []
+    debtor_values = [
+        str(row.debtor_no or row.relation_no or "").strip()
+        for row in outsmart_relations
+        if str(row.debtor_no or row.relation_no or "").strip()
+    ]
+    sevdesk_contacts = (
+        db.query(SevdeskContactStage)
+        .filter(or_(SevdeskContactStage.sevdesk_contact_id.in_(list(sevdesk_keys) or [""]), SevdeskContactStage.customer_number.in_(list(sevdesk_keys) or [""])))
+        .all()
+    ) if sevdesk_keys else []
+    contact_ids = [str(row.sevdesk_contact_id or "").strip() for row in sevdesk_contacts if str(row.sevdesk_contact_id or "").strip()]
+    return {
+        "outsmart_relations": outsmart_relations,
+        "outsmart_debtor_values": debtor_values,
+        "sevdesk_contacts": sevdesk_contacts,
+        "sevdesk_contact_ids": contact_ids,
+    }
+
+
+def _customer_outsmart_stage_workorder_rows(db: Session, customer_id: int, limit: int = 200) -> list[dict[str, object]]:
+    refs = _customer_init_stage_refs(db, customer_id)
+    debtor_values = list(refs.get("outsmart_debtor_values") or [])
+    if not debtor_values:
+        return []
+    rows = (
+        db.query(OutsmartWorkorderStage)
+        .filter(
+            or_(
+                OutsmartWorkorderStage.customer_debtor_number.in_(debtor_values),
+                OutsmartWorkorderStage.customer_invoice_debtor_number.in_(debtor_values),
+            )
+        )
+        .order_by(OutsmartWorkorderStage.updated_at.desc(), OutsmartWorkorderStage.id.desc())
+        .limit(limit)
+        .all()
+    )
+    project_codes = {
+        str(row.project_code or "").strip()
+        for row in rows
+        if str(row.project_code or "").strip()
+    }
+    project_rows = (
+        db.query(OutsmartProjectStage)
+        .filter(OutsmartProjectStage.project_code.in_(list(project_codes) or [""]))
+        .all()
+    ) if project_codes else []
+    project_map = {str(row.project_code or "").strip(): row for row in project_rows if str(row.project_code or "").strip()}
+    return [{"row": row, "project": project_map.get(str(row.project_code or "").strip())} for row in rows]
+
+
+def _customer_sevdesk_stage_document_rows(db: Session, customer_id: int, limit: int = 240) -> list[dict[str, object]]:
+    refs = _customer_init_stage_refs(db, customer_id)
+    contact_ids = list(refs.get("sevdesk_contact_ids") or [])
+    if not contact_ids:
+        return []
+    order_rows = (
+        db.query(SevdeskOrderStage)
+        .filter(SevdeskOrderStage.contact_id.in_(contact_ids))
+        .order_by(SevdeskOrderStage.updated_at.desc(), SevdeskOrderStage.id.desc())
+        .limit(max(limit, 20))
+        .all()
+    )
+    invoice_rows = (
+        db.query(SevdeskInvoiceStage)
+        .filter(SevdeskInvoiceStage.contact_id.in_(contact_ids))
+        .order_by(SevdeskInvoiceStage.updated_at.desc(), SevdeskInvoiceStage.id.desc())
+        .limit(max(limit, 20))
+        .all()
+    )
+    items: list[dict[str, object]] = []
+    for row in order_rows:
+        items.append(
+            {
+                "kind": "order_stage",
+                "type_label": "Angebot / Order",
+                "number_label": str(row.order_number or row.sevdesk_order_id or f"ORDER-{int(row.id)}"),
+                "status_label": str(row.status or "-"),
+                "row": row,
+                "amount_cents": row.amount_cents,
+                "event_date": row.order_date,
+                "updated_at": row.updated_at or row.created_at,
+            }
+        )
+    for row in invoice_rows:
+        items.append(
+            {
+                "kind": "invoice_stage",
+                "type_label": "Rechnung",
+                "number_label": str(row.invoice_number or row.sevdesk_invoice_id or f"INVOICE-{int(row.id)}"),
+                "status_label": str(row.status or "-"),
+                "row": row,
+                "amount_cents": row.amount_cents,
+                "event_date": row.invoice_date,
+                "updated_at": row.updated_at or row.created_at,
+            }
+        )
+    items.sort(
+        key=lambda item: (
+            item.get("updated_at") or dt.datetime.min,
+            int(getattr(item.get("row"), "id", 0) or 0),
+        ),
+        reverse=True,
+    )
+    return items[:limit]
+
+
+def _customer_init_customer_summary(db: Session, customer_id: int) -> dict[str, object]:
+    refs = _customer_init_stage_refs(db, customer_id)
+    outsmart_relations = list(refs.get("outsmart_relations") or [])
+    sevdesk_contacts = list(refs.get("sevdesk_contacts") or [])
     project_count = 0
     workorder_count = 0
+    debtor_values = list(refs.get("outsmart_debtor_values") or [])
     if outsmart_relations:
-        debtor_values = [str(row.debtor_no or row.relation_no or "") for row in outsmart_relations if str(row.debtor_no or row.relation_no or "").strip()]
         if debtor_values:
             project_count = int(db.query(OutsmartProjectStage).filter(or_(OutsmartProjectStage.debtor_number.in_(debtor_values), OutsmartProjectStage.debtor_number_invoice.in_(debtor_values))).count())
             workorder_count = int(db.query(OutsmartWorkorderStage).filter(or_(OutsmartWorkorderStage.customer_debtor_number.in_(debtor_values), OutsmartWorkorderStage.customer_invoice_debtor_number.in_(debtor_values))).count())
     order_count = 0
     invoice_count = 0
     if sevdesk_contacts:
-        contact_ids = [str(row.sevdesk_contact_id) for row in sevdesk_contacts]
+        contact_ids = list(refs.get("sevdesk_contact_ids") or [])
         order_count = int(db.query(SevdeskOrderStage).filter(SevdeskOrderStage.contact_id.in_(contact_ids)).count())
         invoice_count = int(db.query(SevdeskInvoiceStage).filter(SevdeskInvoiceStage.contact_id.in_(contact_ids)).count())
     cluster = (
@@ -25561,6 +25760,13 @@ def _dashboard_ai_stats(db: Session) -> dict[str, object]:
 
 
 def _procedure_guideline_defaults() -> list[dict[str, str]]:
+    file_sections = _procedure_guideline_sections_from_source()
+    if file_sections:
+        return file_sections
+    return _procedure_guideline_builtin_defaults()
+
+
+def _procedure_guideline_builtin_defaults() -> list[dict[str, str]]:
     return [
         {"section_key": "systemrollen", "title": "Systemrollen", "content_markdown": "Hauptsystem = fachlicher Master\\nOutSmart = Einsatz- und Termin-Master\\nsevDesk = Angebots-, Rechnungs-, Voucher- und Zahlungs-Master\\nPaperless = DMS- und OCR-Master\\nOpenAI = Vorschlags-, Klassifikations- und Monitoring-Schicht"},
         {"section_key": "stammdatenfuehrerschaft", "title": "Stammdatenfuehrerschaft", "content_markdown": "Kunden, Vorgaenge und Lagerobjekte werden lokal gefuehrt. Externe Identitaeten bleiben verknuepft, aber nicht fuehrend."},
@@ -25572,6 +25778,138 @@ def _procedure_guideline_defaults() -> list[dict[str, str]]:
         {"section_key": "audit_logging", "title": "Audit, Logging und Freigaben", "content_markdown": "Jede KI-Entscheidung landet im KI-Log. Gelbe und rote Entscheidungen erscheinen in der KI-Freigabe."},
         {"section_key": "ausnahmen", "title": "Ausnahmebehandlung", "content_markdown": "Unsichere Felder bleiben leer. Fachseiten muessen immer manuell korrigierbar bleiben. Externe Ausfaelle duerfen nur Vorschlaege verhindern, nicht Kernprozesse blockieren."},
     ]
+
+
+def _procedure_guideline_source_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "CODEX_AGENT_GUIDELINE.md"
+
+
+def _procedure_guideline_source_info() -> dict[str, object]:
+    path = _procedure_guideline_source_path()
+    exists = path.exists()
+    mtime = None
+    if exists:
+        try:
+            mtime = dt.datetime.fromtimestamp(path.stat().st_mtime)
+        except Exception:
+            mtime = None
+    return {
+        "path": str(path),
+        "exists": exists,
+        "mtime": mtime,
+    }
+
+
+def _procedure_guideline_sections_from_source() -> list[dict[str, str]]:
+    path = _procedure_guideline_source_path()
+    if not path.exists():
+        return []
+    try:
+        markdown = path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return []
+    if not markdown:
+        return []
+    sections: list[dict[str, str]] = []
+    preface: list[str] = []
+    current_title = ""
+    current_lines: list[str] = []
+    for raw_line in markdown.replace("\r\n", "\n").split("\n"):
+        line = raw_line.rstrip()
+        if re.match(r"^##\s+", line):
+            if current_title:
+                content_lines = list(current_lines)
+                if not sections and preface:
+                    content_lines = list(preface) + [""] + content_lines
+                sections.append(
+                    {
+                        "section_key": (slugify(current_title) or f"section_{len(sections) + 1}")[:80],
+                        "title": current_title,
+                        "content_markdown": "\n".join(content_lines).strip(),
+                    }
+                )
+            current_title = re.sub(r"^##\s+", "", line).strip()
+            current_lines = []
+            continue
+        if not current_title:
+            if line.strip():
+                preface.append(line)
+            continue
+        current_lines.append(line)
+    if current_title:
+        content_lines = list(current_lines)
+        if not sections and preface:
+            content_lines = list(preface) + [""] + content_lines
+        sections.append(
+            {
+                "section_key": (slugify(current_title) or f"section_{len(sections) + 1}")[:80],
+                "title": current_title,
+                "content_markdown": "\n".join(content_lines).strip(),
+            }
+        )
+    return [row for row in sections if str(row.get("title") or "").strip()]
+
+
+def _procedure_guideline_sync_from_source(db: Session, updated_by_user_id: int | None = None) -> dict[str, int]:
+    source_sections = _procedure_guideline_sections_from_source()
+    if not source_sections:
+        raise ValueError("CODEX_AGENT_GUIDELINE.md konnte nicht gelesen werden.")
+    active_rows = (
+        db.query(ProcedureGuidelineSection)
+        .filter(ProcedureGuidelineSection.active == True)
+        .order_by(ProcedureGuidelineSection.id.asc())
+        .all()
+    )
+    active_by_key = {str(row.section_key or ""): row for row in active_rows}
+    all_rows = db.query(ProcedureGuidelineSection).order_by(ProcedureGuidelineSection.id.asc()).all()
+    max_version_by_key: dict[str, int] = {}
+    for row in all_rows:
+        key = str(row.section_key or "").strip()
+        if not key:
+            continue
+        max_version_by_key[key] = max(max_version_by_key.get(key, 0), int(row.version or 0))
+    source_keys = {str(item["section_key"]) for item in source_sections}
+    created = 0
+    updated = 0
+    retired = 0
+    for row in active_rows:
+        if str(row.section_key or "") not in source_keys:
+            row.active = False
+            row.updated_at = _utcnow_naive()
+            row.updated_by_user_id = updated_by_user_id
+            db.add(row)
+            retired += 1
+    for item in source_sections:
+        key = str(item["section_key"] or "").strip()
+        title = str(item["title"] or "").strip()
+        content = str(item["content_markdown"] or "").strip()
+        if not key or not title:
+            continue
+        current = active_by_key.get(key)
+        if current and str(current.title or "").strip() == title and str(current.content_markdown or "").strip() == content:
+            continue
+        if current is not None:
+            current.active = False
+            current.updated_at = _utcnow_naive()
+            current.updated_by_user_id = updated_by_user_id
+            db.add(current)
+            updated += 1
+        else:
+            created += 1
+        db.add(
+            ProcedureGuidelineSection(
+                section_key=key,
+                title=title,
+                content_markdown=content,
+                version=max_version_by_key.get(key, 0) + 1,
+                active=True,
+                updated_at=_utcnow_naive(),
+                updated_by_user_id=updated_by_user_id,
+            )
+        )
+        max_version_by_key[key] = max_version_by_key.get(key, 0) + 1
+    db.flush()
+    return {"created": created, "updated": updated, "retired": retired, "total": len(source_sections)}
 
 
 def _ensure_procedure_guideline_sections(db: Session) -> None:
@@ -25602,11 +25940,22 @@ def _ensure_procedure_guideline_sections(db: Session) -> None:
 
 def _active_procedure_guideline_sections(db: Session) -> list[ProcedureGuidelineSection]:
     _ensure_procedure_guideline_sections(db)
-    return (
+    rows = (
         db.query(ProcedureGuidelineSection)
         .filter(ProcedureGuidelineSection.active == True)
-        .order_by(ProcedureGuidelineSection.id.asc())
         .all()
+    )
+    order_map = {
+        str(item.get("section_key") or ""): idx
+        for idx, item in enumerate(_procedure_guideline_defaults())
+    }
+    return sorted(
+        rows,
+        key=lambda row: (
+            order_map.get(str(row.section_key or ""), 9999),
+            str(row.title or "").lower(),
+            int(row.id or 0),
+        ),
     )
 
 
@@ -26873,6 +27222,100 @@ def _customer_objects_for_case(db: Session, row: CrmCase, limit: int = 20) -> li
     else:
         return []
     return query.order_by(CustomerObject.updated_at.desc(), CustomerObject.id.desc()).limit(limit).all()
+
+
+def _customer_outsmart_workorder_rows(db: Session, customer_id: int, limit: int = 80) -> list[dict[str, object]]:
+    rows = (
+        db.query(OutsmartWorkorder)
+        .filter(OutsmartWorkorder.master_customer_id == int(customer_id))
+        .order_by(OutsmartWorkorder.updated_at.desc(), OutsmartWorkorder.id.desc())
+        .limit(limit)
+        .all()
+    )
+    case_ids = [int(row.case_id) for row in rows if int(row.case_id or 0) > 0]
+    object_ids = [int(row.customer_object_id) for row in rows if int(row.customer_object_id or 0) > 0]
+    case_map = {int(row.id): row for row in db.query(CrmCase).filter(CrmCase.id.in_(case_ids)).all()} if case_ids else {}
+    object_map = {int(row.id): row for row in db.query(CustomerObject).filter(CustomerObject.id.in_(object_ids)).all()} if object_ids else {}
+    return [{"row": row, "crm_case": case_map.get(int(row.case_id or 0)), "customer_object": object_map.get(int(row.customer_object_id or 0))} for row in rows]
+
+
+def _customer_sevdesk_document_rows(db: Session, customer_id: int, limit: int = 80) -> list[dict[str, object]]:
+    offer_rows = (
+        db.query(OfferDraft)
+        .filter(OfferDraft.master_customer_id == int(customer_id))
+        .order_by(OfferDraft.updated_at.desc(), OfferDraft.id.desc())
+        .limit(max(limit, 20))
+        .all()
+    )
+    invoice_rows = (
+        db.query(InvoiceDraft)
+        .filter(InvoiceDraft.master_customer_id == int(customer_id))
+        .order_by(InvoiceDraft.updated_at.desc(), InvoiceDraft.id.desc())
+        .limit(max(limit, 20))
+        .all()
+    )
+    case_ids = [int(row.case_id) for row in offer_rows if int(row.case_id or 0) > 0] + [int(row.case_id) for row in invoice_rows if int(row.case_id or 0) > 0]
+    case_map = {int(row.id): row for row in db.query(CrmCase).filter(CrmCase.id.in_(case_ids)).all()} if case_ids else {}
+    offer_link_rows = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == "sevdesk",
+            ExternalLink.object_type == "offer_draft",
+            ExternalLink.object_id.in_([int(row.id) for row in offer_rows] or [0]),
+        )
+        .all()
+    ) if offer_rows else []
+    invoice_link_rows = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == "sevdesk",
+            ExternalLink.object_type == "invoice_draft",
+            ExternalLink.object_id.in_([int(row.id) for row in invoice_rows] or [0]),
+        )
+        .all()
+    ) if invoice_rows else []
+    offer_links = {int(row.object_id or 0): row for row in offer_link_rows}
+    invoice_links = {int(row.object_id or 0): row for row in invoice_link_rows}
+    items: list[dict[str, object]] = []
+    for row in offer_rows:
+        items.append(
+            {
+                "kind": "offer",
+                "type_label": "Angebot",
+                "row": row,
+                "crm_case": case_map.get(int(row.case_id or 0)),
+                "status_label": _offer_status_label(row.status),
+                "number_label": str(row.sevdesk_order_number or f"ANG-{int(row.id):04d}"),
+                "detail_url": f"/crm/angebote/{int(row.id)}",
+                "pdf_url": str(row.pdf_url_local or "").strip(),
+                "external_url": str((offer_links.get(int(row.id)).deep_link_url if offer_links.get(int(row.id)) else "") or "").strip(),
+                "updated_at": row.updated_at or row.created_at,
+            }
+        )
+    for row in invoice_rows:
+        items.append(
+            {
+                "kind": "invoice",
+                "type_label": "Rechnung",
+                "row": row,
+                "crm_case": case_map.get(int(row.case_id or 0)),
+                "status_label": _invoice_draft_status_label(row.status),
+                "number_label": str(row.sevdesk_invoice_number or f"RE-ENTW-{int(row.id):04d}"),
+                "detail_url": f"/crm/rechnungen/{int(row.id)}",
+                "pdf_url": str(row.pdf_url_local or "").strip(),
+                "external_url": str((invoice_links.get(int(row.id)).deep_link_url if invoice_links.get(int(row.id)) else "") or "").strip(),
+                "updated_at": row.updated_at or row.created_at,
+            }
+        )
+    items.sort(
+        key=lambda item: (
+            item.get("updated_at") or dt.datetime.min,
+            int(getattr(item.get("row"), "id", 0) or 0),
+        ),
+        reverse=True,
+    )
+    return items[:limit]
+
 
 def _outsmart_sync_completed_once(db: Session, limit: int = 20) -> dict[str, int]:
     settings = _outsmart_settings(db, include_secret=True)
@@ -30418,7 +30861,7 @@ def system_procedure_guideline(request: Request, user=Depends(require_admin), db
     db.commit()
     return templates.TemplateResponse(
         "system/procedure_guideline.html",
-        _ctx(request, user=user, rows=rows),
+        _ctx(request, user=user, rows=rows, guideline_source=_procedure_guideline_source_info()),
     )
 
 
@@ -30428,7 +30871,7 @@ def system_procedure_guideline_edit(request: Request, user=Depends(require_admin
     db.commit()
     return templates.TemplateResponse(
         "system/procedure_guideline_edit.html",
-        _ctx(request, user=user, rows=rows),
+        _ctx(request, user=user, rows=rows, guideline_source=_procedure_guideline_source_info()),
     )
 
 
@@ -30459,6 +30902,22 @@ async def system_procedure_guideline_edit_post(request: Request, user=Depends(re
         changed += 1
     db.commit()
     _flash(request, "Verfahrensrichtlinie gespeichert." if changed else "Keine Aenderungen erkannt.", "info")
+    return RedirectResponse("/system/verfahrensrichtlinie", status_code=302)
+
+
+@app.post("/system/verfahrensrichtlinie/aus-datei")
+def system_procedure_guideline_sync(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    try:
+        summary = _procedure_guideline_sync_from_source(db, updated_by_user_id=int(user.id))
+        db.commit()
+        _flash(
+            request,
+            f"Verfahrensrichtlinie aus Datei übernommen: {int(summary['total'])} Abschnitte, {int(summary['created'])} neu, {int(summary['updated'])} aktualisiert, {int(summary['retired'])} deaktiviert.",
+            "info",
+        )
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Richtlinien-Sync fehlgeschlagen: {exc}", "error")
     return RedirectResponse("/system/verfahrensrichtlinie", status_code=302)
 
 

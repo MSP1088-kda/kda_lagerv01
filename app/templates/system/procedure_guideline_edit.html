@@ -2,6 +2,14 @@
 {% block content %}
 <div class="panel">
   <h1>Verfahrensrichtlinie bearbeiten</h1>
+  <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+    <form method="post" action="/system/verfahrensrichtlinie/aus-datei" class="inline"><button class="btn" type="submit">Aus CODEX_AGENT_GUIDELINE.md übernehmen</button></form>
+    <a class="btn" href="/system/verfahrensrichtlinie">Zur Ansicht</a>
+  </div>
+  <div class="hint">
+    Quelle: {{ guideline_source.path }}
+    {% if guideline_source.exists and guideline_source.mtime %}| Stand Datei: {{ format_date(guideline_source.mtime) }}{% elif not guideline_source.exists %}| Datei nicht gefunden{% endif %}
+  </div>
   <form method="post" action="/system/verfahrensrichtlinie/bearbeiten" class="form">
     {% for row in rows %}
       <div class="box" style="margin-top:10px;">

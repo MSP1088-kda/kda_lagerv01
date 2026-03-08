@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>OutSmart-Workorders aus Initialisierung</h1>
+      <div class="hint">{{ customer.customer_no_internal }} | {{ party.display_name }}</div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      <a class="btn" href="/crm/kunden/{{ customer.id }}">Zur Kundenakte</a>
+      <a class="btn" href="/system/kunden-initialisierung/review">Review</a>
+    </div>
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 180px 140px 180px 200px 1fr;">
+      <div>Workorder</div>
+      <div>Status</div>
+      <div>Projekt</div>
+      <div>Debitor</div>
+      <div>Kunde / Adresse</div>
+    </div>
+    {% for item in rows %}
+      <div class="tr" style="grid-template-columns: 180px 140px 180px 200px 1fr; align-items:start;">
+        <div><b>{{ item.row.workorder_no }}</b></div>
+        <div>{{ item.row.status or '-' }}</div>
+        <div>{{ item.project.project_code if item.project else (item.row.project_code or '-') }}</div>
+        <div>{{ item.row.customer_debtor_number or item.row.customer_invoice_debtor_number or '-' }}</div>
+        <div>
+          <div>{{ item.row.customer_name or item.row.customer_name_invoice or '-' }}</div>
+          <div class="muted">
+            {{ item.row.street or item.row.street_invoice or '' }}
+            {{ item.row.house_no or item.row.house_no_invoice or '' }},
+            {{ item.row.zip_code or item.row.zip_code_invoice or '' }}
+            {{ item.row.city or item.row.city_invoice or '' }}
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine OutSmart-Workorders aus der Kunden-Initialisierung gefunden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Diese Liste zeigt Stage-Daten aus der Kunden-Initialisierung, nicht die lokal materialisierten Workorders.</li>
+  <li>Wenn lokal noch nichts verknüpft ist, ist das der richtige Prüfpfad.</li>
+</ul>
+{% endblock %}

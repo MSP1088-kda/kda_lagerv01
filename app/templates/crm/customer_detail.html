@@ -10,6 +10,8 @@
     {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/standorte/neu">Standort hinzufügen</a>{% endif %}
     {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/kontaktpersonen/neu">Kontaktperson hinzufügen</a>{% endif %}
     <a class="btn" href="/crm/kunden/{{ customer.id }}/objekte">Objekte / Geräte</a>
+    <a class="btn" href="/crm/kunden/{{ customer.id }}/arbeitsauftraege">OutSmart-Arbeitsaufträge</a>
+    <a class="btn" href="/crm/kunden/{{ customer.id }}/sevdesk-belege">sevDesk-Belege</a>
     <a class="btn" href="/crm/angebote?customer_id={{ customer.id }}">Angebote</a>
     <a class="btn" href="/crm/rechnungen?customer_id={{ customer.id }}">Rechnungen</a>
     <a class="btn" href="/crm/mahnfaelle">Mahnwesen</a>
@@ -169,7 +171,15 @@
         <div><b>sevDesk-Kontakte:</b> {{ customer_init_summary.sevdesk_contacts|length }}</div>
         <div><b>sevDesk-Angebote:</b> {{ customer_init_summary.order_count }}</div>
         <div><b>sevDesk-Rechnungen:</b> {{ customer_init_summary.invoice_count }}</div>
-        {% if customer_init_summary.cluster %}<div style="margin-top:8px;"><a class="btn small" href="/system/kunden-initialisierung/review">Review öffnen</a></div>{% endif %}
+        <div><b>Lokal verknüpfte Workorders:</b> {{ outsmart_workorders_total }}</div>
+        <div><b>Lokal verknüpfte sevDesk-Belege:</b> {{ sevdesk_documents_total }}</div>
+        <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+          <a class="btn small" href="/crm/kunden/{{ customer.id }}/arbeitsauftraege">Workorders ansehen</a>
+          <a class="btn small" href="/crm/kunden/{{ customer.id }}/sevdesk-belege">sevDesk-Belege ansehen</a>
+          {% if customer_init_summary.workorder_count %}<a class="btn small" href="/crm/kunden/{{ customer.id }}/initialisierung/outsmart-workorders">Initialimport-Workorders</a>{% endif %}
+          {% if customer_init_summary.order_count or customer_init_summary.invoice_count %}<a class="btn small" href="/crm/kunden/{{ customer.id }}/initialisierung/sevdesk-belege">Initialimport-sevDesk-Belege</a>{% endif %}
+          {% if customer_init_summary.cluster %}<a class="btn small" href="/system/kunden-initialisierung/review">Review öffnen</a>{% endif %}
+        </div>
       </div>
     </div>
     <div class="box">
@@ -295,6 +305,53 @@
           {% endfor %}
         {% else %}
         <div class="muted">Noch keine Einträge im Kommunikationsblock vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">OutSmart-Arbeitsaufträge</div>
+      <div class="box-body">
+        <div class="row" style="margin-bottom:8px; gap:8px; flex-wrap:wrap;">
+          <a class="btn small" href="/crm/kunden/{{ customer.id }}/arbeitsauftraege">Alle lokalen Workorders öffnen</a>
+        </div>
+        {% if outsmart_workorders_preview %}
+          {% for item in outsmart_workorders_preview %}
+          <div style="margin-bottom:10px;">
+            <div><a href="/outsmart/arbeitsauftraege/{{ item.row.id }}"><b>{{ item.row.workorder_no }}</b></a></div>
+            <div class="muted">{{ item.row.status or '-' }}{% if item.row.scheduled_start %} | {{ format_date(item.row.scheduled_start) }}{% endif %}</div>
+            {% if item.crm_case %}<div><a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a></div>{% endif %}
+            {% if item.customer_object %}<div class="muted">{{ item.customer_object.brand_label or item.customer_object.supplier_label or 'Objekt' }} {{ item.customer_object.model_label or item.customer_object.type_label or item.customer_object.external_object_code }}</div>{% endif %}
+            {% if item.row.deep_link_url %}<div><a href="{{ item.row.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a></div>{% endif %}
+          </div>
+          {% endfor %}
+        {% else %}
+        <div class="muted">Noch keine lokalen OutSmart-Arbeitsaufträge an diesem Kunden vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">sevDesk-Belege</div>
+      <div class="box-body">
+        <div class="row" style="margin-bottom:8px; gap:8px; flex-wrap:wrap;">
+          <a class="btn small" href="/crm/kunden/{{ customer.id }}/sevdesk-belege">Alle sevDesk-Belege öffnen</a>
+        </div>
+        {% if sevdesk_documents_preview %}
+          {% for item in sevdesk_documents_preview %}
+          <div style="margin-bottom:10px;">
+            <div><a href="{{ item.detail_url }}"><b>{{ item.type_label }}</b> {{ item.number_label }}</a></div>
+            <div class="muted">{{ item.status_label }}{% if item.updated_at %} | {{ format_date(item.updated_at) }}{% endif %}</div>
+            {% if item.crm_case %}<div><a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a></div>{% endif %}
+            <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:4px;">
+              {% if item.pdf_url %}<a class="btn small" href="{{ item.pdf_url }}" target="_blank" rel="noopener">PDF</a>{% endif %}
+              {% if item.external_url %}<a class="btn small" href="{{ item.external_url }}" target="_blank" rel="noopener">sevDesk</a>{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+        <div class="muted">Noch keine lokalen sevDesk-Angebote oder Rechnungen an diesem Kunden vorhanden.</div>
         {% endif %}
       </div>
     </div>

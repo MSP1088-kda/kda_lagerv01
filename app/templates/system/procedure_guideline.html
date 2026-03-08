@@ -4,7 +4,13 @@
   <h1>Verfahrensrichtlinie</h1>
   <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:10px;">
     <a class="btn primary" href="/system/verfahrensrichtlinie/bearbeiten">Bearbeiten</a>
+    <form method="post" action="/system/verfahrensrichtlinie/aus-datei" class="inline"><button class="btn" type="submit">Aus CODEX_AGENT_GUIDELINE.md übernehmen</button></form>
     <a class="btn" href="/system/integrationen/openai">OpenAI</a>
+  </div>
+
+  <div class="hint">
+    Quelle: {{ guideline_source.path }}
+    {% if guideline_source.exists and guideline_source.mtime %}| Stand Datei: {{ format_date(guideline_source.mtime) }}{% elif not guideline_source.exists %}| Datei nicht gefunden{% endif %}
   </div>
 
   {% for row in rows %}
