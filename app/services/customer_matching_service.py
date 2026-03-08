@@ -3,6 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 import re
 
+_ORG_NAME_RE = re.compile(
+    r"(?:\b(?:gmbh|ggmbh|mbh|ag|kg|gbr|e\.\s?v\.|stiftung|hausverwaltung|immobilien|"
+    r"kindergarten|kita|hort|ferienwohnungen|diakonissenhaus|diakonie)\b)",
+    re.IGNORECASE,
+)
+
 
 def _clean(value) -> str:
     return str(value or "").strip()
@@ -29,6 +35,10 @@ def _cluster_sort_key(payload: dict) -> tuple:
         _clean(payload.get("display_name")).lower(),
         _clean(payload.get("cluster_key")).lower(),
     )
+
+
+def _looks_like_organization_name(value: str) -> bool:
+    return bool(_ORG_NAME_RE.search(_clean(value)))
 
 
 def build_customer_init_clusters(
@@ -88,6 +98,12 @@ def build_customer_init_clusters(
             if member.get("source_system") != "sevdesk" or member.get("source_type") != "contact_stage":
                 continue
             if "Gleiche Debitor-/Kundennummer" in _clean(member.get("match_reason")):
+                return True
+        return False
+
+    def cluster_has_sevdesk_contact(cluster: dict) -> bool:
+        for member in cluster.get("members") or []:
+            if member.get("source_system") == "sevdesk" and member.get("source_type") == "contact_stage":
                 return True
         return False
 
@@ -224,6 +240,14 @@ def build_customer_init_clusters(
         best = ordered[0]
         if set(best["reasons"]) == {"Gleicher eindeutiger Name"} and float(best["score"]) <= 25.0 and cluster_has_strong_sevdesk_contact(best["cluster"]):
             return None, 0.0, [], False
+        if (
+            set(best["reasons"]) == {"Gleicher eindeutiger Name"}
+            and float(best["score"]) <= 25.0
+            and best["cluster"].get("anchor_system") == "outsmart"
+            and not cluster_has_sevdesk_contact(best["cluster"])
+            and _looks_like_organization_name(_clean(contact.get("name")) or _clean(best["cluster"].get("display_name")))
+        ):
+            return best["cluster"], 80.0, ["Gleicher eindeutiger Organisationsname"], False
         ambiguous = len(ordered) > 1 and float(ordered[1]["score"]) >= float(best["score"]) - 15.0
         if street_norm and city_norm and not ambiguous:
             float(best["score"])
