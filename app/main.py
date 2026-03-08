@@ -5208,9 +5208,12 @@ async def _outsmart_sync_loop() -> None:
         SessionLocal = get_sessionmaker()
         db = SessionLocal()
         try:
-            _outsmart_delta_sync_once(db, limit=20)
-            _outsmart_sync_completed_once(db, limit=20)
-            db.commit()
+            if _customer_init_mode(db):
+                db.rollback()
+            else:
+                _outsmart_delta_sync_once(db, limit=20)
+                _outsmart_sync_completed_once(db, limit=20)
+                db.commit()
         except Exception:
             db.rollback()
         finally:

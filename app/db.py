@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 # Data directory where DB + uploads live (mounted volume in Docker)
@@ -23,11 +23,27 @@ def get_engine():
     if _engine is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         url = DATABASE_URL
+        connect_args = {}
+        if url.startswith("sqlite"):
+            connect_args = {
+                "check_same_thread": False,
+                "timeout": 30,
+            }
         _engine = create_engine(
             url,
-            connect_args={"check_same_thread": False} if url.startswith("sqlite") else {},
+            connect_args=connect_args,
             pool_pre_ping=True,
         )
+        if url.startswith("sqlite"):
+            @event.listens_for(_engine, "connect")
+            def _sqlite_on_connect(dbapi_connection, connection_record):  # type: ignore[unused-ignore]
+                _ = connection_record
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA busy_timeout = 30000")
+                    cursor.execute("PRAGMA foreign_keys = ON")
+                finally:
+                    cursor.close()
     return _engine
 
 
