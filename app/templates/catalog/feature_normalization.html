@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Normalisierung</h1>
+  <div class="hint">Kanonische Werte, Aliase und unbekannte Rohwerte für Merkmale pflegen.</div>
+
+  <form method="get" action="/catalog/features/normalization" class="form compact" style="margin-top:10px;">
+    <div class="grid3">
+      <div>
+        <label>Geräteart</label>
+        <select name="kind_id">
+          <option value="0">Bitte wählen</option>
+          {% for row in kind_option_rows %}
+          <option value="{{ row.id }}" {% if selected_kind_id == row.id %}selected{% endif %}>{{ row.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Merkmal</label>
+        <select name="feature_id">
+          <option value="0">Bitte wählen</option>
+          {% for row in feature_rows %}
+          <option value="{{ row.id }}" {% if selected_feature_id == row.id %}selected{% endif %}>{{ row.label_de }} ({{ row.key }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Ansicht</label>
+        <div class="row" style="margin-top:0;">
+          <button class="btn primary" type="submit">Laden</button>
+          <a class="btn" href="/catalog/features">Merkmale</a>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  {% if not selected_kind_id %}
+  <div class="hint">Bitte zuerst eine Geräteart wählen.</div>
+  {% elif not feature_rows %}
+  <div class="hint">Für diese Geräteart gibt es keine Text/Enum-Merkmale.</div>
+  {% elif not selected_feature %}
+  <div class="hint">Bitte ein Merkmal auswählen.</div>
+  {% else %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Merkmal: {{ selected_feature.label_de }} ({{ selected_feature.key }})</div>
+    <div class="box-body">
+      <div class="hint">Datentyp: {{ selected_feature.data_type }} | Für Filter werden nur aktive kanonische Optionen verwendet.</div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Kanonische Optionen</div>
+    <div class="box-body">
+      <form method="post" action="/catalog/features/normalization/options/add" class="form compact">
+        <input type="hidden" name="kind_id" value="{{ selected_kind_id }}">
+        <input type="hidden" name="feature_id" value="{{ selected_feature_id }}">
+        <div class="grid3" style="grid-template-columns: 1fr 1fr 0.7fr 1fr;">
+          <div>
+            <label>Canonical Key</label>
+            <input type="text" name="canonical_key" placeholder="z. B. freistehend">
+          </div>
+          <div>
+            <label>Label (DE)</label>
+            <input type="text" name="label_de" placeholder="z. B. freistehend" required>
+          </div>
+          <div>
+            <label>Sortierung</label>
+            <input type="number" name="sort_order" value="0">
+          </div>
+          <div>
+            <label>Aktiv</label>
+            <label class="check"><input type="checkbox" name="active" checked> sichtbar im Filter</label>
+          </div>
+        </div>
+        <button class="btn small" type="submit">Option anlegen</button>
+      </form>
+
+      <div class="table" style="margin-top:10px;">
+        <div class="tr th" style="grid-template-columns: 1.2fr 1.3fr 0.6fr 0.6fr 0.8fr;">
+          <div>Canonical Key</div>
+          <div>Label</div>
+          <div>Sort</div>
+          <div>Aktiv</div>
+          <div>Aktion</div>
+        </div>
+        {% for opt in option_rows %}
+        <div class="tr" style="grid-template-columns: 1fr;">
+          <div>
+            <form method="post" action="/catalog/features/normalization/options/{{ opt.id }}/edit" class="form compact">
+              <input type="hidden" name="kind_id" value="{{ selected_kind_id }}">
+              <input type="hidden" name="feature_id" value="{{ selected_feature_id }}">
+              <div class="grid3" style="grid-template-columns: 1fr 1fr 0.7fr 0.9fr 0.8fr;">
+                <div><input type="text" name="canonical_key" value="{{ opt.canonical_key }}" required></div>
+                <div><input type="text" name="label_de" value="{{ opt.label_de }}" required></div>
+                <div><input type="number" name="sort_order" value="{{ opt.sort_order or 0 }}"></div>
+                <div><label class="check"><input type="checkbox" name="active" {% if opt.active %}checked{% endif %}> aktiv</label></div>
+                <div><button class="btn small" type="submit">Speichern</button></div>
+              </div>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+        {% if not option_rows %}
+        <div class="tr" style="grid-template-columns: 1fr;">
+          <div class="muted">Noch keine Optionen vorhanden.</div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Aliase / Synonyme</div>
+    <div class="box-body">
+      <form method="post" action="/catalog/features/normalization/aliases/add" class="form compact">
+        <input type="hidden" name="kind_id" value="{{ selected_kind_id }}">
+        <input type="hidden" name="feature_id" value="{{ selected_feature_id }}">
+        <div class="grid3" style="grid-template-columns: 1fr 1fr 1fr 0.7fr 1fr;">
+          <div>
+            <label>Option</label>
+            <select name="option_id" required>
+              <option value="">Bitte wählen</option>
+              {% for opt in option_rows %}
+              <option value="{{ opt.id }}">{{ opt.label_de }} {% if not opt.active %}(inaktiv){% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Alias</label>
+            <input type="text" name="alias_text" placeholder="Rohwert aus CSV" required>
+          </div>
+          <div>
+            <label>Hersteller (optional)</label>
+            <select name="manufacturer_id">
+              <option value="0">Global</option>
+              {% for m in manufacturers %}
+              <option value="{{ m.id }}">{{ m.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Priorität</label>
+            <input type="number" name="priority" value="100">
+          </div>
+          <div>
+            <label>Bestand</label>
+            <label class="check"><input type="checkbox" name="apply_existing" checked> auf bestehende Werte anwenden</label>
+          </div>
+        </div>
+        <button class="btn small" type="submit">Alias anlegen</button>
+      </form>
+
+      <div class="table" style="margin-top:10px;">
+        <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr 0.6fr 0.8fr 0.6fr;">
+          <div>Alias</div>
+          <div>Option</div>
+          <div>Hersteller</div>
+          <div>Priorität</div>
+          <div>Übernahme</div>
+          <div>Aktion</div>
+        </div>
+        {% for row in alias_rows %}
+        {% set alias = row.alias %}
+        <div class="tr" style="grid-template-columns: 1fr;">
+          <div>
+            <form method="post" action="/catalog/features/normalization/aliases/{{ alias.id }}/edit" class="form compact">
+              <input type="hidden" name="kind_id" value="{{ selected_kind_id }}">
+              <input type="hidden" name="feature_id" value="{{ selected_feature_id }}">
+              <div class="grid3" style="grid-template-columns: 1fr 1fr 1fr 0.7fr 0.8fr 0.8fr;">
+                <div><input type="text" name="alias_text" value="{{ alias.alias_text }}" required></div>
+                <div>
+                  <select name="option_id" required>
+                    {% for opt in option_rows %}
+                    <option value="{{ opt.id }}" {% if alias.option_id == opt.id %}selected{% endif %}>{{ opt.label_de }} {% if not opt.active %}(inaktiv){% endif %}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div>
+                  <select name="manufacturer_id">
+                    <option value="0" {% if not alias.manufacturer_id %}selected{% endif %}>Global</option>
+                    {% for m in manufacturers %}
+                    <option value="{{ m.id }}" {% if alias.manufacturer_id == m.id %}selected{% endif %}>{{ m.name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div><input type="number" name="priority" value="{{ alias.priority or 100 }}"></div>
+                <div><label class="check"><input type="checkbox" name="apply_existing" checked> anwenden</label></div>
+                <div class="row">
+                  <button class="btn small" type="submit">Speichern</button>
+                </div>
+              </div>
+            </form>
+            <form method="post" action="/catalog/features/normalization/aliases/{{ alias.id }}/delete" class="inline">
+              <input type="hidden" name="kind_id" value="{{ selected_kind_id }}">
+              <input type="hidden" name="feature_id" value="{{ selected_feature_id }}">
+              <button class="btn small danger" type="submit">Löschen</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+        {% if not alias_rows %}
+        <div class="tr" style="grid-template-columns: 1fr;">
+          <div class="muted">Noch keine Aliase vorhanden.</div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Unbekannte Rohwerte</div>
+    <div class="box-body">
+      <div class="hint">Offen: {{ unknown_total }} (Anzeige begrenzt auf {{ unknown_preview_limit }} Zeilen).</div>
+      <div class="table" style="margin-top:10px;">
+        <div class="tr th" style="grid-template-columns: 1.3fr 1fr 0.5fr 1.3fr;">
+          <div>Rohwert</div>
+          <div>Hersteller</div>
+          <div>Anzahl</div>
+          <div>Zuordnen</div>
+        </div>
+        {% for row in unknown_rows %}
+        <div class="tr" style="grid-template-columns: 1.3fr 1fr 0.5fr 1.3fr;">
+          <div>{{ row.raw_text }}</div>
+          <div>{{ row.manufacturer_label }}</div>
+          <div>{{ row.count }}</div>
+          <div>
+            <form method="post" action="/catalog/features/normalization/unknown/map" class="form compact">
+              <input type="hidden" name="kind_id" value="{{ selected_kind_id }}">
+              <input type="hidden" name="feature_id" value="{{ selected_feature_id }}">
+              <input type="hidden" name="raw_text" value="{{ row.raw_text }}">
+              <input type="hidden" name="manufacturer_id" value="{{ row.manufacturer_id }}">
+              <div class="row" style="margin-top:0;">
+                <select name="option_id" required>
+                  <option value="">Option wählen</option>
+                  {% for opt in option_rows %}
+                  {% if opt.active %}
+                  <option value="{{ opt.id }}">{{ opt.label_de }}</option>
+                  {% endif %}
+                  {% endfor %}
+                </select>
+                {% if row.manufacturer_id %}
+                <select name="scope">
+                  <option value="global">Global</option>
+                  <option value="manufacturer">Nur Hersteller</option>
+                </select>
+                {% else %}
+                <input type="hidden" name="scope" value="global">
+                {% endif %}
+                <input type="number" name="priority" value="90" style="max-width:90px;">
+                <button class="btn small" type="submit">Zuordnen</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+        {% if not unknown_rows %}
+        <div class="tr" style="grid-template-columns: 1fr;">
+          <div class="muted">Keine offenen Rohwerte.</div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Kanonische Optionen steuern die Filter-Dropdowns im Katalog.</li>
+  <li>Aliase mappen CSV-Rohwerte zuerst herstellerspezifisch, danach global.</li>
+  <li>Unter "Unbekannte Rohwerte" kannst du neue Zuordnungen direkt anwenden, ohne Importprofil neu aufzubauen.</li>
+</ul>
+{% endblock %}

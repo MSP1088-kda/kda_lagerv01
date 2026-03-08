@@ -1,16 +1,82 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Import läuft</h1>
-  <div class="hint">Der Import wird im Anschluss mit Ergebnisübersicht angezeigt.</div>
-  <div class="row">
-    <a class="btn" href="/catalog/products/import">Zurück zum Import</a>
+  <h1>CSV-Import: Ausführen</h1>
+  <div class="hint">
+    Entwurf: <b>#{{ draft.id }}</b> |
+    Hersteller: <b>{{ manufacturer.name }}</b> |
+    Geräteart: <b>{{ selected_kind.name }}</b> |
+    Zeilen: <b>{{ total_rows }}</b>
   </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Profil</div>
+    <div class="box-body">
+      {% if active_profile %}
+      <div>Profil: <b>{{ active_profile.name }}</b></div>
+      {% else %}
+      <div>Profilname: <b>{{ profile_name_value }}</b></div>
+      {% endif %}
+      <div>Profil nach erfolgreichem Import aktualisieren: <b>{% if update_profile %}Ja{% else %}Nein{% endif %}</b></div>
+      {% if unmapped_columns %}
+      <div class="hint">Neue Spalten erkannt: {{ unmapped_columns[:8]|join(', ') }}{% if unmapped_columns|length > 8 %}, ...{% endif %}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <h2>Produkt-Mapping</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1fr 1fr;">
+      <div>Zielfeld</div>
+      <div>CSV-Spalte</div>
+    </div>
+    {% for row in mapped_product_fields %}
+    <div class="tr" style="grid-template-columns: 1fr 1fr;">
+      <div>{{ row.target }}</div>
+      <div>{{ row.source or '-' }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2>Merkmals-Mapping</h2>
+  {% if mapped_feature_fields %}
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1fr 1fr 140px;">
+      <div>CSV-Spalte</div>
+      <div>Merkmal</div>
+      <div>Typ</div>
+    </div>
+    {% for row in mapped_feature_fields %}
+    <div class="tr" style="grid-template-columns: 1fr 1fr 140px;">
+      <div>{{ row.source_column }}</div>
+      <div>{{ row.feature_label or row.feature_key }}</div>
+      <div>{{ row.data_type }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted">Keine Merkmale ausgewählt.</div>
+  {% endif %}
+
+  <h2>Zubehör-Mapping</h2>
+  {% if accessory_source_column %}
+  <div class="hint">Spalte: <b>{{ accessory_source_column }}</b> | Trennmodus: <b>{{ accessory_separator_mode }}</b></div>
+  {% else %}
+  <div class="muted">Keine Zubehörspalte zugeordnet.</div>
+  {% endif %}
+
+  <form method="post" action="/catalog/import/{{ draft.id }}/run" class="row" data-loading-immediate="1">
+    <button class="btn primary" type="submit">Import jetzt ausführen</button>
+    <a class="btn" href="/catalog/import/{{ draft.id }}/map">Mapping bearbeiten</a>
+    <a class="btn" href="/catalog/import">Zur Entwurfsübersicht</a>
+  </form>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Hier wird der Importlauf vorbereitet.</li>
+  <li>Auf dieser Seite prüfst du die Zuordnungen vor dem eigentlichen Importlauf.</li>
+  <li>Der Lauf erstellt einen klaren Ergebnisbericht mit Fehlern und offenen Zubehörreferenzen.</li>
+  <li>Der Entwurf bleibt gespeichert und kann später erneut geöffnet werden.</li>
 </ul>
 {% endblock %}

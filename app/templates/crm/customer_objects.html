@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Objekte / Geräte: {{ customer.customer_no_internal }} - {{ party.display_name }}</h1>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap;">
+    <a class="btn" href="/crm/kunden/{{ customer.id }}">Zurück zum Kunden</a>
+    {% if selected and selected.deep_link_url %}<a class="btn" href="{{ selected.deep_link_url }}" target="_blank" rel="noopener">Ausgewähltes Objekt in OutSmart öffnen</a>{% endif %}
+  </div>
+
+  <div class="grid2" style="align-items:start;">
+    <div class="box">
+      <div class="box-title">Objektliste</div>
+      <div class="box-body">
+        {% if rows %}
+          {% for item in rows %}
+          <div style="margin-bottom:8px;">
+            <a href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ item.id }}"><b>{{ item.brand_label or item.supplier_label or 'Objekt' }}</b> {{ item.model_label or item.type_label or item.external_object_code }}</a>
+            <div class="muted">Code: {{ item.external_object_code }} | Seriennummer: {{ item.serial_no or '-' }}</div>
+          </div>
+          {% endfor %}
+        {% else %}
+        <div class="muted">Noch keine OutSmart-Objekte für diesen Kunden vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Detail</div>
+      <div class="box-body">
+        {% if selected %}
+          <div><b>Lieferant:</b> {{ selected.supplier_label or '-' }}</div>
+          <div><b>Marke:</b> {{ selected.brand_label or '-' }}</div>
+          <div><b>Modell:</b> {{ selected.model_label or '-' }}</div>
+          <div><b>Typ:</b> {{ selected.type_label or '-' }}</div>
+          <div><b>Seriennummer:</b> {{ selected.serial_no or '-' }}</div>
+          <div><b>Garantie bis:</b> {{ format_date(selected.warranty_until) }}</div>
+          <div><b>Installiert:</b> {{ format_date(selected.installation_date) }}</div>
+          <div><b>Prüfung:</b> {{ format_date(selected.inspection_date) }}</div>
+          <div><b>Notiz:</b> {{ selected.note or '-' }}</div>
+          {% if selected.image_url %}<div style="margin-top:8px;"><a href="{{ selected.image_url }}" target="_blank" rel="noopener">Bild öffnen</a></div>{% endif %}
+        {% else %}
+        <div class="muted">Kein Objekt ausgewählt.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">Zusatzfelder</div>
+      <div class="box-body">
+        {% if freefields %}
+          {% for key, value in freefields|dictsort %}
+          <div><b>{{ key }}:</b> {{ value or '-' }}</div>
+          {% endfor %}
+        {% else %}
+        <div class="muted">Keine Zusatzfelder vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Object Parts</div>
+      <div class="box-body">
+        {% if object_parts %}
+          {% for item in object_parts %}
+          <div style="margin-bottom:8px;">
+            {% if item is mapping %}
+              {% for key, value in item|dictsort %}
+              <div><b>{{ key }}:</b> {{ value or '-' }}</div>
+              {% endfor %}
+            {% else %}
+            <div>{{ item }}</div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        {% else %}
+        <div class="muted">Keine Komponenten vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Verknüpfte Arbeitsaufträge</div>
+    <div class="box-body">
+      {% if selected_workorders %}
+        {% for item in selected_workorders %}
+        <div style="margin-bottom:8px;">
+          <a href="/outsmart/arbeitsauftraege/{{ item.id }}">{{ item.workorder_no }}</a>
+          <div class="muted">{{ item.status or '-' }} | {{ format_date(item.scheduled_start) }} | {{ item.employee_name or '-' }}</div>
+        </div>
+        {% endfor %}
+      {% else %}
+      <div class="muted">Noch keine lokalen Arbeitsaufträge zu diesem Objekt vorhanden.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Diese Seite zeigt installierte Geräte und Objekte aus OutSmart lokal an.</li>
+  <li>Zusatzfelder und Komponenten bleiben lesbar, ohne direkt nach OutSmart zu springen.</li>
+  <li>Über die verknüpften Arbeitsaufträge gelangst du in die lokale Detailansicht.</li>
+</ul>
+{% endblock %}

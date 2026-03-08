@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel mobile-home" data-mobile-home="1" data-mobile-action="{{ current_action or 'einbuchen' }}">
+  <h1>Schnellstart</h1>
+
+  <div class="mobile-primary-action-row">
+    <a class="btn primary mobile-primary-action" href="/m/ersatzteil">Ersatzteil erfassen</a>
+  </div>
+
+  <div class="form compact mobile-home-search">
+    <label for="mSearch">Produkt suchen</label>
+    <input id="mSearch" type="text" placeholder="Bezeichnung, EAN, Materialnummer" autocomplete="off" autofocus>
+
+    <label for="mKindId">Geräteart (optional)</label>
+    <select id="mKindId" name="kind_id">
+      <option value="0">Alle Gerätearten</option>
+      {% for k in kinds %}
+      <option value="{{ k.id }}" {% if kind_id == k.id %}selected{% endif %}>{{ k.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="mobile-home-actions" role="tablist" aria-label="Aktion auswählen">
+    <button type="button" class="btn mobile-home-action{% if (current_action or 'einbuchen') == 'einbuchen' %} active{% endif %}" data-mobile-action="einbuchen">Einbuchen</button>
+    <button type="button" class="btn mobile-home-action{% if (current_action or 'einbuchen') == 'ausbuchen' %} active{% endif %}" data-mobile-action="ausbuchen">Ausbuchen</button>
+    <button type="button" class="btn mobile-home-action{% if (current_action or 'einbuchen') == 'umlagerung' %} active{% endif %}" data-mobile-action="umlagerung">Umlagern</button>
+    <button type="button" class="btn mobile-home-action{% if (current_action or 'einbuchen') == 'bestellen' %} active{% endif %}" data-mobile-action="bestellen">Bestellen</button>
+  </div>
+
+  <div id="mResults" class="mobile-home-results" aria-live="polite">
+    <div class="muted">Tippe mindestens 2 Zeichen, um Treffer zu sehen.</div>
+  </div>
+
+  <div class="row">
+    <a class="btn" href="/m/lieferschein">Lieferschein scannen</a>
+    <a class="btn" href="/m/produktschild">Produktschild scannen</a>
+  </div>
+
+  <div class="row">
+    <a class="btn" href="/m/bestellungen">Bestellungen anzeigen</a>
+  </div>
+
+  <div class="hint">1 Tipp auf den Treffer öffnet direkt die gewählte Aktion.</div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Oben suchen, Aktion antippen, Treffer auswählen.</li>
+  <li>Ein Tap auf einen Treffer öffnet direkt das passende Mobilformular.</li>
+  <li>Die Geräteart grenzt die Trefferliste optional ein.</li>
+</ul>
+{% endblock %}

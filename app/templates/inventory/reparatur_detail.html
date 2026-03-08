@@ -1,98 +1,301 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="panel">
-  <h1>Reparaturauftrag #{{ order.id }}</h1>
+<div class="panel" data-page="repair-detail">
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+
+  {{ f.render_errors(fe) }}
+
+  <h1>Reparatur {{ order.repair_no or ('REP-' ~ '%06d'|format(order.id)) }}</h1>
 
   <div class="box">
     <div class="box-title">Kopf</div>
+    <div class="box-body repair-summary-grid">
+      <div><b>Status:</b> {{ repair_status_label(order.status) }}</div>
+      <div><b>Ergebnis:</b> {{ repair_outcome_label(order.outcome) }}</div>
+      <div><b>Artikel:</b> {{ product.name if product else 'Artikel fehlt' }}</div>
+      <div><b>Materialnummer:</b> {{ product.material_no if product and product.material_no else '-' }}</div>
+      <div><b>Lieferant:</b> {{ supplier.name if supplier else 'Interne Werkstatt' }}</div>
+      <div><b>Menge:</b> {{ qty }}</div>
+      <div><b>Referenz:</b> {{ order.reservation_ref or '-' }}</div>
+      <div><b>Quelle-Lager:</b> {{ warehouse_map[source_warehouse_id].name if source_warehouse_id and warehouse_map.get(source_warehouse_id) else '-' }}</div>
+      <div><b>Ziel-Lager:</b> {{ warehouse_map[target_warehouse_id].name if target_warehouse_id and warehouse_map.get(target_warehouse_id) else '-' }}</div>
+      <div><b>OutSmart-Referenz:</b> {{ order.outsmart_row_id or '-' }}</div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Quick-Actions</div>
     <div class="box-body">
-      <div><b>Status:</b> {{ repair_status_label.get(order.status, order.status) }}</div>
-      <div><b>Referenz:</b> {{ order.reference or ('REP-' ~ order.id) }}</div>
-      <div><b>Partner:</b> {{ supplier.name if supplier else 'Interne Werkstatt' }}</div>
-      <div><b>Notiz:</b> {{ order.note or '-' }}</div>
       <div class="row">
-        {% if order.status == 'open' %}
-          <form id="repairSendForm" method="post" action="/inventory/reparaturen/{{ order.id }}/send" class="inline">
-            <button class="btn primary" type="submit">In Reparatur buchen</button>
-          </form>
-        {% endif %}
-        {% if order.status == 'in_repair' %}
-          <form id="repairReturnForm" method="post" action="/inventory/reparaturen/{{ order.id }}/return" class="inline">
-            <button class="btn primary" type="submit">Zurückbuchen</button>
-          </form>
-        {% endif %}
-        <a class="btn" href="/inventory/reparaturen">Zurück zur Liste</a>
+        <button class="btn" type="submit" form="repairActionAForm" {% if not can_send_request %}disabled{% endif %}>A Anfrage senden</button>
+        <button class="btn" type="submit" form="repairActionBForm" {% if not can_beauftragen %}disabled{% endif %}>B Beauftragen</button>
+        <button class="btn" type="submit" form="repairActionRForm" {% if not can_return %}disabled{% endif %}>R Rückkehr erfassen</button>
+        <button class="btn" type="submit" form="repairActionEForm" {% if not can_fail %}disabled{% endif %}>E Erfolglos</button>
+      </div>
+      <div class="row">
+        <button class="btn" type="submit" form="repairActionVForm" {% if not can_scrap %}disabled{% endif %}>V Verschrotten</button>
+        <button class="btn" type="submit" form="repairActionLForm" {% if not can_book_stock %}disabled{% endif %}>L Ins Lager</button>
+        <button class="btn" type="submit" form="repairActionSForm" {% if not can_reserve %}disabled{% endif %}>S Reservieren</button>
+        <button class="btn" type="submit" form="repairOutsmartForm" {% if not outsmart_ready %}disabled{% endif %}>An OutSmart senden</button>
       </div>
     </div>
   </div>
 
-  <h2>Fotos</h2>
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">E-Mail-Anfrage</div>
+    <div class="box-body">
+      <form id="repairActionAForm" method="post" action="/inventory/reparaturen/{{ order.id }}/send" class="form compact" data-first-error="{{ first_error_field_id or '' }}">
+        <div class="grid2">
+          <div>
+            <label for="repair_email_account_id">E-Mail-Konto</label>
+            <select id="repair_email_account_id" name="email_account_id">
+              <option value="0">Standardkonto</option>
+              {% for acc in mail_accounts %}
+              {% set selected_acc = f.old(fd, 'email_account_id', default_mail_account_id) | int %}
+              <option value="{{ acc.id }}" {% if selected_acc == acc.id %}selected{% endif %}>{{ acc.label }} ({{ acc.email }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="repair_email_subject">Betreff</label>
+            <input id="repair_email_subject" type="text" name="email_subject" value="{{ f.old(fd, 'email_subject', default_subject) }}" class="{% if fe.get('email_subject') %}is-error{% endif %}">
+            {{ f.field_error(fe, 'email_subject') }}
+          </div>
+        </div>
+        <label for="repair_email_body">Text</label>
+        <textarea id="repair_email_body" name="email_body" rows="6" class="{% if fe.get('email_body') %}is-error{% endif %}">{{ f.old(fd, 'email_body', default_mail_body) }}</textarea>
+        {{ f.field_error(fe, 'email_body') }}
+      </form>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Beauftragungsdaten</div>
+    <div class="box-body">
+      {% if commission_summary.has_data %}
+      <div class="repair-summary-grid repair-summary-grid-tight">
+        <div><b>Beauftragt am:</b> {{ commission_summary.commissioned_at_label }}</div>
+        <div><b>Reparaturpreis:</b> {{ commission_summary.repair_cost_label }}</div>
+        <div><b>Dienstleister-Referenz:</b> {{ commission_summary.commission_reference }}</div>
+        <div><b>Paketdienst:</b> {{ commission_summary.shipping_carrier }}</div>
+        <div><b>Trackingnummer:</b> {{ commission_summary.tracking_no }}</div>
+        <div><b>Tracking-URL:</b> {% if commission_summary.tracking_url != '-' %}<a href="{{ commission_summary.tracking_url }}" target="_blank" rel="noopener noreferrer">{{ commission_summary.tracking_url }}</a>{% else %}-{% endif %}</div>
+      </div>
+      <div style="margin-top:10px;">
+        <b>Zugeordnete Mail:</b>
+        {% if commission_summary.mail.has_data %}
+        <div class="repair-mail-card" style="margin-top:6px;">
+          <div><b>{{ commission_summary.mail.headline }}</b></div>
+          {% if commission_summary.mail.subline %}<div class="muted">{{ commission_summary.mail.subline }}</div>{% endif %}
+        </div>
+        {% else %}
+        <div class="muted" style="margin-top:6px;">Noch keine Mail zugeordnet.</div>
+        {% endif %}
+      </div>
+      <div style="margin-top:10px;">
+        <b>Hinweis:</b>
+        <div style="white-space:pre-wrap;">{{ commission_summary.commission_note }}</div>
+      </div>
+      {% else %}
+      <div class="muted">Noch keine Beauftragungsdetails erfasst.</div>
+      {% endif %}
+
+      {% if linked_mail_views %}
+      <div style="margin-top:10px;">
+        <b>Verknüpfte IMAP-Mails</b>
+        <div class="repair-mail-list">
+          {% for item in linked_mail_views %}
+          <div class="repair-mail-card">
+            <div><b>{{ item.headline }}</b></div>
+            {% if item.subline %}<div class="muted">{{ item.subline }}</div>{% endif %}
+            <div class="muted">Verknüpft am {{ item.created_at_label }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      <form id="repairActionBForm" method="post" action="/inventory/reparaturen/{{ order.id }}/beauftragen" class="form compact" data-first-error="{{ first_error_field_id or '' }}" style="margin-top:10px;">
+        <div class="grid2">
+          <div>
+            <label for="repair_commission_email_account_id">E-Mail-/IMAP-Konto</label>
+            <select id="repair_commission_email_account_id" name="commission_email_account_id" class="{% if fe.get('commission_email_account_id') %}is-error{% endif %}">
+              <option value="0">Standardkonto</option>
+              {% for acc in mail_accounts %}
+              {% set selected_acc = f.old(fd, 'commission_email_account_id', order.commission_account_id or default_mail_account_id) | int %}
+              <option value="{{ acc.id }}" {% if selected_acc == acc.id %}selected{% endif %}>{{ acc.label }} ({{ acc.email }})</option>
+              {% endfor %}
+            </select>
+            {{ f.field_error(fe, 'commission_email_account_id') }}
+          </div>
+          <div>
+            <label for="repair_commission_email_message_id">Importierte IMAP-Mail</label>
+            <select id="repair_commission_email_message_id" name="commission_email_message_id" class="{% if fe.get('commission_email_message_id') %}is-error{% endif %}">
+              <option value="0">Keine Mail auswählen</option>
+              {% for item in commission_mail_options %}
+              {% set selected_msg = f.old(fd, 'commission_email_message_id', current_commission_email_message_id) | int %}
+              <option value="{{ item.id }}" {% if selected_msg == item.id %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+            {{ f.field_error(fe, 'commission_email_message_id') }}
+            {% if not commission_mail_options %}
+            <div class="hint">Noch keine importierten IMAP-Mails vorhanden.</div>
+            {% endif %}
+          </div>
+          <div>
+            <label for="repair_commission_message_id">Mail-Referenz / Message-ID</label>
+            <input id="repair_commission_message_id" type="text" name="commission_message_id" value="{{ f.old(fd, 'commission_message_id', order.commission_message_id or '') }}" class="{% if fe.get('commission_message_id') %}is-error{% endif %}" placeholder="z. B. &lt;abc123@example.com&gt;">
+            {{ f.field_error(fe, 'commission_message_id') }}
+          </div>
+          <div>
+            <label for="repair_commission_cost">Reparaturpreis</label>
+            <input id="repair_commission_cost" type="text" name="repair_cost" value="{{ f.old(fd, 'repair_cost', commission_summary.repair_cost_label if commission_summary.repair_cost_label != '-' else '') | replace(' €', '') }}" class="{% if fe.get('repair_cost') %}is-error{% endif %}" placeholder="z. B. 129,90">
+            {{ f.field_error(fe, 'repair_cost') }}
+          </div>
+          <div>
+            <label for="repair_commission_reference">Dienstleister-Referenz</label>
+            <input id="repair_commission_reference" type="text" name="commission_reference" value="{{ f.old(fd, 'commission_reference', order.commission_reference or '') }}">
+          </div>
+          <div>
+            <label for="repair_shipping_carrier">Paketdienst</label>
+            <input id="repair_shipping_carrier" type="text" name="shipping_carrier" value="{{ f.old(fd, 'shipping_carrier', order.shipping_carrier or '') }}" placeholder="z. B. DHL">
+          </div>
+          <div>
+            <label for="repair_tracking_no">Trackingnummer</label>
+            <input id="repair_tracking_no" type="text" name="tracking_no" value="{{ f.old(fd, 'tracking_no', order.tracking_no or '') }}">
+          </div>
+          <div>
+            <label for="repair_tracking_url">Tracking-URL</label>
+            <input id="repair_tracking_url" type="text" name="tracking_url" value="{{ f.old(fd, 'tracking_url', order.tracking_url or '') }}" class="{% if fe.get('tracking_url') %}is-error{% endif %}" placeholder="https://...">
+            {{ f.field_error(fe, 'tracking_url') }}
+          </div>
+        </div>
+        <label for="repair_commission_note">Hinweis</label>
+        <textarea id="repair_commission_note" name="commission_note" rows="4" class="{% if fe.get('commission_note') %}is-error{% endif %}" placeholder="Absprachen, Verpackung, SLA, Ansprechpartner ...">{{ f.old(fd, 'commission_note', order.commission_note or '') }}</textarea>
+        {{ f.field_error(fe, 'commission_note') }}
+        <div class="row">
+          <button class="btn" type="submit" {% if not can_beauftragen %}disabled{% endif %}>Beauftragung speichern</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <form id="repairActionRForm" method="post" action="/inventory/reparaturen/{{ order.id }}/return" class="inline"></form>
+  <form id="repairActionEForm" method="post" action="/inventory/reparaturen/{{ order.id }}/erfolglos" class="inline"></form>
+  <form id="repairActionVForm" method="post" action="/inventory/reparaturen/{{ order.id }}/verschrotten" class="inline"></form>
+  <form id="repairOutsmartForm" method="post" action="/inventory/reparaturen/{{ order.id }}/outsmart/send" class="inline"></form>
+
+  <form id="repairActionLForm" method="post" action="/inventory/reparaturen/{{ order.id }}/lager" class="form compact" style="margin-top:10px;">
+    <label for="repair_target_warehouse_id">Ziellager für Rückkehr</label>
+    <select id="repair_target_warehouse_id" name="target_warehouse_id" class="{% if fe.get('target_warehouse_id') %}is-error{% endif %}">
+      <option value="0">Bitte wählen</option>
+      {% for w in warehouses %}
+      {% set selected_target = f.old(fd, 'target_warehouse_id', target_warehouse_id) | int %}
+      <option value="{{ w.id }}" {% if selected_target == w.id %}selected{% endif %}>{{ w.name }}</option>
+      {% endfor %}
+    </select>
+    {{ f.field_error(fe, 'target_warehouse_id') }}
+  </form>
+
+  <form id="repairActionSForm" method="post" action="/inventory/reparaturen/{{ order.id }}/reservieren" class="form compact" style="margin-top:10px;">
+    <div class="grid2">
+      <div>
+        <label for="repair_reservation_target_warehouse_id">Ziellager für Reservierung</label>
+        <select id="repair_reservation_target_warehouse_id" name="target_warehouse_id">
+          <option value="0">Bitte wählen</option>
+          {% for w in warehouses %}
+          {% set selected_target = f.old(fd, 'target_warehouse_id', target_warehouse_id) | int %}
+          <option value="{{ w.id }}" {% if selected_target == w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="repair_reservation_ref">Reservierungsreferenz *</label>
+        <input id="repair_reservation_ref" type="text" name="reservation_ref" value="{{ f.old(fd, 'reservation_ref', order.reservation_ref or '') }}" class="{% if fe.get('reservation_ref') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'reservation_ref') }}
+      </div>
+    </div>
+  </form>
+
+  <h2>Timeline</h2>
+  <div class="table repair-timeline-table">
+    <div class="tr th repair-timeline-head" style="grid-template-columns: 170px 160px 1fr;">
+      <div>Zeit</div>
+      <div>Typ</div>
+      <div>Inhalt</div>
+    </div>
+    {% for item in timeline %}
+    {% set event = item.event %}
+    {% set meta = item.meta or {} %}
+    {% set attachments = item.attachments or [] %}
+    {% set meta_items = item.meta_items or [] %}
+    <div class="tr repair-timeline-row" style="grid-template-columns: 170px 160px 1fr;">
+      <div class="repair-timeline-cell" data-label="Zeit">{{ event.ts.strftime('%d.%m.%Y %H:%M') if event.ts and event.ts.strftime is defined else (event.ts or '-') }}</div>
+      <div class="repair-timeline-cell" data-label="Typ">{{ item.type_label }}</div>
+      <div class="repair-timeline-cell repair-timeline-content" data-label="Inhalt">
+        <div class="repair-timeline-titleline">
+          <a class="repair-timeline-link" href="{{ item.detail_url }}"><b>{{ event.title }}</b></a>
+          <a class="btn small" href="{{ item.detail_url }}">Details</a>
+        </div>
+        {% for meta_item in meta_items[:3] %}
+        <div class="muted">{{ meta_item.label }}: {{ meta_item.value }}</div>
+        {% endfor %}
+        {% if event.body %}<div style="white-space:pre-wrap;">{{ event.body }}</div>{% endif %}
+        {% if attachments %}
+        <div style="margin-top:6px;">
+          {% for att in attachments %}
+          <a class="btn small" href="/inventory/reparaturen/{{ order.id }}/attachments/{{ att.id }}">Anhang: {{ att.filename }}</a>
+          {% if att.paperless_document_id %}<span class="muted">Paperless #{{ att.paperless_document_id }}</span>{% endif %}
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% if not timeline %}
+    <div class="muted">Noch keine Timeline-Einträge vorhanden.</div>
+    {% endif %}
+  </div>
+
+  {% if legacy_attachments %}
+  <h2>Vorhandene Alt-Anhänge</h2>
   <div class="table">
-    <div class="tr th" style="grid-template-columns: 90px 1fr 220px;">
-      <div>ID</div>
+    <div class="tr th" style="grid-template-columns: 1fr 140px;">
       <div>Datei</div>
-      <div>Vorschau</div>
+      <div>Aktion</div>
     </div>
-    {% for a in attachments %}
-      <div class="tr" style="grid-template-columns: 90px 1fr 220px;">
-        <div>{{ a.id }}</div>
-        <div>
-          <a href="/inventory/reparaturen/{{ order.id }}/attachments/{{ a.id }}">{{ a.original_name or a.filename }}</a>
-          <div class="muted">{{ a.mime_type or '-' }} | {{ a.size_bytes }} Bytes</div>
-        </div>
-        <div>
-          {% if a.mime_type and a.mime_type.startswith('image/') %}
-          <a href="/inventory/reparaturen/{{ order.id }}/attachments/{{ a.id }}">
-            <img src="/inventory/reparaturen/{{ order.id }}/attachments/{{ a.id }}" alt="Foto {{ a.id }}" style="max-height:100px;max-width:200px;">
-          </a>
-          {% else %}
-          <span class="muted">Keine Bildvorschau</span>
-          {% endif %}
-        </div>
-      </div>
+    {% for att in legacy_attachments %}
+    <div class="tr" style="grid-template-columns: 1fr 140px;">
+      <div>{{ att.original_name or att.filename }}</div>
+      <div><a class="btn small" href="/inventory/reparaturen/{{ order.id }}/legacy-attachments/{{ att.id }}">Öffnen</a></div>
+    </div>
     {% endfor %}
-    {% if not attachments %}
-      <div class="muted">Keine Fotos vorhanden.</div>
-    {% endif %}
   </div>
+  {% endif %}
 
-  <h2>Positionen</h2>
-  <div class="table">
-    <div class="tr th" style="grid-template-columns: 80px 1.5fr 120px 1fr 1fr 1fr 1fr;">
-      <div>ID</div>
-      <div>Produkt</div>
-      <div>Menge</div>
-      <div>Quelle</div>
-      <div>Ziel</div>
-      <div>Zustand In</div>
-      <div>Zustand Out</div>
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Notiz hinzufügen</div>
+    <div class="box-body">
+      <form id="repairNoteForm" method="post" action="/inventory/reparaturen/{{ order.id }}/note" class="form compact" data-first-error="{{ first_error_field_id or '' }}">
+        <textarea id="repair_note_text" name="note" rows="4" class="{% if fe.get('note') %}is-error{% endif %}" placeholder="Notiz eingeben...">{{ f.old(fd, 'note', '') }}</textarea>
+        {{ f.field_error(fe, 'note') }}
+        <div class="row">
+          <button class="btn" type="submit">Notiz speichern (Strg+Enter)</button>
+          <a class="btn" href="/inventory/reparaturen">Zurück zur Übersicht</a>
+        </div>
+      </form>
     </div>
-    {% for line in lines %}
-      {% set p = products.get(line.product_id) %}
-      {% set wf = warehouses.get(line.warehouse_from_id) %}
-      {% set wt = warehouses.get(line.warehouse_to_id) if line.warehouse_to_id else None %}
-      <div class="tr" style="grid-template-columns: 80px 1.5fr 120px 1fr 1fr 1fr 1fr;">
-        <div>{{ line.id }}</div>
-        <div>{{ p.name if p else line.product_id }}</div>
-        <div>{{ line.qty }}</div>
-        <div>{{ wf.name if wf else line.warehouse_from_id }}</div>
-        <div>{{ wt.name if wt else '-' }}</div>
-        <div>{{ condition_labels.get(line.condition_in, line.condition_in) }}</div>
-        <div>{{ condition_labels.get(line.condition_out, line.condition_out) }}</div>
-      </div>
-    {% endfor %}
-    {% if not lines %}
-      <div class="muted">Keine Positionen vorhanden.</div>
-    {% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Taste I bucht den Auftrag in Reparatur, Taste Z bucht zurück.</li>
-  <li>"In Reparatur buchen" erzeugt pro Position zwei Buchungen: Issue aus Quelle und Receipt ins Reparaturlager.</li>
-  <li>"Zurückbuchen" erzeugt ebenfalls zwei Buchungen und setzt den Ausgangszustand je Position.</li>
-  <li>Fotos aus dem Auftrag werden hier als Vorschau und Download angezeigt.</li>
+  <li>Hotkeys: A Anfrage senden, B Beauftragen, R Rückkehr erfassen.</li>
+  <li>Hotkeys: E Erfolglos, V Verschrotten, L Ins Lager, S Reservieren.</li>
+  <li>Timeline-Einträge sind anklickbar und zeigen alle zugehörigen Details.</li>
+  <li>Beauftragungsdaten erfassen Mail, Preis, Tracking und Referenzen direkt am Auftrag.</li>
 </ul>
 {% endblock %}

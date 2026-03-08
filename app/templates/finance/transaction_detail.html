@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Transaktion {{ row.id or row.ID or '-' }}</h1>
+  <div class="box"><div class="box-body">
+    <div><b>Betrag:</b> {{ amount_cents|eur_cents }}</div>
+    <div><b>Text:</b> {{ row.payeeName or row.text or row.reference or '-' }}</div>
+    <div><b>Datum:</b> {{ row.date or row.bookingDate or '-' }}</div>
+  </div></div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box"><div class="box-title">Rechnungskandidaten</div><div class="box-body">
+      {% for item in candidates.invoice_drafts %}
+        <div style="margin-bottom:8px;"><a href="/crm/rechnungen/{{ item.row.id }}">{{ item.row.sevdesk_invoice_number or ('RE-ENTW-' ~ '%04d'|format(item.row.id)) }}</a> | {{ item.open_amount|eur_cents }}</div>
+      {% endfor %}
+      {% if not candidates.invoice_drafts %}<div class="muted">Keine Kandidaten.</div>{% endif %}
+    </div></div>
+    <div class="box"><div class="box-title">Voucherkandidaten</div><div class="box-body">
+      {% for item in candidates.voucher_drafts %}
+        <div style="margin-bottom:8px;"><a href="/einkauf/voucher/{{ item.row.id }}">{{ item.row.sevdesk_voucher_id or ('VOU-' ~ '%04d'|format(item.row.id)) }}</a> | {{ item.open_amount|eur_cents }}</div>
+      {% endfor %}
+      {% if not candidates.voucher_drafts %}<div class="muted">Keine Kandidaten.</div>{% endif %}
+    </div></div>
+  </div>
+</div>
+{% endblock %}

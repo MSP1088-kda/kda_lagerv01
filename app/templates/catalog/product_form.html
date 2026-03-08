@@ -70,6 +70,14 @@
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
           <input id="product_manufacturer_name" type="text" name="manufacturer_name" class="{% if fe.get('manufacturer_name') %}is-error{% endif %}" value="{{ f.old(fd, 'manufacturer_name', product.manufacturer_name if product and product.manufacturer_name else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
           {{ f.field_error(fe, 'manufacturer_name') }}
+        {% elif field.key == 'product_title_1' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <input id="product_product_title_1" type="text" name="product_title_1" class="{% if fe.get('product_title_1') %}is-error{% endif %}" value="{{ f.old(fd, 'product_title_1', product.product_title_1 if product and product.product_title_1 else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          {{ f.field_error(fe, 'product_title_1') }}
+        {% elif field.key == 'product_title_2' %}
+          <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
+          <input id="product_product_title_2" type="text" name="product_title_2" class="{% if fe.get('product_title_2') %}is-error{% endif %}" value="{{ f.old(fd, 'product_title_2', product.product_title_2 if product and product.product_title_2 else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          {{ f.field_error(fe, 'product_title_2') }}
         {% elif field.key == 'ean' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
           <input id="product_ean" type="text" name="ean" class="{% if fe.get('ean') %}is-error{% endif %}" value="{{ f.old(fd, 'ean', product.ean if product and product.ean else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
@@ -168,7 +176,7 @@
 
     <h2>Bilder (absolute Links)</h2>
     <div class="grid2">
-      {% for idx in range(1, 7) %}
+      {% for idx in range(1, product_image_url_max + 1) %}
         {% set key = 'image_url_' ~ idx %}
         {% set field_id = 'product_image_url_' ~ idx %}
         {% set url_value = f.old(fd, key, product and (product|attr(key)) or '') %}

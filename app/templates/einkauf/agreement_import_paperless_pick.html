@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel agreement-panel">
+  <h1>Paperless-Dokument für SEG wählen</h1>
+  <div class="hint">Die Trefferliste zeigt nur die stärksten Dokumente zuerst. SEG-, Siemens- und Jahresvereinbarungs-Treffer werden nach oben gezogen.</div>
+
+  <form method="get" action="/einkauf/konditionen/import/paperless" class="form compact" style="margin-top:10px;">
+    <div class="grid2">
+      <div>
+        <label for="paperless_q">Suche</label>
+        <input id="paperless_q" type="text" name="q" value="{{ q }}" placeholder="z. B. SEG, Siemens, Jahresvereinbarung">
+      </div>
+      <div class="row right">
+        <button class="btn primary" type="submit">Treffer aktualisieren</button>
+        <a class="btn" href="/einkauf/konditionen/import">Zurück</a>
+      </div>
+    </div>
+  </form>
+
+  {% if error_message %}
+    <div class="flash-item flash-error" style="margin-top:10px;">{{ error_message }}</div>
+  {% endif %}
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Trefferliste</div>
+    <div class="box-body">
+      <div class="hint">Es werden maximal 12 Treffer direkt gezeigt.{% if more_count %} Weitere {{ more_count }} Treffer blendest du über eine präzisere Suche aus.{% endif %}</div>
+      <div class="agreement-hit-list" style="margin-top:10px;">
+        {% for row in rows %}
+          <form method="post" action="/einkauf/konditionen/import/paperless" class="agreement-hit-card">
+            <input type="hidden" name="paperless_document_id" value="{{ row.id }}">
+            <div class="agreement-hit-head">
+              <div>
+                <div><b>{{ row.title or ('Dokument ' ~ row.id) }}</b></div>
+                <div class="muted">ID {{ row.id }} | {{ row.created_date or '-' }}</div>
+              </div>
+              <button class="btn primary" type="submit">Dieses Dokument prüfen</button>
+            </div>
+            <div class="agreement-hit-meta">
+              <span>{{ row.correspondent or row.correspondent_name or '-' }}</span>
+              <span>{{ row.document_type or row.document_type_name or '-' }}</span>
+              {% for tag in row.smart_tags or [] %}
+                <span class="agreement-badge">{{ tag }}</span>
+              {% endfor %}
+            </div>
+          </form>
+        {% endfor %}
+      </div>
+      {% if not rows %}<div class="muted">Keine passenden Paperless-Dokumente gefunden.</div>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Trefferliste ist auf die stärksten Dokumente begrenzt.</li>
+  <li>Mit der Suche grenzt du Titel oder Korrespondenten weiter ein.</li>
+  <li>Jede Karte startet direkt die Prüfmaske, ohne vorherige Auswahlpunkte.</li>
+</ul>
+{% endblock %}

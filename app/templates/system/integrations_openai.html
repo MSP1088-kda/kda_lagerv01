@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Integration: OpenAI</h1>
+
+  <div class="grid2" style="align-items:start;">
+    <div class="box">
+      <div class="box-title">Verbindung</div>
+      <div class="box-body">
+        <form method="post" action="/system/integrationen/openai" class="form">
+          <label><input type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %}> Aktiv</label>
+          <label>API-Schlüssel</label>
+          <input type="password" name="api_key" value="" autocomplete="off" placeholder="Leer lassen = unverändert">
+          <div class="hint">Schlüsselstatus: {% if settings.api_key_set %}gesetzt{% else %}nicht gesetzt{% endif %}</div>
+
+          <div class="grid3">
+            <div>
+              <label>Standardmodell</label>
+              <input type="text" name="model_default" value="{{ settings.model_default or 'gpt-5-mini' }}">
+            </div>
+            <div>
+              <label>Schnelles Modell</label>
+              <input type="text" name="model_fast" value="{{ settings.model_fast or 'gpt-5-mini' }}">
+            </div>
+            <div>
+              <label>Reasoning-Modell</label>
+              <input type="text" name="model_reasoning" value="{{ settings.model_reasoning or 'gpt-5' }}">
+            </div>
+          </div>
+
+          <div class="grid3">
+            <div>
+              <label>Timeout (Sek.)</label>
+              <input type="text" name="timeout_seconds" value="{{ settings.timeout_seconds or 45 }}">
+            </div>
+            <div>
+              <label>Retries</label>
+              <input type="text" name="retry_count" value="{{ settings.retry_count or 1 }}">
+            </div>
+            <div>
+              <label>Max. Tokens</label>
+              <input type="text" name="max_tokens" value="{{ settings.max_tokens or 1500 }}">
+            </div>
+          </div>
+
+          <div class="row" style="gap:8px; flex-wrap:wrap;">
+            <button class="btn primary" type="submit">Speichern</button>
+            <button class="btn" type="submit" formaction="/system/integrationen/openai/test">Verbindung testen</button>
+            <a class="btn" href="/system/ki-log">KI-Log</a>
+            <a class="btn" href="/system/ki-freigaben">KI-Freigaben</a>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Status</div>
+      <div class="box-body">
+        <div><b>Aktiv:</b> {{ 'Ja' if settings.enabled else 'Nein' }}</div>
+        <div><b>API-Schlüssel:</b> {{ 'Gesetzt' if settings.api_key_set else 'Fehlt' }}</div>
+        <div><b>Prompt-Aufgaben:</b> {{ prompt_rows|length }}</div>
+        {% if test_result %}
+          <div style="margin-top:10px;"><b>Test:</b> {{ test_result.message }}</div>
+          {% if test_result.preview.models %}<div><b>Modelle:</b> {{ test_result.preview.models|join(', ') }}</div>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Prompt-Registry</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 1.1fr 120px 1fr 120px;">
+          <div>Aufgabe</div>
+          <div>Version</div>
+          <div>Schema</div>
+          <div>Aktiv</div>
+        </div>
+        {% for row in prompt_rows %}
+          <div class="tr" style="grid-template-columns: 1.1fr 120px 1fr 120px; align-items:start;">
+            <div>{{ ai_task_label(row.task_name) }}</div>
+            <div>{{ row.version }}</div>
+            <div>{{ row.output_schema_name }}</div>
+            <div>{{ 'Ja' if row.active else 'Nein' }}</div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der OpenAI-Schlüssel liegt nur serverseitig im Secrets-Verzeichnis.</li>
+  <li>Die Prompt-Registry ist die einzige aktive KI-Definition im System.</li>
+  <li>Gelbe und rote Vorschläge laufen immer über KI-Log und KI-Freigaben.</li>
+</ul>
+{% endblock %}

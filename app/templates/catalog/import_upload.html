@@ -1,8 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>CSV-Import V2</h1>
-  <form method="post" action="/catalog/products/import/preview" enctype="multipart/form-data" class="form" data-import-upload-form="1">
+  <h1>CSV-Import</h1>
+
+  {% if global_errors %}
+  <div class="import-error-block">
+    {% for msg in global_errors %}
+    <div>- {{ msg }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/catalog/import/upload" enctype="multipart/form-data" class="form" data-import-upload-form="1">
     <label>Hersteller (Pflicht)</label>
     <select name="manufacturer_id" required>
       <option value="0">Bitte wählen</option>
@@ -19,6 +28,14 @@
       {% endfor %}
     </select>
 
+    <label>Profil (optional)</label>
+    <select name="profile_id">
+      <option value="0">Automatisch erkennen / neu wählen</option>
+      {% for p in available_profiles %}
+      <option value="{{ p.id }}" {% if selected_profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+
     <label>CSV-Datei</label>
     <input type="file" name="csv_file" accept=".csv,text/csv" required>
 
@@ -26,36 +43,72 @@
       <div>
         <label>Trennzeichen</label>
         <select name="delimiter">
-          <option value=";" selected>Semikolon (;)</option>
-          <option value=",">Komma (,)</option>
+          <option value=";" {% if upload_form_data.delimiter == ';' %}selected{% endif %}>Semikolon (;)</option>
+          <option value="," {% if upload_form_data.delimiter == ',' %}selected{% endif %}>Komma (,)</option>
         </select>
       </div>
       <div>
         <label>Encoding</label>
         <select name="encoding">
-          <option value="utf-8" selected>utf-8</option>
-          <option value="utf-8-sig">utf-8-sig</option>
-          <option value="cp1252">cp1252</option>
-          <option value="latin-1">latin-1</option>
+          <option value="utf-8" {% if upload_form_data.encoding == 'utf-8' %}selected{% endif %}>utf-8</option>
+          <option value="utf-8-sig" {% if upload_form_data.encoding == 'utf-8-sig' %}selected{% endif %}>utf-8-sig</option>
+          <option value="cp1252" {% if upload_form_data.encoding == 'cp1252' %}selected{% endif %}>cp1252</option>
+          <option value="latin-1" {% if upload_form_data.encoding == 'latin-1' %}selected{% endif %}>latin-1</option>
         </select>
       </div>
       <div>
-        <label class="check"><input type="checkbox" name="has_header" checked> Erste Zeile enthält Header</label>
+        <label class="check"><input type="checkbox" name="has_header" {% if upload_form_data.has_header %}checked{% endif %}> Erste Zeile enthält Header</label>
       </div>
     </div>
 
     <div class="row">
-      <button class="btn primary" type="submit">Vorschau öffnen</button>
+      <button class="btn primary" type="submit">Upload starten</button>
       <a class="btn" href="/catalog/products">Zurück</a>
+      <a class="btn" href="/catalog/import/profiles">Profile verwalten</a>
     </div>
   </form>
+</div>
+
+<div class="panel" style="margin-top:10px;">
+  <h2>Letzte Import-Entwürfe</h2>
+  {% if recent_drafts %}
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 90px 1.4fr 1fr 1fr 150px 170px;">
+      <div>ID</div>
+      <div>Datei</div>
+      <div>Hersteller</div>
+      <div>Geräteart</div>
+      <div>Status</div>
+      <div>Aktion</div>
+    </div>
+    {% for d in recent_drafts %}
+    {% set status_label = 'Unbekannt' %}
+    {% if d.status == 'uploaded' %}{% set status_label = 'Hochgeladen' %}{% endif %}
+    {% if d.status == 'mapping' %}{% set status_label = 'Zuordnung' %}{% endif %}
+    {% if d.status == 'validated' %}{% set status_label = 'Validiert' %}{% endif %}
+    {% if d.status == 'imported' %}{% set status_label = 'Importiert' %}{% endif %}
+    {% if d.status == 'failed' %}{% set status_label = 'Fehlgeschlagen' %}{% endif %}
+    {% if d.status == 'validated_with_warnings' %}{% set status_label = 'Mit Hinweisen' %}{% endif %}
+    <div class="tr" style="grid-template-columns: 90px 1.4fr 1fr 1fr 150px 170px;">
+      <div>#{{ d.id }}</div>
+      <div>{{ d.filename_original or '-' }}</div>
+      <div>{{ manufacturer_map.get(d.manufacturer_id or 0, '-') }}</div>
+      <div>{{ kind_map.get(d.device_kind_id or 0, '-') }}</div>
+      <div>{{ status_label }}</div>
+      <div><a class="btn small" href="{{ draft_open_url(d) }}">Öffnen</a></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted">Keine gespeicherten Entwürfe vorhanden.</div>
+  {% endif %}
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Wähle zuerst Hersteller und Geräteart.</li>
-  <li>Nach dem Upload erkennt das System passende Import-Profile automatisch.</li>
-  <li>Vor dem Schreiben wird immer eine Vorschau angezeigt.</li>
+  <li>Upload speichert einen dauerhaften Entwurf, damit Datei und Auswahl erhalten bleiben.</li>
+  <li>Wenn schon ein passendes Profil existiert, kann es direkt gewählt oder automatisch erkannt werden.</li>
+  <li>Über „Letzte Import-Entwürfe“ kannst du abgebrochene Importe fortsetzen.</li>
 </ul>
 {% endblock %}

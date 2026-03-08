@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Unzugeordnete Mails</h1>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+    <form method="get" action="/mail/unzugeordnet" class="inline row" style="gap:8px; flex-wrap:wrap;">
+      <input type="text" name="q" value="{{ q }}" placeholder="Betreff, Absender, Referenz">
+      <button class="btn" type="submit">Filtern</button>
+    </form>
+    <a class="btn" href="/mail/eingang">Alle Threads</a>
+  </div>
+
+  {% if rows %}
+    {% for item in rows %}
+      {% set latest = item.latest %}
+      <div class="box" style="margin-top:10px;">
+        <div class="box-title">{{ latest.subject or item.thread.subject_normalized or '(ohne Betreff)' }}</div>
+        <div class="box-body">
+          <div class="grid2">
+            <div>
+              <div><b>Letzte Nachricht:</b> {{ format_date(item.thread.last_message_at) }}</div>
+              <div><b>Von:</b> {{ latest.from_email or latest.from_text or '-' }}</div>
+              <div><b>Zuordnung:</b> {{ mail_assignment_status_label(latest.assignment_status if latest else 'unassigned') }}</div>
+            </div>
+            <div>
+              {% if item.customer or item.crm_case %}
+                <div><b>Bereits erkannt:</b></div>
+                {% if item.customer %}<div>Kunde: {{ item.customer.customer_no_internal }}</div>{% endif %}
+                {% if item.crm_case %}<div>Vorgang: {{ item.crm_case.case_no }}</div>{% endif %}
+              {% else %}
+                <div class="muted">Noch keine eindeutige Zuordnung gespeichert.</div>
+              {% endif %}
+            </div>
+          </div>
+          {% if latest and latest.snippet %}<div style="margin-top:8px;">{{ latest.snippet }}</div>{% endif %}
+          <div class="row" style="margin-top:10px; flex-wrap:wrap; gap:8px;">
+            <a class="btn primary" href="/mail/threads/{{ item.thread.id }}#assign-thread">Kunde zuweisen</a>
+            <a class="btn" href="/mail/threads/{{ item.thread.id }}#assign-thread">Vorgang zuweisen</a>
+            <a class="btn" href="/mail/threads/{{ item.thread.id }}#new-case">Neuen Vorgang anlegen</a>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <div class="muted">Keine unzugeordneten Mails gefunden.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Diese Liste zeigt Threads ohne feste fachliche Zuordnung.</li>
+  <li>Von hier aus springst du direkt zur passenden Nacharbeit im Thread.</li>
+  <li>Nicht zuordenbare Mails bleiben sichtbar und gehen nicht verloren.</li>
+</ul>
+{% endblock %}

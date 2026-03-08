@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Mail-Eingang</h1>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+    <form method="get" action="/mail/eingang" class="inline row" style="gap:8px; flex-wrap:wrap;">
+      <input type="text" name="q" value="{{ q }}" placeholder="Betreff, Absender, Kunde, Vorgang">
+      <select name="status">
+        <option value="">Alle Thread-Status</option>
+        <option value="open"{% if status == 'open' %} selected{% endif %}>Offen</option>
+        <option value="waiting"{% if status == 'waiting' %} selected{% endif %}>Wartet</option>
+        <option value="closed"{% if status == 'closed' %} selected{% endif %}>Geschlossen</option>
+      </select>
+      <select name="assignment">
+        <option value="">Alle Zuordnungen</option>
+        <option value="assigned"{% if assignment == 'assigned' %} selected{% endif %}>Zugeordnet</option>
+        <option value="unassigned"{% if assignment == 'unassigned' %} selected{% endif %}>Nicht zugeordnet</option>
+      </select>
+      <button class="btn" type="submit">Filtern</button>
+    </form>
+    <form method="post" action="/mail/abrufen" class="inline">
+      <input type="hidden" name="next" value="/mail/eingang">
+      <button class="btn primary" type="submit">Mails abrufen</button>
+    </form>
+    <a class="btn" href="/mail/unzugeordnet">Unzugeordnete Mails</a>
+    <a class="btn" href="/mail/verfassen">Mail verfassen</a>
+    {% if role_flags.is_admin %}<a class="btn" href="/mail/vorlagen">Vorlagen</a>{% endif %}
+  </div>
+
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 2fr 1.2fr 1.2fr 140px 140px 140px;">
+      <div>Thread</div>
+      <div>Kunde</div>
+      <div>Vorgang</div>
+      <div>Zuordnung</div>
+      <div>Status</div>
+      <div>Aktion</div>
+    </div>
+    {% for item in rows %}
+      {% set latest = item.latest %}
+      <div class="tr" style="grid-template-columns: 2fr 1.2fr 1.2fr 140px 140px 140px; align-items:start;">
+        <div>
+          <div><b>{{ latest.subject or item.thread.subject_normalized or '(ohne Betreff)' }}</b></div>
+          <div class="muted">{{ format_date(item.thread.last_message_at) }}</div>
+          <div class="hint">{{ latest.from_email or latest.from_text or '-' }}</div>
+        </div>
+        <div>
+          {% if item.customer %}
+            <a href="/crm/kunden/{{ item.customer.id }}">{{ item.customer.customer_no_internal }}</a>
+            <div class="muted">{{ item.customer_party.display_name if item.customer_party else '-' }}</div>
+          {% else %}
+            <span class="muted">-</span>
+          {% endif %}
+        </div>
+        <div>
+          {% if item.crm_case %}
+            <a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
+            <div class="muted">{{ item.crm_case.title }}</div>
+          {% else %}
+            <span class="muted">-</span>
+          {% endif %}
+        </div>
+        <div>{{ mail_assignment_status_label(latest.assignment_status if latest else 'unassigned') }}</div>
+        <div>{{ mail_thread_status_label(item.thread.status) }}</div>
+        <div><a class="btn small" href="/mail/threads/{{ item.thread.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Mail-Threads gefunden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der Mail-Eingang zeigt Threads statt Einzelmails, damit Antworten zusammenbleiben.</li>
+  <li>Über Unzugeordnete Mails springst du direkt in die manuelle Nacharbeit.</li>
+  <li>Mails abrufen holt neue Nachrichten aus dem Standardkonto ins Hauptsystem.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>Mahnfall #{{ row.id }}</h1>
+      <div class="hint">{{ dunning_status_label(row.status) }}</div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      {% if role_flags.is_admin %}<a class="btn primary" href="/crm/mahnfaelle/{{ row.id }}/mail">Mail vorbereiten</a>{% endif %}
+      <a class="btn" href="/crm/mahnfaelle">Zurück</a>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box"><div class="box-title">Kopf</div><div class="box-body">
+      <div><b>Rechnung:</b> {% if invoice %}<a href="/crm/rechnungen/{{ invoice.id }}">{{ invoice.sevdesk_invoice_number or ('RE-ENTW-' ~ '%04d'|format(invoice.id)) }}</a>{% else %}-{% endif %}</div>
+      <div><b>Kunde:</b> {% if customer %}<a href="/crm/kunden/{{ customer.id }}">{{ customer.customer_no_internal }}</a>{% else %}-{% endif %}</div>
+      <div><b>Fällig:</b> {{ format_date(row.due_date) }}</div>
+      <div><b>Offen:</b> {{ row.amount_due|eur_cents if row.amount_due is not none else '-' }}</div>
+      <div><b>Nächste Aktion:</b> {{ format_date(row.next_action_at) }}</div>
+      <div><b>Letzter Kontakt:</b> {{ format_date(row.last_contact_at) }}</div>
+    </div></div>
+    <div class="box"><div class="box-title">Mahnstufe</div><div class="box-body">
+      <div><b>Aktuelle Stufe:</b> {{ row.current_level }}</div>
+      {% if role_flags.is_admin %}
+      <form method="post" action="/crm/mahnfaelle/{{ row.id }}/stufe" class="form compact" style="margin-top:10px;">
+        <label>Notiz</label>
+        <input type="text" name="note" value="">
+        <button class="btn" type="submit">Stufe erhöhen</button>
+      </form>
+      {% endif %}
+    </div></div>
+  </div>
+
+  <div class="box" style="margin-top:10px;"><div class="box-title">Aktionen</div><div class="box-body">
+    {% for action in actions %}
+      <div style="margin-bottom:8px;"><b>{{ action.action_type }}</b> | Stufe {{ action.level }} | {{ format_date(action.created_at) }}<div class="muted">{{ action.note or '-' }}</div></div>
+    {% endfor %}
+    {% if not actions %}<div class="muted">Noch keine Aktionen dokumentiert.</div>{% endif %}
+  </div></div>
+</div>
+{% endblock %}

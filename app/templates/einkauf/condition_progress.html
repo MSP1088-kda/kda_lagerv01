@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Konditionsziele</h1>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1.3fr 1fr 1fr 1fr 120px 1fr;">
+      <div>Lieferant</div>
+      <div>Ziel</div>
+      <div>Aktuell</div>
+      <div>Fehlt</div>
+      <div>Fortschritt</div>
+      <div>Bonusvorteil</div>
+    </div>
+    {% for item in rows %}
+      {% set supplier = suppliers.get(item.condition_set.supplier_id) %}
+      <div class="tr" style="grid-template-columns: 1.3fr 1fr 1fr 1fr 120px 1fr;">
+        <div>
+          <a href="/stammdaten/lieferanten/{{ item.condition_set.supplier_id }}">{{ supplier.name if supplier else '-' }}</a><br>
+          <span class="muted">{{ item.condition_set.name }}</span>
+        </div>
+        <div>{{ item.target_value|eur_cents if item.target_value else '-' }}</div>
+        <div>{{ item.current_value|eur_cents if item.current_value else '0,00 €' }}</div>
+        <div>{{ item.missing_value|eur_cents if item.missing_value else '0,00 €' }}</div>
+        <div>{{ item.progress_percent }} %</div>
+        <div>{{ item.bonus_value|eur_cents if item.bonus_value else '0,00 €' }}</div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine aktiven Konditionsziele vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Sortiert wird nach dem kleinsten noch fehlenden Betrag.</li>
+  <li>Der Fortschritt basiert auf dem aktuellen Periodenwert des Konditionssatzes.</li>
+  <li>Über den Lieferantenlink kommst du zur Detailansicht.</li>
+</ul>
+{% endblock %}

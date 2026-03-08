@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{{ page_title }}</h1>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {{ f.render_errors(fe) }}
+  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+    <div class="grid3">
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">Bitte wählen</option>
+          {% for s in suppliers %}
+            <option value="{{ s.id }}" {% if fd.get('supplier_id', selected_supplier_id)|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Rechnungsnummer</label>
+        <input type="text" name="invoice_no" value="{{ fd.get('invoice_no', row.invoice_no if row else '') }}">
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status">
+          {% for key in ('draft','matched','approved','booked','paid','disputed') %}
+            <option value="{{ key }}" {% if fd.get('status', row.status if row else 'draft') == key %}selected{% endif %}>{{ purchase_invoice_status_label(key) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Rechnungsdatum</label>
+        <input type="date" name="invoice_date" value="{{ fd.get('invoice_date', invoice_date_value) }}">
+      </div>
+      <div>
+        <label>Fällig am</label>
+        <input type="date" name="due_date" value="{{ fd.get('due_date', due_date_value) }}">
+      </div>
+      <div>
+        <label>Paperless-Dokument-ID</label>
+        <input type="text" name="paperless_document_id" value="{{ fd.get('paperless_document_id', row.paperless_document_id if row else '') }}">
+      </div>
+      <div>
+        <label>Netto</label>
+        <input type="text" name="net_total" value="{{ fd.get('net_total', net_total_value) }}">
+      </div>
+      <div>
+        <label>Steuer</label>
+        <input type="text" name="tax_total" value="{{ fd.get('tax_total', tax_total_value) }}">
+      </div>
+      <div>
+        <label>Brutto</label>
+        <input type="text" name="gross_total" value="{{ fd.get('gross_total', gross_total_value) }}">
+      </div>
+    </div>
+
+    <h2>Linien</h2>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 1.2fr 100px 130px 140px 140px 1fr;">
+        <div>Produkt</div>
+        <div>Menge</div>
+        <div>EK fakturiert</div>
+        <div>Wareneingang</div>
+        <div>Bestellung</div>
+        <div>Notiz</div>
+      </div>
+      {% for line in line_rows %}
+        <div class="tr" style="grid-template-columns: 1.2fr 100px 130px 140px 140px 1fr; align-items:start;">
+          <div>
+            <select name="line_product_id">
+              <option value="0">-</option>
+              {% for p in products %}
+                <option value="{{ p.id }}" {% if line.product_id|int == p.id %}selected{% endif %}>{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div><input type="number" name="line_qty" value="{{ line.qty }}" min="0"></div>
+          <div><input type="text" name="line_unit_cost_invoiced" value="{{ line.unit_cost_invoiced }}" placeholder="0,00"></div>
+          <div>
+            <select name="line_goods_receipt_line_id">
+              <option value="0">-</option>
+              {% for opt in goods_receipt_line_options %}
+                <option value="{{ opt.id }}" {% if line.goods_receipt_line_id|int == opt.id %}selected{% endif %}>{{ opt.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <select name="line_purchase_order_line_id">
+              <option value="0">-</option>
+              {% for opt in purchase_order_line_options %}
+                <option value="{{ opt.id }}" {% if line.purchase_order_line_id|int == opt.id %}selected{% endif %}>{{ opt.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div><input type="text" name="line_note" value="{{ line.note }}"></div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/einkauf/rechnungen">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wenn Wareneingangs- oder Bestellzeilen bekannt sind, direkt referenzieren.</li>
+  <li>Linien ohne Verknüpfung bleiben sichtbar und können später nachgepflegt werden.</li>
+  <li>Bei Preisabweichungen schreibt das System eine zusätzliche Preis-Historie aus der Rechnung.</li>
+</ul>
+{% endblock %}

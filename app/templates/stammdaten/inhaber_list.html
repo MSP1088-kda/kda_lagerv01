@@ -55,9 +55,6 @@
           <form method="post" action="/stammdaten/inhaber/{{ row.id }}/toggle" class="inline">
             <button class="btn small" type="submit">{{ 'Deaktivieren' if row.active else 'Aktivieren' }}</button>
           </form>
-          <form method="post" action="/stammdaten/inhaber/{{ row.id }}/delete" class="inline" onsubmit="return confirm('Inhaber wirklich vollständig löschen?');">
-            <button class="btn small" type="submit">Löschen</button>
-          </form>
         </div>
       </div>
     {% endfor %}
@@ -70,8 +67,7 @@
 
 {% block help %}
 <ul>
-  <li>Inhaber werden bei Lagerbuchungen optional mitgeführt.</li>
-  <li>Im Produktdetail wird Bestand je Zustand und Inhaber angezeigt.</li>
-  <li>Vollständiges Löschen ist nur möglich, wenn keine Buchung und kein Bestand mehr verknüpft ist.</li>
+  <li>Inhaber wird bei der Ersatzteil-Erfassung benötigt.</li>
+  <li>Bitte Inhaber bei Bedarf nur deaktivieren, nicht hart löschen.</li>
 </ul>
 {% endblock %}

@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block content %}
+{% import "macros/forms.html" as f %}
+{% set fd = form_data or {} %}
+{% set fe = form_errors or {} %}
+<div class="panel mobile-form-shell">
+  <h1>Ersatzteil erfassen</h1>
+  {% if done %}
+  <div class="flash-item flash-info">Erfasst & eingebucht.</div>
+  {% endif %}
+  {% if done and last_capture %}
+  <div class="mobile-last-capture">
+    <div>
+      <div class="mobile-last-capture-title">Letztes Teil</div>
+      <div>{{ last_product.material_no if last_product and last_product.material_no else (last_product.name if last_product else '-') }}</div>
+    </div>
+    {% if last_capture.image_path %}
+    <img src="{{ last_capture.image_path }}" alt="Letztes Foto">
+    {% endif %}
+  </div>
+  {% if last_product and last_capture %}
+  <div class="mobile-primary-action-row">
+    <a class="btn primary mobile-primary-action" href="/m/reparatur?product_id={{ last_product.id }}&warehouse_id={{ last_capture.warehouse_id }}&qty={{ last_capture.qty }}">Reparatur</a>
+  </div>
+  {% endif %}
+  {% endif %}
+  {{ f.render_errors(fe) }}
+
+  <form
+    method="post"
+    action="/m/ersatzteil"
+    enctype="multipart/form-data"
+    class="form compact"
+    data-mobile-spare-form="1"
+    data-first-error="{{ first_error_field_id or '' }}"
+  >
+    <label for="m_spare_image_file">Bild *</label>
+    <input
+      id="m_spare_image_file"
+      type="file"
+      name="image_file"
+      accept="image/jpeg,image/png,image/webp"
+      capture="environment"
+      class="{% if fe.get('image_file') %}is-error{% endif %}"
+      required
+    >
+    {{ f.field_error(fe, 'image_file') }}
+    <div class="mobile-image-preview" data-spare-preview="1">
+      <img data-spare-preview-img="1" alt="Vorschau" hidden>
+      <div class="muted" data-spare-preview-empty="1">Kein Bild ausgewählt.</div>
+    </div>
+
+    <label for="m_spare_article_no">Artikelnummer *</label>
+    <input
+      id="m_spare_article_no"
+      type="text"
+      name="article_no"
+      value="{{ f.old(fd, 'article_no', '') }}"
+      class="{% if fe.get('article_no') %}is-error{% endif %}"
+      {% if not done %}autofocus{% endif %}
+      required
+    >
+    {{ f.field_error(fe, 'article_no') }}
+
+    <label for="m_spare_warehouse_id">Lagerort *</label>
+    <select id="m_spare_warehouse_id" name="warehouse_id" class="{% if fe.get('warehouse_id') %}is-error{% endif %}" required>
+      <option value="0">Bitte wählen</option>
+      {% for w in warehouses %}
+      <option value="{{ w.id }}" {% if f.old(fd, 'warehouse_id', '0')|int == w.id %}selected{% endif %}>{{ w.name }}</option>
+      {% endfor %}
+    </select>
+    {{ f.field_error(fe, 'warehouse_id') }}
+
+    <label for="m_spare_owner_id">Inhaber *</label>
+    <select id="m_spare_owner_id" name="owner_id" class="{% if fe.get('owner_id') %}is-error{% endif %}" required>
+      <option value="0">Bitte wählen</option>
+      {% for o in owners %}
+      <option value="{{ o.id }}" {% if f.old(fd, 'owner_id', '0')|int == o.id %}selected{% endif %}>{{ o.name }}</option>
+      {% endfor %}
+    </select>
+    {{ f.field_error(fe, 'owner_id') }}
+
+    <details class="collapse-box mobile-more"{% if fe.get('qty') or fe.get('condition') or fe.get('note') %} open{% endif %}>
+      <summary class="box-title">Mehr</summary>
+      <div class="box-body">
+        <label for="m_spare_qty">Menge</label>
+        <input
+          id="m_spare_qty"
+          type="number"
+          name="qty"
+          min="1"
+          inputmode="numeric"
+          value="{{ f.old(fd, 'qty', '1') }}"
+          class="{% if fe.get('qty') %}is-error{% endif %}"
+        >
+        {{ f.field_error(fe, 'qty') }}
+
+        <label for="m_spare_condition">Zustand</label>
+        <select id="m_spare_condition" name="condition" class="{% if fe.get('condition') %}is-error{% endif %}">
+          {% for c in condition_defs %}
+          <option value="{{ c.code }}" {% if f.old(fd, 'condition', 'A_WARE') == c.code %}selected{% endif %}>{{ c.label_de }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'condition') }}
+
+        <label for="m_spare_note">Notiz</label>
+        <textarea id="m_spare_note" name="note" rows="2">{{ f.old(fd, 'note', '') }}</textarea>
+      </div>
+    </details>
+
+    <div class="mobile-sticky-bar">
+      <a class="btn" href="/m">Zurück</a>
+      <button class="btn primary" type="submit">Speichern &amp; Einbuchen</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Pflicht: Bild, Artikelnummer, Lagerort, Inhaber.</li>
+  <li>Unter "Mehr" kannst du Menge, Zustand und Notiz setzen.</li>
+  <li>Nach Erfolg bleibt die Seite offen für das nächste Teil.</li>
+</ul>
+{% endblock %}

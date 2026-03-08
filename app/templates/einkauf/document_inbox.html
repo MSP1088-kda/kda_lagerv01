@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Dokumenteneingang</h1>
+  <div class="row" style="margin-bottom:10px;">
+    <form method="post" action="/einkauf/dokumente/abrufen" class="inline">
+      <button class="btn primary" type="submit">Aus Paperless abrufen</button>
+    </form>
+    <a class="btn" href="/system/integrationen/paperless">Paperless-Einstellungen</a>
+  </div>
+  <div class="hint">Modus: {{ paperless_mode_label }}</div>
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 120px 1.8fr 1fr 1fr 140px 150px;">
+      <div>Paperless-ID</div>
+      <div>Titel</div>
+      <div>Korrespondent</div>
+      <div>Dokumenttyp</div>
+      <div>Status</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 120px 1.8fr 1fr 1fr 140px 150px;">
+        <div>{{ row.paperless_document_id }}</div>
+        <div>{{ row.title or '-' }}</div>
+        <div>{{ row.correspondent or '-' }}</div>
+        <div>{{ row.document_type or '-' }}</div>
+        <div>{{ document_inbox_status_label(row.status) }}</div>
+        <div><a class="btn small" href="/einkauf/dokumente/{{ row.id }}">Zuordnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Dokumente im Dokumenteneingang.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Paperless bleibt Eingang und Archiv; hier werden nur Fachzuordnungen gepflegt.</li>
+  <li>Neue Dokumente werden beim Abruf in den Dokumenteneingang gespiegelt.</li>
+  <li>Von der Detailseite aus kannst du Bestellung, Wareneingang, Rechnung oder Lieferant zuordnen.</li>
+</ul>
+{% endblock %}

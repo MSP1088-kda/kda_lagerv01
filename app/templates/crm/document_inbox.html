@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Dokumenten-Inbox</h1>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+    <form method="get" action="/crm/dokumente" class="inline row" style="gap:8px; flex-wrap:wrap;">
+      <input type="text" name="q" value="{{ q }}" placeholder="Titel, OCR, Korrespondent">
+      <select name="status">
+        <option value="">Alle Stati</option>
+        <option value="new"{% if status == 'new' %} selected{% endif %}>Neu</option>
+        <option value="matched"{% if status == 'matched' %} selected{% endif %}>Zugeordnet</option>
+        <option value="ignored"{% if status == 'ignored' %} selected{% endif %}>Ignoriert</option>
+      </select>
+      <button class="btn" type="submit">Filtern</button>
+    </form>
+    <form method="post" action="/crm/dokumente/abrufen" class="inline">
+      <button class="btn primary" type="submit">Aus Paperless abrufen</button>
+    </form>
+    <a class="btn" href="/crm/dokumente/upload">Dokument hochladen</a>
+  </div>
+
+  <div class="hint">Modus: {{ paperless_mode_label }}</div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 120px 1.7fr 1fr 1fr 140px 1.1fr 120px;">
+      <div>ID</div>
+      <div>Titel</div>
+      <div>Korrespondent</div>
+      <div>Typ</div>
+      <div>Status</div>
+      <div>Ziel</div>
+      <div>Aktion</div>
+    </div>
+    {% for item in rows %}
+      <div class="tr" style="grid-template-columns: 120px 1.7fr 1fr 1fr 140px 1.1fr 120px; align-items:start;">
+        <div>{{ item.row.paperless_document_id }}</div>
+        <div>{{ item.row.title or '-' }}</div>
+        <div>{{ item.row.correspondent or '-' }}</div>
+        <div>{{ item.row.document_type or '-' }}</div>
+        <div>{{ document_inbox_status_label(item.row.status) }}</div>
+        <div>
+          {% if item.target_url %}
+            <a href="{{ item.target_url }}">{{ item.target_label }}</a>
+          {% else %}
+            <span class="muted">-</span>
+          {% endif %}
+        </div>
+        <div><a class="btn small" href="/crm/dokumente/{{ item.row.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Dokumente gefunden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Dokumenten-Inbox zeigt Paperless-Dokumente mit fachlicher Zuordnung im Hauptsystem.</li>
+  <li>Von hier aus ordnest du Kunde, Vorgang, Einkauf oder Reparatur sauber zu.</li>
+  <li>Uploads landen erst hier sinnvoll, wenn der fachliche Bezug stimmt.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>Voucher {{ row.sevdesk_voucher_id or ('VOU-' ~ '%04d'|format(row.id)) }}</h1>
+      <div class="hint">{{ incoming_voucher_status_label(row.status) }}</div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      {% if role_flags.is_admin %}<form method="post" action="/einkauf/voucher/{{ row.id }}/sevdesk" class="inline"><button class="btn primary" type="submit">In sevDesk erzeugen</button></form>{% endif %}
+      {% if role_flags.is_admin %}<a class="btn" href="/finanzen/zahlungen/vorbereiten?target_type=voucher&target_id={{ row.id }}">Zahlung buchen</a>{% endif %}
+      <a class="btn" href="/einkauf/voucher">Zurück</a>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box"><div class="box-title">Kopf</div><div class="box-body">
+      <div><b>Lieferant:</b> {{ supplier.name if supplier else '-' }}</div>
+      <div><b>Eingangsrechnung:</b> {% if purchase_invoice %}<a href="/einkauf/rechnungen/{{ purchase_invoice.id }}">{{ purchase_invoice.invoice_no }}</a>{% else %}-{% endif %}</div>
+      <div><b>Beschreibung:</b> {{ row.description or '-' }}</div>
+      <div><b>Belegdatum:</b> {{ format_date(row.voucher_date) }}</div>
+      <div><b>Fällig:</b> {{ format_date(row.due_date) }}</div>
+      <div><b>Netto:</b> {{ row.net_total|eur_cents if row.net_total is not none else '-' }}</div>
+      <div><b>Steuer:</b> {{ row.tax_total|eur_cents if row.tax_total is not none else '-' }}</div>
+      <div><b>Brutto:</b> {{ row.gross_total|eur_cents if row.gross_total is not none else '-' }}</div>
+    </div></div>
+    <div class="box"><div class="box-title">sevDesk</div><div class="box-body">
+      <div><b>Voucher-ID:</b> {{ row.sevdesk_voucher_id or '-' }}</div>
+      <div><b>Status:</b> {{ row.sevdesk_voucher_status or '-' }}</div>
+      <div><b>Paperless:</b> {{ row.paperless_document_id or '-' }}</div>
+      <div><b>Link:</b> {% if external_link and external_link.deep_link_url %}<a href="{{ external_link.deep_link_url }}" target="_blank" rel="noopener">sevDesk API</a>{% else %}-{% endif %}</div>
+    </div></div>
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 120px 120px 90px 120px 120px 1.6fr 120px;">
+      <div>DATEV-Konto</div><div>Steuerregel</div><div>Steuer %</div><div>Netto</div><div>Brutto</div><div>Kommentar</div><div>Kostenstelle</div>
+    </div>
+    {% for line in lines %}
+      <div class="tr" style="grid-template-columns: 120px 120px 90px 120px 120px 1.6fr 120px;">
+        <div>{{ line.account_datev_id or '-' }}</div><div>{{ line.tax_rule_id or '-' }}</div><div>{{ (line.tax_rate * 100)|round(2) }}%</div><div>{{ line.sum_net|eur_cents if line.sum_net is not none else '-' }}</div><div>{{ line.sum_gross|eur_cents if line.sum_gross is not none else '-' }}</div><div>{{ line.comment or '-' }}</div><div>{{ line.cost_center_id or '-' }}</div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  <h1>{{ page_title }}</h1>
+  {{ f.render_errors(fe) }}
+
+  <div class="box">
+    <div class="box-title">Kunde</div>
+    <div class="box-body">{{ customer.customer_no_internal }} | {{ customer_party.display_name }}</div>
+  </div>
+
+  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}" style="margin-top:10px;">
+    <div class="grid3">
+      <div>
+        <label for="crm_contact_display_name">Anzeigename</label>
+        <input id="crm_contact_display_name" type="text" name="display_name" value="{{ f.old(fd, 'display_name', party.display_name if party else '') }}" class="{% if fe.get('display_name') %}is-error{% endif %}" required>
+        {{ f.field_error(fe, 'display_name') }}
+      </div>
+      <div>
+        <label for="crm_contact_first_name">Vorname</label>
+        <input id="crm_contact_first_name" type="text" name="first_name" value="{{ f.old(fd, 'first_name', party.first_name if party else '') }}">
+      </div>
+      <div>
+        <label for="crm_contact_last_name">Nachname</label>
+        <input id="crm_contact_last_name" type="text" name="last_name" value="{{ f.old(fd, 'last_name', party.last_name if party else '') }}">
+      </div>
+      <div>
+        <label for="crm_contact_role_label">Rolle</label>
+        <input id="crm_contact_role_label" type="text" name="role_label" value="{{ f.old(fd, 'role_label', row.role_label if row else '') }}" placeholder="z. B. Disposition, Hausmeister">
+      </div>
+      <div>
+        <label for="crm_contact_email">E-Mail</label>
+        <input id="crm_contact_email" type="email" name="email" value="{{ f.old(fd, 'email', row.email if row else '') }}">
+      </div>
+      <div>
+        <label for="crm_contact_phone">Telefon</label>
+        <input id="crm_contact_phone" type="text" name="phone" value="{{ f.old(fd, 'phone', row.phone if row else '') }}">
+      </div>
+      <div class="row" style="align-items:end;">
+        <label class="check"><input type="checkbox" name="active" {{ f.is_checked(fd, 'active', row.active if row else True) }}> Aktiv</label>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/crm/kunden/{{ customer.id }}">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Kontaktpersonen bleiben lokal dem Master-Kunden zugeordnet.</li>
+  <li>Rolle, Mail und Telefon helfen später bei Vorgängen und Kommunikationszuordnung.</li>
+</ul>
+{% endblock %}

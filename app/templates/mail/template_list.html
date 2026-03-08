@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Mail-Vorlagen</h1>
+
+  {% for row in rows %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">{{ row.name }}</div>
+      <div class="box-body">
+        <form method="post" action="/mail/vorlagen" class="form">
+          <input type="hidden" name="template_id" value="{{ row.id }}">
+          <label>Schlüssel</label>
+          <input type="text" name="template_key" value="{{ row.template_key }}">
+          <label>Name</label>
+          <input type="text" name="name" value="{{ row.name }}">
+          <label>Betreff</label>
+          <input type="text" name="subject_template" value="{{ row.subject_template }}">
+          <label>Text</label>
+          <textarea name="body_template" rows="8">{{ row.body_template }}</textarea>
+          <label><input type="checkbox" name="active"{% if row.active %} checked{% endif %}> Aktiv</label>
+          <button class="btn primary" type="submit">Vorlage speichern</button>
+        </form>
+      </div>
+    </div>
+  {% endfor %}
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Neue Vorlage</div>
+    <div class="box-body">
+      <form method="post" action="/mail/vorlagen" class="form">
+        <label>Schlüssel</label>
+        <input type="text" name="template_key" value="">
+        <label>Name</label>
+        <input type="text" name="name" value="">
+        <label>Betreff</label>
+        <input type="text" name="subject_template" value="">
+        <label>Text</label>
+        <textarea name="body_template" rows="8"></textarea>
+        <label><input type="checkbox" name="active" checked> Aktiv</label>
+        <button class="btn" type="submit">Neue Vorlage anlegen</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Vorlagen halten wiederkehrende Mails konsistent und schnell verfügbar.</li>
+  <li>Platzhalter wie {{ '{{ case_no }}' }} oder {{ '{{ invoice_no }}' }} werden beim Verfassen ersetzt.</li>
+  <li>Inaktive Vorlagen bleiben erhalten, tauchen aber nicht mehr als Standard auf.</li>
+</ul>
+{% endblock %}

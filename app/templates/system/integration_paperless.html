@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Integrationen: Paperless-ngx</h1>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="/system/integrationen/paperless" class="form" data-first-error="{% if fe.get('base_url') %}paperless_base_url{% endif %}">
+    <label class="check">
+      <input type="checkbox" name="enabled" {% if f.is_checked(fd, 'enabled', settings.enabled) %}checked{% endif %}>
+      Paperless aktivieren
+    </label>
+
+    <label for="paperless_base_url">Basis-URL</label>
+    <input id="paperless_base_url" type="url" name="base_url" value="{{ f.old(fd, 'base_url', settings.base_url) }}" placeholder="https://paperless.local" class="{% if fe.get('base_url') %}is-error{% endif %}">
+    {{ f.field_error(fe, 'base_url') }}
+
+    <label for="paperless_token">API-Token</label>
+    <input id="paperless_token" type="password" name="token" value="" placeholder="Leer lassen = unverändert" autocomplete="off">
+    <div class="hint">Token-Status: {% if settings.token_set %}gesetzt{% else %}nicht gesetzt{% endif %}</div>
+
+    <div class="grid3">
+      <div>
+        <label for="paperless_tags">Standard-Tags (kommagetrennt)</label>
+        <input id="paperless_tags" type="text" name="tags" value="{{ f.old(fd, 'tags', settings.tags) }}" placeholder="reparatur,ersatzteil">
+      </div>
+      <div>
+        <label for="paperless_document_type">Standard-Dokumenttyp (ID)</label>
+        <input id="paperless_document_type" type="text" name="document_type" value="{{ f.old(fd, 'document_type', settings.document_type) }}" placeholder="z. B. 3">
+      </div>
+      <div>
+        <label for="paperless_correspondent">Standard-Korrespondent (ID)</label>
+        <input id="paperless_correspondent" type="text" name="correspondent" value="{{ f.old(fd, 'correspondent', settings.correspondent) }}" placeholder="z. B. 5">
+      </div>
+    </div>
+
+    <label for="paperless_mode">Modus</label>
+    <select id="paperless_mode" name="mode">
+      <option value="poll_api" {% if f.old(fd, 'mode', settings.mode) == 'poll_api' %}selected{% endif %}>Abruf per API</option>
+      <option value="manual_link_only" {% if f.old(fd, 'mode', settings.mode) == 'manual_link_only' %}selected{% endif %}>Nur manuelle Verknüpfung</option>
+      <option value="consume_outbound_only" {% if f.old(fd, 'mode', settings.mode) == 'consume_outbound_only' %}selected{% endif %}>Nur ausgehende Archivierung</option>
+    </select>
+
+    <label class="check">
+      <input type="checkbox" name="repair_auto_paperless" {% if f.is_checked(fd, 'repair_auto_paperless', settings.repair_auto_paperless) %}checked{% endif %}>
+      Reparatur-Mail-Anhänge automatisch an Paperless senden
+    </label>
+    <label class="check">
+      <input type="checkbox" name="spare_auto_paperless" {% if f.is_checked(fd, 'spare_auto_paperless', settings.spare_auto_paperless) %}checked{% endif %}>
+      Fotos aus mobiler Ersatzteil-Erfassung automatisch an Paperless senden
+    </label>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <button class="btn" type="submit" formaction="/system/integrationen/paperless/test">Verbindung testen</button>
+      <button class="btn" type="submit" formaction="/system/integrationen/paperless/test_upload">Test-Upload</button>
+      <a class="btn" href="/einkauf/dokumente">Dokumenteneingang</a>
+      <a class="btn" href="/system/sync-log">Abgleichprotokoll</a>
+      <a class="btn" href="/system/standards">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Ohne Base-URL und Token bleibt die Integration deaktiviert.</li>
+  <li>Der Test-Upload legt ein kleines Testdokument in Paperless an.</li>
+  <li>Die Auto-Upload-Schalter sind optional und jederzeit abschaltbar.</li>
+</ul>
+{% endblock %}

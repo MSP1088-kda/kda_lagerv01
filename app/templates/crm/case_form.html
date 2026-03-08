@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  <h1>{{ page_title }}</h1>
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+    <div class="grid3">
+      <div>
+        <label for="crm_case_title">Titel</label>
+        <input id="crm_case_title" type="text" name="title" value="{{ f.old(fd, 'title', row.title if row else '') }}" class="{% if fe.get('title') %}is-error{% endif %}" required>
+        {{ f.field_error(fe, 'title') }}
+      </div>
+      <div>
+        <label for="crm_case_status_select">Status</label>
+        <select id="crm_case_status_select" name="status" class="{% if fe.get('status') %}is-error{% endif %}">
+          {% for item in status_choices %}
+            <option value="{{ item }}" {% if f.old(fd, 'status', row.status if row else 'open') == item %}selected{% endif %}>{{ crm_case_status_label(item) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="crm_case_priority_select">Priorität</label>
+        <select id="crm_case_priority_select" name="priority" class="{% if fe.get('priority') %}is-error{% endif %}">
+          {% for item in priority_choices %}
+            <option value="{{ item }}" {% if f.old(fd, 'priority', row.priority if row else 'normal') == item %}selected{% endif %}>{{ crm_case_priority_label(item) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <label for="crm_case_note">Notiz</label>
+    <textarea id="crm_case_note" name="note" rows="3">{{ f.old(fd, 'note', row.note if row else '') }}</textarea>
+
+    <h2>Leistungsdreieck</h2>
+    <div class="grid3">
+      <div>
+        <label for="crm_case_ordering_party_id">Auftraggeber</label>
+        <select id="crm_case_ordering_party_id" name="ordering_party_id" class="{% if fe.get('ordering_party_id') %}is-error{% endif %}">
+          <option value="0">Bitte wählen</option>
+          {% for item in customer_options %}
+            <option value="{{ item.id }}" {% if f.old(fd, 'ordering_party_id', selected_ordering_party_id)|int == item.id %}selected{% endif %}>{{ item.label }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'ordering_party_id') }}
+      </div>
+      <div>
+        <label for="crm_case_service_location_id">Leistungsort</label>
+        <select id="crm_case_service_location_id" name="service_location_id" class="{% if fe.get('service_location_id') %}is-error{% endif %}">
+          <option value="0">Bitte wählen</option>
+          {% for item in location_options %}
+            <option value="{{ item.id }}" {% if f.old(fd, 'service_location_id', selected_service_location_id)|int == item.id %}selected{% endif %}>{{ item.label }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'service_location_id') }}
+      </div>
+      <div>
+        <label for="crm_case_invoice_recipient_id">Rechnungsempfänger</label>
+        <select id="crm_case_invoice_recipient_id" name="invoice_recipient_id" class="{% if fe.get('invoice_recipient_id') %}is-error{% endif %}">
+          <option value="0">Wie Auftraggeber</option>
+          {% for item in customer_options %}
+            <option value="{{ item.id }}" {% if f.old(fd, 'invoice_recipient_id', selected_invoice_recipient_id)|int == item.id %}selected{% endif %}>{{ item.label }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'invoice_recipient_id') }}
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      {% if row %}
+        <a class="btn" href="/crm/vorgaenge/{{ row.id }}">Zurück</a>
+      {% else %}
+        <a class="btn" href="/crm/vorgaenge">Zurück</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Ein Vorgang kann Auftraggeber, Leistungsort und Rechnungsempfänger getrennt halten.</li>
+  <li>Wenn kein Rechnungsempfänger gewählt wird, übernimmt das System den Auftraggeber.</li>
+</ul>
+{% endblock %}

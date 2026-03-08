@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Konditionen</h1>
+  <div class="row" style="margin-bottom:10px;">
+    <a class="btn primary" href="/einkauf/konditionen/import">SEG Jahresvereinbarung importieren</a>
+  </div>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {{ f.render_errors(fe) }}
+
+  <form method="get" action="/einkauf/konditionen" class="form compact">
+    <div class="grid2">
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">Alle</option>
+          {% for s in suppliers %}
+            <option value="{{ s.id }}" {% if supplier_id|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="row right">
+        <button class="btn primary" type="submit">Filtern</button>
+        <a class="btn" href="/einkauf/konditionen">Zurücksetzen</a>
+      </div>
+    </div>
+  </form>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">{% if edit_row %}Konditionssatz bearbeiten{% else %}Neuer Konditionssatz{% endif %}</div>
+    <div class="box-body">
+      <form method="post" action="/einkauf/konditionen" class="form compact">
+        <input type="hidden" name="condition_set_id" value="{{ edit_row.id if edit_row else 0 }}">
+        <div class="grid3">
+          <div>
+            <label>Lieferant</label>
+            <select name="supplier_id" required>
+              <option value="0">Bitte wählen</option>
+              {% for s in suppliers %}
+                <option value="{{ s.id }}" {% if f.old(fd, 'supplier_id', edit_row.supplier_id if edit_row else supplier_id)|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Name</label>
+            <input type="text" name="name" value="{{ f.old(fd, 'name', edit_row.name if edit_row else '') }}" required>
+          </div>
+          <div>
+            <label>Gültig ab</label>
+            <input type="date" name="valid_from" value="{{ f.old(fd, 'valid_from', edit_row.valid_from.strftime('%Y-%m-%d') if edit_row and edit_row.valid_from else '') }}">
+          </div>
+          <div>
+            <label>Gültig bis</label>
+            <input type="date" name="valid_to" value="{{ f.old(fd, 'valid_to', edit_row.valid_to.strftime('%Y-%m-%d') if edit_row and edit_row.valid_to else '') }}">
+          </div>
+          <div>
+            <label>Zahlungsziel (Tage)</label>
+            <input type="number" name="payment_term_days" min="0" value="{{ f.old(fd, 'payment_term_days', edit_row.payment_term_days if edit_row else '') }}">
+          </div>
+          <div>
+            <label>Skonto %</label>
+            <input type="text" name="skonto_percent" value="{{ f.old(fd, 'skonto_percent', edit_row.skonto_percent if edit_row and edit_row.skonto_percent is not none else '') }}">
+          </div>
+          <div>
+            <label>Grundrabatt %</label>
+            <input type="text" name="basic_discount_percent" value="{{ f.old(fd, 'basic_discount_percent', edit_row.basic_discount_percent if edit_row and edit_row.basic_discount_percent is not none else '') }}">
+          </div>
+          <div>
+            <label>Zusatzrabatt %</label>
+            <input type="text" name="extra_discount_percent" value="{{ f.old(fd, 'extra_discount_percent', edit_row.extra_discount_percent if edit_row and edit_row.extra_discount_percent is not none else '') }}">
+          </div>
+          <div>
+            <label>Frachtfrei ab</label>
+            <input type="text" name="freight_free_from" value="{{ f.old(fd, 'freight_free_from', (edit_row.freight_free_from|eur_cents).replace(' €','') if edit_row and edit_row.freight_free_from is not none else '') }}" placeholder="0,00">
+          </div>
+          <div>
+            <label>Mindestbestellwert</label>
+            <input type="text" name="min_order_value" value="{{ f.old(fd, 'min_order_value', (edit_row.min_order_value|eur_cents).replace(' €','') if edit_row and edit_row.min_order_value is not none else '') }}" placeholder="0,00">
+          </div>
+          <div>
+            <label>Bonusziel</label>
+            <input type="text" name="bonus_target_value" value="{{ f.old(fd, 'bonus_target_value', (edit_row.bonus_target_value|eur_cents).replace(' €','') if edit_row and edit_row.bonus_target_value is not none else '') }}" placeholder="0,00">
+          </div>
+          <div>
+            <label>Bonus %</label>
+            <input type="text" name="bonus_percent" value="{{ f.old(fd, 'bonus_percent', edit_row.bonus_percent if edit_row and edit_row.bonus_percent is not none else '') }}">
+          </div>
+          <div>
+            <label>Geltungsbereich</label>
+            <select name="applies_to">
+              <option value="all" {% if f.old(fd, 'applies_to', edit_row.applies_to if edit_row else 'all') == 'all' %}selected{% endif %}>Alles</option>
+              <option value="manufacturer" {% if f.old(fd, 'applies_to', edit_row.applies_to if edit_row else 'all') == 'manufacturer' %}selected{% endif %}>Hersteller</option>
+              <option value="device_kind" {% if f.old(fd, 'applies_to', edit_row.applies_to if edit_row else 'all') == 'device_kind' %}selected{% endif %}>Geräteart</option>
+              <option value="product_group" {% if f.old(fd, 'applies_to', edit_row.applies_to if edit_row else 'all') == 'product_group' %}selected{% endif %}>Produktgruppe</option>
+            </select>
+          </div>
+          <div>
+            <label>Hersteller</label>
+            <select name="manufacturer_id">
+              <option value="0">-</option>
+              {% for m in manufacturers %}
+                <option value="{{ m.id }}" {% if f.old(fd, 'manufacturer_id', edit_row.manufacturer_id if edit_row else 0)|int == m.id %}selected{% endif %}>{{ m.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Geräteart</label>
+            <select name="device_kind_id">
+              <option value="0">-</option>
+              {% for k in device_kinds %}
+                <option value="{{ k.id }}" {% if f.old(fd, 'device_kind_id', edit_row.device_kind_id if edit_row else 0)|int == k.id %}selected{% endif %}>{{ k.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" name="active" {% if f.is_checked(fd, 'active', edit_row.active if edit_row else True) %}checked{% endif %}> Aktiv</label>
+        <button class="btn primary" type="submit">Konditionssatz speichern</button>
+        {% if edit_row %}<a class="btn" href="/einkauf/konditionen?supplier_id={{ supplier_id }}">Abbrechen</a>{% endif %}
+      </form>
+    </div>
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 1.2fr 1.1fr 120px 120px 140px 140px 160px 120px;">
+      <div>Lieferant / Name</div>
+      <div>Geltung</div>
+      <div>Skonto</div>
+      <div>Rabatte</div>
+      <div>Bonusziel</div>
+      <div>Fehlt</div>
+      <div>Periode</div>
+      <div>Status</div>
+    </div>
+    {% for row in rows %}
+      {% set progress = progress_by_id.get(row.id) %}
+      <div class="tr" style="grid-template-columns: 1.2fr 1.1fr 120px 120px 140px 140px 160px 120px; align-items:start;">
+        <div>
+          <b>{{ suppliers_by_id.get(row.supplier_id).name if suppliers_by_id.get(row.supplier_id) else '-' }}</b><br>
+          {{ row.name }}
+          <div class="muted">{{ row.brand_label or '-' }}{% if row.agreement_version %} | {{ row.agreement_version }}{% endif %}</div>
+          <div style="margin-top:6px;" class="row">
+            <a class="btn small" href="/einkauf/konditionen/{{ row.id }}">Details</a>
+            <a class="btn small" href="/einkauf/konditionen?supplier_id={{ supplier_id or row.supplier_id }}&edit_id={{ row.id }}">Bearbeiten</a>
+          </div>
+        </div>
+        <div>{{ row.applies_to }}</div>
+        <div>{{ '%.2f'|format(row.skonto_percent or 0) }} %</div>
+        <div>{{ '%.2f'|format((row.basic_discount_percent or 0) + (row.extra_discount_percent or 0)) }} %</div>
+        <div>{{ row.bonus_target_value|eur_cents if row.bonus_target_value else '-' }}</div>
+        <div>{{ progress.missing_value|eur_cents if progress and progress.missing_value is not none else '-' }}</div>
+        <div>{{ progress.period_key if progress else '-' }}</div>
+        <div>{{ 'Aktiv' if row.active else 'Inaktiv' }}</div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Konditionssätze vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Konditionssätze sind versioniert und an Lieferanten gebunden.</li>
+  <li>Das Zieltracking basiert standardmäßig auf Wareneingängen.</li>
+  <li>Für Hersteller oder Gerätearten kann der Geltungsbereich eingeschränkt werden.</li>
+</ul>
+{% endblock %}

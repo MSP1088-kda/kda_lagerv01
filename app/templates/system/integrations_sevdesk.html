@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Integration: sevDesk</h1>
+
+  <div class="grid2" style="align-items:start;">
+    <div class="box">
+      <div class="box-title">Verbindung</div>
+      <div class="box-body">
+        <form method="post" action="/system/integrationen/sevdesk" class="form">
+          <label><input type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %}> Aktiv</label>
+          <label>Base-URL</label>
+          <input type="text" name="base_url" value="{{ settings.base_url or 'https://my.sevdesk.de/api/v1' }}">
+          <label>API-Token</label>
+          <input type="password" name="api_token" value="">
+          <div class="hint">{% if settings.api_token_set %}Token ist gesetzt.{% else %}Noch kein Token gespeichert.{% endif %}</div>
+          <div class="grid3">
+            <div>
+              <label>Standard-Kontaktperson</label>
+              <input type="text" name="default_contact_person_id" value="{{ settings.default_contact_person_id or '' }}">
+            </div>
+            <div>
+              <label>Standard-Steuerregel</label>
+              <input type="text" name="default_tax_rule_id" value="{{ settings.default_tax_rule_id or '' }}">
+            </div>
+            <div>
+              <label>Währung</label>
+              <input type="text" name="default_currency" value="{{ settings.default_currency or 'EUR' }}">
+            </div>
+          </div>
+          <label>Wirtschaftsjahr beginnt</label>
+          <input type="date" name="accounting_year_begin" value="{{ export_config.accountingYearBegin or '' }}">
+          <label><input type="checkbox" name="enshrined_only" {% if export_config.enshrinedOnly %}checked{% endif %}> Nur enshrined Belege exportieren</label>
+          <div class="row" style="gap:8px; flex-wrap:wrap;">
+            <button class="btn primary" type="submit">Speichern</button>
+            <button class="btn" type="submit" formaction="/system/integrationen/sevdesk/test">Verbindung testen</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Status</div>
+      <div class="box-body">
+        <div><b>Aktiv:</b> {{ 'Ja' if settings.enabled else 'Nein' }}</div>
+        <div><b>Token:</b> {{ 'Gesetzt' if settings.api_token_set else 'Fehlt' }}</div>
+        <div><b>Bookkeeping-Version:</b> {{ settings.bookkeeping_system_version or '-' }}</div>
+        <div><b>Export-Job-Historie:</b> {{ export_jobs|length }}</div>
+        {% if test_result %}
+          <div style="margin-top:12px;"><b>Test:</b> {{ test_result.message }}</div>
+          {% if test_result.bookkeeping_system_version %}<div><b>Version:</b> {{ test_result.bookkeeping_system_version }}</div>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Letzte Export-Jobs</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 140px 140px 180px 1fr;">
+          <div>Aktion</div>
+          <div>Job-ID</div>
+          <div>Zeit</div>
+          <div>Status</div>
+        </div>
+        {% for row in export_jobs %}
+          <div class="tr" style="grid-template-columns: 140px 140px 180px 1fr;">
+            <div>{{ row.action or '-' }}</div>
+            <div>{{ row.job_id or '-' }}</div>
+            <div>{{ row.created_at or '-' }}</div>
+            <div>{{ row.progress.status or row.download_hash or '-' }}</div>
+          </div>
+        {% endfor %}
+        {% if not export_jobs %}<div class="muted">Noch keine sevDesk-Exportjobs gespeichert.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

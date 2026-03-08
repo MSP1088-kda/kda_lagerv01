@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>CRM: Kunden</h1>
+
+  <form method="get" action="/crm/kunden" class="form compact">
+    <div class="grid3">
+      <div>
+        <label for="crm_customer_q">Suche</label>
+        <input id="crm_customer_q" type="text" name="q" value="{{ q or '' }}" placeholder="Name, Kundennummer, Ort, Mail, Telefon">
+      </div>
+      <div>
+        <label for="crm_customer_status">Status</label>
+        <select id="crm_customer_status" name="status">
+          <option value="">Alle</option>
+          {% for item in status_choices %}
+            <option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ crm_customer_status_label(item) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="row" style="align-items:end;">
+        <button class="btn primary" type="submit">Filtern</button>
+        {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/neu">Kunde anlegen</a>{% endif %}
+      </div>
+    </div>
+  </form>
+
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 140px 1.8fr 1fr 140px 160px;">
+      <div>Kundennummer</div>
+      <div>Name</div>
+      <div>Ort</div>
+      <div>Status</div>
+      <div>Aktionen</div>
+    </div>
+    {% for item in rows %}
+      <div class="tr" style="grid-template-columns: 140px 1.8fr 1fr 140px 160px; align-items:start;">
+        <div>{{ item.customer.customer_no_internal }}</div>
+        <div>
+          <div><b>{{ item.party.display_name }}</b></div>
+          {% if item.default_address and item.default_address.email %}<div class="muted">{{ item.default_address.email }}</div>{% endif %}
+        </div>
+        <div>{{ item.city_label or '-' }}</div>
+        <div>{{ item.status_label }}</div>
+        <div>
+          <a class="btn small" href="/crm/kunden/{{ item.customer.id }}">Details</a>
+          {% if role_flags.is_admin %}<a class="btn small" href="/crm/kunden/{{ item.customer.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}
+      <div class="muted">Keine Kunden gefunden.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Suche prüft interne Kundennummer, Name, Ort, Mail und Telefon.</li>
+  <li>Über die Detailseite pflegst du Adressen, Standorte, Kontaktpersonen und externe Identitäten.</li>
+  <li>Vorgänge greifen auf diese Kundenstammdaten direkt zu.</li>
+</ul>
+{% endblock %}

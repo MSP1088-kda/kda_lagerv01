@@ -2,6 +2,7 @@
 {% block content %}
 <div class="panel dashboard" data-dashboard-hotkeys="1">
   <h1>Übersicht</h1>
+  {% set einkauf_group = nav_group_lookup.get('einkauf') %}
 
   <form method="get" action="/catalog/products" class="form compact">
     <label for="q">Suche</label>
@@ -34,6 +35,107 @@
       <div class="box-body"><b>{{ stats.open_repairs }}</b></div>
     </div>
   </div>
+
+  {% if purchase_stats and einkauf_group and einkauf_group.get('items') %}
+  <div class="dashboard-section">
+    <h2>Einkauf auf einen Blick</h2>
+    <div class="hint">Offene Einkaufsvorgänge und direkte Wege in Bestellungen, Wareneingänge und Rechnungen.</div>
+
+    <div class="dashboard-einkauf-actions">
+      {% for item in einkauf_group["items"] %}
+        <a class="dashboard-link-card" href="{{ item.path }}">
+          <strong>{{ item.label_de }}</strong>
+          {% if item.path_base == '/einkauf/bestellungen' %}
+          <span>{{ purchase_stats.open_orders }} offen</span>
+          {% elif item.path_base == '/einkauf/wareneingaenge' %}
+          <span>{{ purchase_stats.open_receipts }} offen</span>
+          {% elif item.path_base == '/einkauf/rechnungen' %}
+          <span>{{ purchase_stats.unmatched_invoices }} zu prüfen</span>
+          {% elif item.path_base == '/einkauf/dokumente' %}
+          <span>{{ purchase_stats.new_documents }} neu</span>
+          {% elif item.path_base == '/einkauf/konditionsziele' %}
+          <span>{{ purchase_stats.risky_conditions }} kritisch</span>
+          {% elif item.path_base == '/einkauf/konditionen' %}
+          <span>Konditionssätze pflegen</span>
+          {% else %}
+          <span>Direkt öffnen</span>
+          {% endif %}
+        </a>
+      {% endfor %}
+    </div>
+
+    <div class="grid3 dashboard-stats">
+      <div class="box">
+        <div class="box-title">Offene Bestellungen</div>
+        <div class="box-body"><b>{{ purchase_stats.open_orders }}</b></div>
+      </div>
+      <div class="box">
+        <div class="box-title">Offene Wareneingänge</div>
+        <div class="box-body"><b>{{ purchase_stats.open_receipts }}</b></div>
+      </div>
+      <div class="box">
+        <div class="box-title">Rechnungen ohne Zuordnung</div>
+        <div class="box-body"><b>{{ purchase_stats.unmatched_invoices }}</b></div>
+      </div>
+      <div class="box">
+        <div class="box-title">Preisabweichungen</div>
+        <div class="box-body"><b>{{ purchase_stats.price_deviations }}</b></div>
+      </div>
+      <div class="box">
+        <div class="box-title">Neue Dokumente</div>
+        <div class="box-body"><b>{{ purchase_stats.new_documents }}</b></div>
+      </div>
+      <div class="box">
+        <div class="box-title">Konditionsziele in Gefahr</div>
+        <div class="box-body"><b>{{ purchase_stats.risky_conditions }}</b></div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if ai_stats %}
+  <div class="dashboard-section">
+    <h2>KI auf einen Blick</h2>
+    <div class="hint">Offene Freigaben, kritische Funde und die letzten KI-Vorschlaege.</div>
+
+    <div class="grid3 dashboard-stats">
+      <div class="box">
+        <div class="box-title">KI-Freigaben offen</div>
+        <div class="box-body">
+          <b>{{ ai_stats.open_reviews }}</b>
+          <div style="margin-top:8px;"><a class="btn small" href="/system/ki-freigaben">Freigaben öffnen</a></div>
+        </div>
+      </div>
+      <div class="box">
+        <div class="box-title">Kritische Funde</div>
+        <div class="box-body">
+          <b>{{ ai_stats.critical_findings }}</b>
+          <div style="margin-top:8px;"><a class="btn small" href="/system/ki-supervisor">Supervisor öffnen</a></div>
+        </div>
+      </div>
+      <div class="box">
+        <div class="box-title">KI-Log</div>
+        <div class="box-body">
+          <a class="btn small" href="/system/ki-log">Letzte Vorschläge prüfen</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Letzte Vorschläge</div>
+      <div class="box-body">
+        {% for item in ai_stats.recent %}
+          <div style="margin-bottom:8px;">
+            <div><b>{{ item.label }}</b> | {{ ai_status_label(item.row.status) }} | {{ ai_risk_label(item.row.risk_class) }}</div>
+            <div class="muted">{{ format_date(item.row.created_at) }}</div>
+            {% if item.object_url %}<div><a href="{{ item.object_url }}">Bezugsobjekt öffnen</a></div>{% endif %}
+          </div>
+        {% endfor %}
+        {% if not ai_stats.recent %}<div class="muted">Noch keine KI-Vorschläge protokolliert.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
 
@@ -41,6 +143,8 @@
 <ul>
   <li>Die Übersicht ist auf schnelle Navigation reduziert.</li>
   <li>Mit den Tasten 1-6 springst du direkt in Kernfunktionen.</li>
+  <li>Unter Einkauf siehst du offene Vorgänge und erreichst alle Einkaufspunkte direkt.</li>
+  <li>Der KI-Block zeigt nur Prioritäten und Freigaben, nicht jede Kleinigkeit.</li>
   <li>Strg+K öffnet die Kommando-Palette auf jeder Seite.</li>
 </ul>
 {% endblock %}

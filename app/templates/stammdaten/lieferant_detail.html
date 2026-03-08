@@ -14,7 +14,72 @@
       <div><b>Notiz:</b> {{ row.note or '-' }}</div>
       <div class="row">
         <a class="btn small" href="/stammdaten/lieferanten/{{ row.id }}/edit">Bearbeiten</a>
+        <a class="btn small" href="/einkauf/konditionen?supplier_id={{ row.id }}">Konditionen</a>
+        {% if outsmart_enabled %}
+        <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/outsmart/export" class="inline">
+          <button class="btn small" type="submit">An OutSmart senden</button>
+        </form>
+        {% endif %}
         <a class="btn small" href="/stammdaten/lieferanten">Zurück zur Liste</a>
+      </div>
+      {% if outsmart_relation_link %}
+      <div class="hint">OutSmart-Link: {{ outsmart_relation_link.external_key }}{% if outsmart_relation_link.external_row_id %} | Zeile {{ outsmart_relation_link.external_row_id }}{% endif %}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Konditionen</div>
+    <div class="box-body">
+      {% if condition_summary.next_target %}
+        <div><b>Zum nächsten Ziel fehlen:</b> {{ condition_summary.next_target.missing_value|eur_cents if condition_summary.next_target.missing_value else '0,00 €' }}</div>
+        <div><b>Bonusvorteil bei Zielerreichung:</b> {{ condition_summary.next_target.bonus_value|eur_cents if condition_summary.next_target.bonus_value else '0,00 €' }}</div>
+      {% else %}
+        <div class="muted">Keine aktiven Konditionsziele vorhanden.</div>
+      {% endif %}
+      <div class="table" style="margin-top:10px;">
+        <div class="tr th" style="grid-template-columns: 1.2fr 140px 140px 140px 120px;">
+          <div>Name</div>
+          <div>Ziel</div>
+          <div>Aktuell</div>
+          <div>Fehlt</div>
+          <div>Fortschritt</div>
+        </div>
+        {% for item in condition_summary["items"] %}
+          <div class="tr" style="grid-template-columns: 1.2fr 140px 140px 140px 120px;">
+            <div>{{ item.condition_set.name }}</div>
+            <div>{{ item.target_value|eur_cents if item.target_value else '-' }}</div>
+            <div>{{ item.current_value|eur_cents if item.current_value else '0,00 €' }}</div>
+            <div>{{ item.missing_value|eur_cents if item.missing_value else '0,00 €' }}</div>
+            <div>{{ item.progress_percent }} %</div>
+          </div>
+        {% endfor %}
+        {% if not condition_summary["items"] %}<div class="muted">Keine Konditionssätze gepflegt.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">EK-Übersicht</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 1.6fr 140px 140px 140px 120px;">
+          <div>Produkt</div>
+          <div>Letzter EK</div>
+          <div>Durchschnitts-EK</div>
+          <div>Letzter Kauf</div>
+          <div>Vorgänge</div>
+        </div>
+        {% for item in price_overview %}
+          <div class="tr" style="grid-template-columns: 1.6fr 140px 140px 140px 120px;">
+            <div>{% if item.product %}<a href="/catalog/products/{{ item.product.id }}">{{ item.product.name }}</a>{% else %}-{% endif %}</div>
+            <div>{{ item.last_ek|eur_cents if item.last_ek is not none else '-' }}</div>
+            <div>{{ item.avg_ek|eur_cents if item.avg_ek is not none else '-' }}</div>
+            <div>{{ item.last_date.strftime('%d.%m.%Y') if item.last_date else '-' }}</div>
+            <div>{{ item.row_count }}</div>
+          </div>
+        {% endfor %}
+        {% if not price_overview %}<div class="muted">Noch keine EK-Historie für diesen Lieferanten.</div>{% endif %}
       </div>
     </div>
   </div>

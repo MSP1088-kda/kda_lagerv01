@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel mobile-form-shell" data-page="mobile-repair-quick">
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  <h1>Mobile Reparatur</h1>
+
+  {% if done and order %}
+  <div class="flash-item flash-info">Reparaturauftrag {{ order.repair_no or ('REP-' ~ '%06d'|format(order.id)) }} gespeichert.</div>
+  <div class="mobile-product-box">
+    <div class="mobile-product-title">{{ product.name if product else 'Artikel' }}</div>
+    <div class="muted">{{ product.material_no if product and product.material_no else '-' }}</div>
+  </div>
+  <div class="mobile-home-actions">
+    <a class="btn mobile-primary-action" href="/m/ersatzteil">Nächstes Teil erfassen</a>
+    <a class="btn primary mobile-primary-action" href="/inventory/reparaturen/{{ order.id }}">Reparaturdetails öffnen</a>
+  </div>
+  {% else %}
+  {{ f.render_errors(fe) }}
+
+  <div class="mobile-product-box">
+    <div class="mobile-product-title">{{ product.name if product else 'Artikel fehlt' }}</div>
+    <div class="muted">{{ product.material_no if product and product.material_no else '-' }}</div>
+  </div>
+
+  <form method="post" action="/m/reparatur" class="form compact" data-first-error="{{ first_error_field_id or '' }}">
+    <input type="hidden" name="product_id" value="{{ product.id if product else 0 }}">
+    <input type="hidden" name="source_warehouse_id" value="{{ f.old(fd, 'source_warehouse_id', source_warehouse_id) }}">
+
+    <label for="m_repair_supplier_id">Lieferant/Dienstleister *</label>
+    <select id="m_repair_supplier_id" name="supplier_id" class="{% if fe.get('supplier_id') %}is-error{% endif %}" required>
+      <option value="0">Bitte wählen</option>
+      {% for s in suppliers %}
+      <option value="{{ s.id }}" {% if f.old(fd, 'supplier_id', default_supplier_id)|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+      {% endfor %}
+    </select>
+    {{ f.field_error(fe, 'supplier_id') }}
+
+    <label for="m_repair_qty">Menge *</label>
+    <input id="m_repair_qty" type="number" name="qty" min="1" value="{{ f.old(fd, 'qty', default_qty) }}" class="{% if fe.get('qty') %}is-error{% endif %}" required>
+    {{ f.field_error(fe, 'qty') }}
+
+    <label for="m_repair_ref">Referenz (optional)</label>
+    <input id="m_repair_ref" type="text" name="reservation_ref" value="{{ f.old(fd, 'reservation_ref', '') }}" placeholder="Kunde / Auftrag">
+
+    <div class="mobile-home-actions">
+      <button class="btn primary mobile-primary-action" type="submit" name="submit_action" value="send">Anfrage senden</button>
+      <button class="btn mobile-primary-action" type="submit" name="submit_action" value="later">Später</button>
+    </div>
+    <div class="mobile-primary-action-row">
+      <a class="btn mobile-primary-action" href="/m/ersatzteil">Zurück</a>
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Einhand-Flow: Lieferant wählen, Menge prüfen, optional Referenz ergänzen.</li>
+  <li>Anfrage senden verschickt sofort eine Reparaturmail und verknüpft die Timeline.</li>
+  <li>Mit "Später" wird nur der Auftrag angelegt.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel agreement-panel">
+  <h1>{{ row.name }}</h1>
+  <div class="row" style="margin-top:10px; gap:8px;">
+    <a class="btn" href="/einkauf/konditionen">Zurück zu Konditionen</a>
+    <a class="btn" href="/einkauf/konditionen?supplier_id={{ row.supplier_id }}&edit_id={{ row.id }}">Stammdaten bearbeiten</a>
+  </div>
+
+  <div class="grid2" style="margin-top:10px;">
+    <div class="box">
+      <div class="box-title">Vertrag</div>
+      <div class="box-body agreement-review-grid">
+        <div><b>Lieferant:</b> {{ supplier.name if supplier else '-' }}</div>
+        <div><b>Marke:</b> {{ manufacturer.name if manufacturer else (row.brand_label or '-') }}</div>
+        <div><b>Kundennummer:</b> {{ row.customer_no or '-' }}</div>
+        <div><b>Version:</b> {{ row.agreement_version or '-' }}</div>
+        <div><b>Gültig ab:</b> {{ format_date(row.valid_from) if row.valid_from else '-' }}</div>
+        <div><b>Gültig bis:</b> {{ format_date(row.valid_to) if row.valid_to else '-' }}</div>
+        <div><b>Bezugsbasis:</b> {{ row.basis_label or '-' }}</div>
+        <div><b>Geltung:</b> {{ row.applies_to }}</div>
+        <div><b>Geräteart:</b> {{ device_kind.name if device_kind else '-' }}</div>
+        <div><b>Aktiv:</b> {{ 'Ja' if row.active else 'Nein' }}</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Rabatt und Zahlung</div>
+      <div class="box-body agreement-review-grid">
+        <div><b>Grundrabatt:</b> {{ '%.2f'|format(row.basic_discount_percent or 0) }} %</div>
+        <div><b>Skonto:</b> {{ '%.2f'|format(row.skonto_percent or 0) }} %</div>
+        <div><b>Skonto-Tage:</b> {{ row.skonto_days or '-' }}</div>
+        <div><b>Netto-Tage:</b> {{ row.payment_term_days or '-' }}</div>
+        <div><b>Konzentrationsbonus:</b> {{ '%.2f'|format(row.bonus_percent or 0) }} %</div>
+        <div><b>Hauptziel:</b> {{ row.bonus_target_value|eur_cents if row.bonus_target_value else '-' }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px;">
+    <div class="box">
+      <div class="box-title">Ziele</div>
+      <div class="box-body">
+        <div class="table">
+          <div class="tr th" style="grid-template-columns: 1fr 1fr;">
+            <div>Typ</div>
+            <div>Wert</div>
+          </div>
+          {% for item in targets %}
+            <div class="tr" style="grid-template-columns: 1fr 1fr;">
+              <div>{{ item.target_type }}</div>
+              <div>{{ item.target_value|eur_cents if item.target_value is not none else '-' }}</div>
+            </div>
+          {% endfor %}
+          {% if not targets %}<div class="muted">Keine Zielwerte hinterlegt.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Flache Boni</div>
+      <div class="box-body">
+        <div class="table">
+          <div class="tr th" style="grid-template-columns: 1fr 1fr;">
+            <div>Art</div>
+            <div>Prozent</div>
+          </div>
+          {% for item in flat_bonuses %}
+            <div class="tr" style="grid-template-columns: 1fr 1fr;">
+              <div>{{ item.bonus_kind }}</div>
+              <div>{{ '%.2f'|format(item.percent_value or 0) }} %</div>
+            </div>
+          {% endfor %}
+          {% if not flat_bonuses %}<div class="muted">Keine flachen Boni hinterlegt.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Bonus-Staffeln</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 1fr 1fr 1fr;">
+          <div>Art</div>
+          <div>Schwelle</div>
+          <div>Wert</div>
+        </div>
+        {% for item in bonus_tiers %}
+          <div class="tr" style="grid-template-columns: 1fr 1fr 1fr;">
+            <div>{{ item.bonus_kind }}</div>
+            <div>{{ item.threshold_value|eur_cents if item.threshold_value is not none else '-' }}</div>
+            <div>
+              {% if item.percent_value is not none %}{{ '%.2f'|format(item.percent_value) }} %{% elif item.amount_eur is not none %}{{ item.amount_eur|eur_cents }}{% else %}-{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+        {% if not bonus_tiers %}<div class="muted">Keine Staffelboni hinterlegt.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px;">
+    <div class="box">
+      <div class="box-title">Dokumente</div>
+      <div class="box-body">
+        <div class="table">
+          <div class="tr th" style="grid-template-columns: 120px 1.2fr 160px;">
+            <div>Quelle</div>
+            <div>Titel</div>
+            <div>Aktion</div>
+          </div>
+          {% for link in paperless_links %}
+            <div class="tr" style="grid-template-columns: 120px 1.2fr 160px;">
+              <div>Paperless</div>
+              <div>{{ link.paperless_title or ('Dokument ' ~ link.paperless_document_id) }}</div>
+              <div>{% if paperless_base_url %}<a class="btn small" target="_blank" rel="noopener" href="{{ paperless_build_url(link.paperless_document_id) }}">In Paperless öffnen</a>{% else %}-{% endif %}</div>
+            </div>
+          {% endfor %}
+          {% for draft in draft_rows %}
+            {% if draft.source_file_path %}
+              <div class="tr" style="grid-template-columns: 120px 1.2fr 160px;">
+                <div>Upload</div>
+                <div>{{ draft.source_filename or 'PDF' }}</div>
+                <div><a class="btn small" target="_blank" rel="noopener" href="/einkauf/konditionen/import/{{ draft.id }}/quelle">Öffnen</a></div>
+              </div>
+            {% endif %}
+          {% endfor %}
+          {% if not paperless_links and not draft_rows %}<div class="muted">Keine Dokumente verknüpft.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Importhistorie</div>
+      <div class="box-body">
+        <div class="table">
+          <div class="tr th" style="grid-template-columns: 120px 1fr 140px 120px;">
+            <div>Status</div>
+            <div>Quelle</div>
+            <div>Dokument</div>
+            <div>Zeit</div>
+          </div>
+          {% for draft in draft_rows %}
+            <div class="tr" style="grid-template-columns: 120px 1fr 140px 120px; align-items:start;">
+              <div>{{ draft.status }}</div>
+              <div>{{ draft.source_type }}</div>
+              <div>{{ draft.paperless_document_id or draft.source_filename or '-' }}</div>
+              <div>{{ format_date(draft.updated_at or draft.created_at) if (draft.updated_at or draft.created_at) else '-' }}</div>
+            </div>
+          {% endfor %}
+          {% if not draft_rows %}<div class="muted">Kein Importverlauf vorhanden.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier siehst du den übernommenen Konditionssatz mit Ziel- und Bonuswerten.</li>
+  <li>Unter Dokumente findest du Paperless-Links und lokale Uploads.</li>
+  <li>Über die Stammdaten-Bearbeitung passt du Basisdaten des Konditionssatzes an.</li>
+</ul>
+{% endblock %}

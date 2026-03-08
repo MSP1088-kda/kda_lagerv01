@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{% if focus == 'payments' %}Zahlungen{% else %}Kontoabgleich{% endif %}</h1>
+
+  {% if focus != 'payments' %}
+  <form method="get" action="/finanzen/abgleich" class="form compact">
+    <div class="grid4">
+      <div>
+        <label>Konto</label>
+        <select name="check_account_id">
+          <option value="">Alle</option>
+          {% for row in check_accounts %}
+            {% set account_id = row.id or row.ID or row.objectId %}
+            <option value="{{ account_id }}" {% if selected_check_account_id == account_id|string %}selected{% endif %}>{{ row.name or row.displayName or account_id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div><label>Suche</label><input type="text" name="q" value="{{ search or '' }}"></div>
+      <div><label>Von</label><input type="date" name="date_from" value="{{ date_from or '' }}"></div>
+      <div><label>Bis</label><input type="date" name="date_to" value="{{ date_to or '' }}"></div>
+    </div>
+    <div class="row" style="gap:8px; margin-top:8px;"><button class="btn primary" type="submit">Aktualisieren</button><a class="btn" href="/finanzen/zahlungen">Zahlungen</a></div>
+  </form>
+  {% else %}
+  <div class="row" style="gap:8px; margin-bottom:10px;"><a class="btn" href="/finanzen/abgleich">Zum Kontoabgleich</a><a class="btn" href="/finanzen/datev">DATEV / Export</a></div>
+  {% endif %}
+
+  <div class="grid2" style="align-items:start; margin-top:10px;">
+    <div class="box"><div class="box-title">Offene Ausgangsrechnungen</div><div class="box-body">
+      {% for item in open_invoice_drafts %}
+        <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+          <div>
+            <div><a href="/crm/rechnungen/{{ item.row.id }}">{{ item.row.sevdesk_invoice_number or ('RE-ENTW-' ~ '%04d'|format(item.row.id)) }}</a></div>
+            <div class="muted">{{ item.customer_label }} | {{ invoice_draft_status_label(item.row.status) }}</div>
+          </div>
+          <div>{{ item.open_amount|eur_cents }}</div>
+          {% if focus == 'payments' %}<a class="btn small" href="/finanzen/zahlungen/vorbereiten?target_type=invoice_draft&target_id={{ item.row.id }}">Buchen</a>{% endif %}
+        </div>
+      {% endfor %}
+      {% if not open_invoice_drafts %}<div class="muted">Keine offenen Ausgangsrechnungen.</div>{% endif %}
+    </div></div>
+
+    <div class="box"><div class="box-title">Offene Voucher</div><div class="box-body">
+      {% for item in open_voucher_drafts %}
+        <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+          <div>
+            <div><a href="/einkauf/voucher/{{ item.row.id }}">{{ item.row.sevdesk_voucher_id or ('VOU-' ~ '%04d'|format(item.row.id)) }}</a></div>
+            <div class="muted">{{ item.supplier.name if item.supplier else '-' }} | {{ incoming_voucher_status_label(item.row.status) }}</div>
+          </div>
+          <div>{{ item.open_amount|eur_cents }}</div>
+          {% if focus == 'payments' %}<a class="btn small" href="/finanzen/zahlungen/vorbereiten?target_type=voucher&target_id={{ item.row.id }}">Buchen</a>{% endif %}
+        </div>
+      {% endfor %}
+      {% if not open_voucher_drafts %}<div class="muted">Keine offenen Voucher.</div>{% endif %}
+    </div></div>
+  </div>
+
+  {% if focus != 'payments' %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Transaktionen</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 140px 120px 1.4fr 1fr 140px;">
+          <div>ID</div><div>Betrag</div><div>Text</div><div>Kandidaten</div><div>Aktion</div>
+        </div>
+        {% for item in transactions %}
+          <div class="tr" style="grid-template-columns: 140px 120px 1.4fr 1fr 140px; align-items:start;">
+            <div>{{ item.tx_id or '-' }}</div>
+            <div>{{ item.amount_cents|eur_cents }}</div>
+            <div>{{ item.row.payeeName or item.row.text or item.row.reference or '-' }}</div>
+            <div>{{ item.candidates.invoice_drafts|length }} Rechnung(en), {{ item.candidates.voucher_drafts|length }} Voucher</div>
+            <div><a class="btn small" href="/finanzen/transaktionen/{{ item.tx_id }}">Details</a></div>
+          </div>
+        {% endfor %}
+        {% if not transactions %}<div class="muted">Keine Transaktionen geladen.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

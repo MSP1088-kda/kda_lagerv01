@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% macro render_list(title, rows) -%}
+<div class="box" style="margin-top:10px;">
+  <div class="box-title">{{ title }}</div>
+  <div class="box-body">
+    {% if rows %}
+      {% for item in rows %}
+      <div style="margin-bottom:10px;">
+        {% if item is mapping %}
+          {% for key, value in item|dictsort %}
+          <div><b>{{ key }}:</b> {{ value or '-' }}</div>
+          {% endfor %}
+        {% else %}
+        <div>{{ item }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+    <div class="muted">Keine Daten vorhanden.</div>
+    {% endif %}
+  </div>
+</div>
+{%- endmacro %}
+{% block content %}
+<div class="panel">
+  <h1>Lokaler OutSmart-Arbeitsauftrag: {{ row.workorder_no }}</h1>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap;">
+    {% if crm_case %}<a class="btn" href="/crm/vorgaenge/{{ crm_case.id }}">Zum Vorgang</a>{% endif %}
+    {% if customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}">Zum Kunden</a>{% endif %}
+    {% if customer_object and customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ customer_object.id }}">Zum Objekt</a>{% endif %}
+    {% if row.deep_link_url %}<a class="btn" href="{{ row.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}
+    {% if row.pdf_url %}<a class="btn" href="{{ row.pdf_url }}" target="_blank" rel="noopener">PDF öffnen</a>{% endif %}
+    {% if row.word_url %}<a class="btn" href="{{ row.word_url }}" target="_blank" rel="noopener">Word öffnen</a>{% endif %}
+  </div>
+
+  <div class="grid3">
+    <div class="box">
+      <div class="box-title">Termin und Status</div>
+      <div class="box-body">
+        <div><b>Status:</b> {{ row.status or '-' }}</div>
+        <div><b>Geplant von:</b> {{ format_date(row.scheduled_start) }}</div>
+        <div><b>Geplant bis:</b> {{ format_date(row.scheduled_end) }}</div>
+        <div><b>Mitarbeiter:</b> {{ row.employee_name or '-' }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Zuordnung</div>
+      <div class="box-body">
+        <div><b>Vorgang:</b> {% if crm_case %}<a href="/crm/vorgaenge/{{ crm_case.id }}">{{ crm_case.case_no }}</a>{% else %}-{% endif %}</div>
+        <div><b>Kunde:</b> {% if customer %}<a href="/crm/kunden/{{ customer.id }}">{{ customer.party.display_name if customer.party else customer.customer_no_internal }}</a>{% else %}-{% endif %}</div>
+        <div><b>Leistungsort:</b> {{ service_location.location_label if service_location else '-' }}</div>
+        <div><b>Objekt:</b> {{ customer_object.model_label or customer_object.external_object_code if customer_object else '-' }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Kurztexte</div>
+      <div class="box-body">
+        <div><b>Kurztext:</b> {{ row.short_description or '-' }}</div>
+        <div style="margin-top:8px;"><b>Arbeitsbeschreibung:</b><br>{{ row.work_description or '-' }}</div>
+        <div style="margin-top:8px;"><b>Intern:</b><br>{{ row.internal_work_description or '-' }}</div>
+      </div>
+    </div>
+  </div>
+
+  {{ render_list('Materialien', material_rows) }}
+  {{ render_list('Arbeitszeiten', workperiod_rows) }}
+  {{ render_list('Formulare', forms_rows) }}
+  {{ render_list('Fotos', photo_rows) }}
+  {{ render_list('Arbeitsobjekte', workobject_rows) }}
+  {{ render_list('Mitarbeiter', employee_rows) }}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die lokale Ansicht zeigt die wichtigsten OutSmart-Daten ohne Systemwechsel.</li>
+  <li>Für tiefe Bearbeitung bleibt der direkte Link nach OutSmart erhalten.</li>
+  <li>Material, Arbeitszeiten, Formulare und Fotos werden aus dem letzten Sync angezeigt.</li>
+</ul>
+{% endblock %}

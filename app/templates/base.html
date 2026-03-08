@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or "KDA Lager" }}</title>
-  <link rel="stylesheet" href="/static/dos.css">
-  <script defer src="/static/app.js"></script>
+  <link rel="stylesheet" href="/static/dos.css?v={{ app_build }}">
+  <script defer src="/static/app.js?v={{ app_build }}"></script>
 </head>
 <body data-auth="{% if user %}1{% else %}0{% endif %}">
 <div class="screen">
@@ -16,7 +16,11 @@
     </div>
 
     {% if user %}
+    <a class="topbar-mobile-menu" href="/menu">Menü</a>
     {% set current_path = request.url.path %}
+    {% set crm_group = nav_group_lookup.get('crm') %}
+    {% set einkauf_group = nav_group_lookup.get('einkauf') %}
+    {% set system_group = nav_group_lookup.get('system') %}
     <nav class="nav nav-desktop">
       {% for item in nav_top_items %}
         {% set active = current_path == item.path_base or (item.path_base != '/' and current_path.startswith(item.path_base)) %}
@@ -24,6 +28,63 @@
           {% if item.hotkey and item.hotkey.startswith('Alt+') and item.hotkey|length >= 5 %}[{{ item.hotkey[4:] }}] {% endif %}{{ item.label_de }}
         </a>
       {% endfor %}
+      {% if crm_group and crm_group.get('items') %}
+      <div class="nav-dropdown" data-nav-dropdown>
+        <button
+          type="button"
+          class="nav-dropdown-toggle{% if current_path.startswith('/crm') %} active{% endif %}"
+          aria-expanded="false"
+          aria-controls="topnav-crm-menu"
+          data-nav-dropdown-toggle
+        >
+          CRM
+        </button>
+        <div id="topnav-crm-menu" class="nav-dropdown-menu" data-nav-dropdown-menu hidden>
+          {% for item in crm_group["items"] %}
+            {% set active = current_path == item.path_base or (item.path_base != '/' and current_path.startswith(item.path_base)) %}
+            <a href="{{ item.path }}"{% if active %} class="active"{% endif %}>{{ item.label_de }}</a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+      {% if einkauf_group and einkauf_group.get('items') %}
+      <div class="nav-dropdown" data-nav-dropdown>
+        <button
+          type="button"
+          class="nav-dropdown-toggle{% if current_path.startswith('/einkauf') %} active{% endif %}"
+          aria-expanded="false"
+          aria-controls="topnav-einkauf-menu"
+          data-nav-dropdown-toggle
+        >
+          Einkauf
+        </button>
+        <div id="topnav-einkauf-menu" class="nav-dropdown-menu" data-nav-dropdown-menu hidden>
+          {% for item in einkauf_group["items"] %}
+            {% set active = current_path == item.path_base or (item.path_base != '/' and current_path.startswith(item.path_base)) %}
+            <a href="{{ item.path }}"{% if active %} class="active"{% endif %}>{{ item.label_de }}</a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+      {% if system_group and system_group.get('items') %}
+      <div class="nav-dropdown" data-nav-dropdown>
+        <button
+          type="button"
+          class="nav-dropdown-toggle{% if current_path.startswith('/system') or current_path.startswith('/settings') %} active{% endif %}"
+          aria-expanded="false"
+          aria-controls="topnav-system-menu"
+          data-nav-dropdown-toggle
+        >
+          System
+        </button>
+        <div id="topnav-system-menu" class="nav-dropdown-menu" data-nav-dropdown-menu hidden>
+          {% for item in system_group["items"] %}
+            {% set active = current_path == item.path_base or (item.path_base != '/' and current_path.startswith(item.path_base)) %}
+            <a href="{{ item.path }}"{% if active %} class="active"{% endif %}>{{ item.label_de }}</a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
       <form action="/logout" method="post" class="inline">
         <button type="submit" class="linklike" title="Abmelden">[0] Abmelden</button>
       </form>
@@ -33,16 +94,12 @@
 
   {% if user %}
   <nav class="nav nav-mobile bottomnav">
-    {% for item in nav_mobile_items %}
-      {% set mobile_label = item.label_de %}
-      {% if item.path_base == '/dashboard' %}{% set mobile_label = 'Übersicht' %}{% endif %}
-      {% if item.path_base == '/suche' %}{% set mobile_label = 'Suchen' %}{% endif %}
-      {% if item.path_base == '/inventory/transactions/new' %}{% set mobile_label = 'Einbuchen' %}{% endif %}
-      {% if item.path_base == '/inventory/stock' %}{% set mobile_label = 'Lager' %}{% endif %}
-      {% if item.path_base == '/mobile/quick' %}{% set mobile_label = 'Schnell' %}{% endif %}
-      {% if item.path_base == '/menu' %}{% set mobile_label = 'Mehr' %}{% endif %}
-      <a href="{{ item.path }}">{{ mobile_label }}</a>
-    {% endfor %}
+    {% set mobile_path = request.url.path %}
+    <a href="/m/katalog" data-mobile-base="/m/katalog"{% if mobile_path.startswith('/m/katalog') or mobile_path.startswith('/catalog/products') %} class="active"{% endif %}><span class="bottomnav-label">Katalog</span></a>
+    <a href="/m/ersatzteil" data-mobile-base="/m/ersatzteil"{% if mobile_path.startswith('/m/ersatzteil') %} class="active"{% endif %}><span class="bottomnav-label">Ersatz-<br>teil</span></a>
+    <a href="/m/einbuchen" data-mobile-base="/m/einbuchen"{% if mobile_path.startswith('/m/einbuchen') %} class="active"{% endif %}><span class="bottomnav-label">Ein-<br>buchen</span></a>
+    <a href="/m/ausbuchen" data-mobile-base="/m/ausbuchen"{% if mobile_path.startswith('/m/ausbuchen') %} class="active"{% endif %}><span class="bottomnav-label">Aus-<br>buchen</span></a>
+    <a href="/m/umlagerung" data-mobile-base="/m/umlagerung"{% if mobile_path.startswith('/m/umlagerung') %} class="active"{% endif %}><span class="bottomnav-label">Um-<br>buchen</span></a>
   </nav>
   {% endif %}
 

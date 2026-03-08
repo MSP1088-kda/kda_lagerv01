@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>Ausgangsrechnungen</h1>
+      <div class="hint">Lokale Rechnungsentwürfe mit sevDesk als Vollzugsinstanz.</div>
+    </div>
+    {% if role_flags.is_admin %}<a class="btn primary" href="/crm/rechnungen/neu">Neue Rechnung</a>{% endif %}
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Kandidaten aus Vorgängen</div>
+    <div class="box-body">
+      {% for row in candidate_cases %}
+        <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+          <div>{{ row.case_no }} | {{ row.title }}</div>
+          <a class="btn small" href="/crm/rechnungen/neu?case_id={{ row.id }}">Rechnung anlegen</a>
+        </div>
+      {% endfor %}
+      {% if not candidate_cases %}<div class="muted">Keine offenen Kandidaten gefunden.</div>{% endif %}
+    </div>
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 150px 1.2fr 1.1fr 140px 140px 140px;">
+      <div>Referenz</div><div>Vorgang</div><div>Kunde</div><div>Status</div><div>Offen</div><div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 150px 1.2fr 1.1fr 140px 140px 140px;">
+        <div>{{ row.sevdesk_invoice_number or ('RE-ENTW-' ~ '%04d'|format(row.id)) }}</div>
+        <div>{% if case_map.get(row.case_id) %}<a href="/crm/vorgaenge/{{ row.case_id }}">{{ case_map.get(row.case_id).case_no }}</a>{% else %}-{% endif %}</div>
+        <div>{{ customer_labels.get(row.master_customer_id, '-') }}</div>
+        <div>{{ invoice_draft_status_label(row.status) }}</div>
+        <div>{{ totals.get(row.id, 0)|eur_cents }}</div>
+        <div><a class="btn small" href="/crm/rechnungen/{{ row.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Noch keine Ausgangsrechnungen vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}

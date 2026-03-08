@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Einkaufsdokument hochladen</h1>
+
+  <div class="box">
+    <div class="box-title">Ziel</div>
+    <div class="box-body">
+      {% if target_url %}
+        <div><b>Aktiv:</b> <a href="{{ target_url }}">{{ target_label }}</a></div>
+      {% else %}
+        <div class="muted">Zielobjekt wählen und dann hochladen.</div>
+      {% endif %}
+      <div><b>Paperless:</b> {{ 'aktiv' if paperless_available else 'nicht aktiv' }}</div>
+    </div>
+  </div>
+
+  <form method="post" action="/einkauf/dokumente/upload" enctype="multipart/form-data" class="form" style="margin-top:10px;">
+    <label>Zieltyp</label>
+    <select name="object_type">
+      <option value="purchase_order"{% if object_type == 'purchase_order' %} selected{% endif %}>Bestellung</option>
+      <option value="goods_receipt"{% if object_type == 'goods_receipt' %} selected{% endif %}>Wareneingang</option>
+      <option value="purchase_invoice"{% if object_type == 'purchase_invoice' %} selected{% endif %}>Eingangsrechnung</option>
+      <option value="supplier"{% if object_type == 'supplier' %} selected{% endif %}>Lieferant</option>
+      <option value="supplier_condition_set"{% if object_type == 'supplier_condition_set' %} selected{% endif %}>Konditionssatz</option>
+    </select>
+
+    <label>Ziel-ID</label>
+    <input type="number" name="object_id" value="{{ object_id or '' }}" min="1">
+
+    <label>Datei</label>
+    <input type="file" name="file" required>
+
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      <button class="btn primary" type="submit">Hochladen</button>
+      <a class="btn" href="/einkauf/dokumente">Zur Dokumenten-Inbox</a>
+    </div>
+  </form>
+
+  {% if attachments or paperless_links %}
+    <div class="grid2" style="margin-top:10px; align-items:start;">
+      <div class="box">
+        <div class="box-title">Lokale Dateien</div>
+        <div class="box-body">
+          {% for row in attachments %}
+            <div style="margin-bottom:8px;"><a href="/dokumente/lokal/{{ row.id }}">{{ row.original_name or row.filename }}</a></div>
+          {% endfor %}
+          {% if not attachments %}<div class="muted">Keine lokalen Dateien.</div>{% endif %}
+        </div>
+      </div>
+      <div class="box">
+        <div class="box-title">Paperless</div>
+        <div class="box-body">
+          {% for row in paperless_links %}
+            <div style="margin-bottom:8px;">
+              {% if paperless_build_url(row.paperless_document_id) %}<a href="{{ paperless_build_url(row.paperless_document_id) }}" target="_blank" rel="noopener">{{ row.paperless_title or row.paperless_document_id }}</a>{% else %}{{ row.paperless_title or row.paperless_document_id }}{% endif %}
+            </div>
+          {% endfor %}
+          {% if not paperless_links %}<div class="muted">Noch keine Paperless-Verknüpfung.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Einkaufsdokumente brauchen sofort einen Bezug zu Bestellung, Wareneingang, Rechnung oder Lieferant.</li>
+  <li>Der lokale Upload bleibt sichtbar und wird bei aktiver Anbindung direkt nach Paperless gespiegelt.</li>
+  <li>Die Paperless-Verknüpfung landet danach wieder im Hauptsystem und bleibt fachlich auffindbar.</li>
+</ul>
+{% endblock %}

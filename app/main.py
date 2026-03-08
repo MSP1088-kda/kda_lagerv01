@@ -3,13 +3,18 @@ from __future__ import annotations
 import asyncio
 import csv
 import datetime as dt
+import email
+from email.header import decode_header
 import html
 import io
+import imaplib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
+import tempfile
 from typing import Optional
 from urllib import error as url_error, request as url_request
 from urllib.parse import quote, urlsplit, urlencode
@@ -20,7 +25,7 @@ from fastapi.routing import APIRoute
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import Float, and_, cast, exists, func, or_
+from sqlalchemy import Float, and_, case, cast, exists, func, or_
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
@@ -29,21 +34,44 @@ from .ui_labels import de_label
 from .db import Base, get_engine, db_session, get_sessionmaker, reset_engine
 from .api_v1 import router as api_v1_router
 from .models import (
+    AiDecisionLog,
+    AiEvalCase,
+    AiEvalRun,
+    AiPromptDefinition,
+    AiReviewQueueItem,
+    AgreementImportDraft,
     Attachment,
     Area,
+    Address as CrmAddress,
     AttributeDef,
     AttributeScope,
+    Case as CrmCase,
     CompanyProfile,
+    CrmTimelineEvent,
+    CustomerObject,
+    CustomerContactPerson,
     DeviceKind,
     DeviceType,
+    DunningAction,
+    DunningCase,
     EmailAccount,
+    MailAttachment,
     ApiIdempotency,
     ApiKey,
     EmailMessage,
     EmailOutbox,
+    MailTemplate,
+    MailThread,
     FeatureDef,
+    FeatureOption,
+    FeatureOptionAlias,
     FeatureValue,
+    GoodsReceipt,
+    GoodsReceiptLine,
+    IncomingVoucherDraft,
+    IncomingVoucherDraftLine,
     InstanceConfig,
+    ImportDraft,
     ImportProfile,
     ImportProfileMap,
     ImportRun,
@@ -51,21 +79,40 @@ from .models import (
     ItemTypeFieldRule,
     KindListAttribute,
     Manufacturer,
+    MasterCustomer,
     MinStock,
     Owner,
+    OfferDraft,
+    OfferDraftLine,
+    OutsmartWorkorder,
+    Party,
     Product,
+    ProductAccessoryLink,
+    ProductAccessoryReference,
     ProductAttributeValue,
     ProductLink,
+    ProductPurchasePrice,
     PriceRuleKind,
     ProductSet,
     ProductSetItem,
+    PurchaseInvoice,
+    PurchaseInvoiceLine,
     PurchaseOrder,
     PurchaseOrderLine,
+    PaperlessLink,
+    InvoiceDraft,
+    InvoiceDraftLine,
+    RepairAttachment,
+    RepairEvent,
+    RepairMailLink,
     RepairOrder,
     RepairOrderLine,
     Reservation,
+    RoleAssignment,
     ServicePort,
+    ServiceLocation,
     SetupState,
+    SparePartCapture,
     SystemSetting,
     StockConditionDef,
     Stocktake,
@@ -74,10 +121,21 @@ from .models import (
     StockSerial,
     StoragePath,
     Supplier,
+    SupplierConditionBonusTier,
+    SupplierConditionFlatBonus,
+    SupplierConditionProgress,
+    SupplierConditionSet,
+    SupplierConditionTarget,
+    SupervisorFinding,
     UiPreference,
     User,
     Warehouse,
     WarehouseBin,
+    DocumentInboxItem,
+    ExternalIdentity,
+    ExternalLink,
+    ExternalSyncJob,
+    ProcedureGuidelineSection,
 )
 from .form_fields import (
     DEFAULT_ITEM_TYPE_RULES,
@@ -99,16 +157,115 @@ from .security import (
     require_lager_access,
     require_reservation_access,
 )
+from .services.agreement_import_service import (
+    create_draft as agreement_create_draft,
+    draft_extracted_payload as agreement_draft_extracted_payload,
+    draft_validation_payload as agreement_draft_validation_payload,
+    load_paperless_source as agreement_load_paperless_source,
+    mark_imported as agreement_mark_imported,
+    parse_draft as agreement_parse_draft,
+    save_review_payload as agreement_save_review_payload,
+    save_upload_source as agreement_save_upload_source,
+    extract_pdf_text as agreement_extract_pdf_text,
+)
 from .services.backup_service import create_backup, restore_backup
+from .services.ai_accounting_service import extract_incoming_invoice as ai_extract_incoming_invoice, suggest_voucher_accounting as ai_suggest_voucher_accounting
+from .services.ai_customer_service import evaluate_merge_candidate as ai_evaluate_merge_candidate, suggest_role_assignment as ai_suggest_role_assignment
+from .services.ai_document_service import classify_document as ai_classify_document
+from .services.ai_email_service import classify_email_thread as ai_classify_email_thread
+from .services.ai_sales_service import prepare_invoice_draft as ai_prepare_invoice_draft, prepare_offer_draft as ai_prepare_offer_draft
+from .services.ai_service import (
+    apply_review_action as ai_apply_review_action,
+    decision_input as ai_decision_input,
+    decision_output as ai_decision_output,
+    ensure_prompt_definitions as ai_ensure_prompt_definitions,
+    find_review_item as ai_find_review_item,
+    openai_ready as ai_openai_ready,
+    review_priority as ai_review_priority,
+    task_names as ai_task_names,
+    task_risk_class as ai_task_risk_class,
+    test_connection as ai_test_connection,
+)
+from .services.ai_supervisor_service import refresh_supervisor_findings as ai_refresh_supervisor_findings
 from .services.setup_service import acquire_lock, refresh_lock, release_lock, mark_step_completed, get_or_create_instance, is_initialized
 from .services.inventory_service import apply_transaction, write_reservation_outbox_event
 from .services.catalog_service import write_product_outbox_event
+from .services.condition_service import calculate_condition_progress, get_supplier_condition_summary
 from .services.email_service import (
+    decrypt_password,
     friendly_mail_error,
     send_test_smtp,
     test_imap,
     send_outbox_once,
     fetch_inbox_once,
+)
+from .services.mail_assignment_service import normalize_subject as mail_normalize_subject, suggest_assignments as mail_suggest_assignments
+from .services.outsmart_service import (
+    build_deep_link as outsmart_build_deep_link,
+    fetch_objects as outsmart_fetch_objects,
+    fetch_projects as outsmart_fetch_projects,
+    fetch_relations as outsmart_fetch_relations,
+    fetch_workorder as outsmart_fetch_workorder,
+    fetch_workorders as outsmart_fetch_workorders,
+    first_value as outsmart_first_value,
+    get_completed_workorders as outsmart_get_completed_workorders,
+    mark_workorder_processed as outsmart_mark_workorder_processed,
+    post_materials as outsmart_post_materials,
+    post_relations as outsmart_post_relations,
+    post_workorders as outsmart_post_workorders,
+    push_material as outsmart_push_material,
+    push_project as outsmart_push_project,
+    push_relation as outsmart_push_relation,
+    push_workorder as outsmart_push_workorder,
+    request_json as outsmart_request_json,
+    test_connection as outsmart_test_connection,
+    update_workorder_schedule as outsmart_update_workorder_schedule,
+)
+from .services.paperless_service import (
+    build_document_url as paperless_build_document_url,
+    download_document as paperless_download_document,
+    get_document as paperless_get_document,
+    list_documents as paperless_list_documents,
+    list_recent_supplier_documents as paperless_list_recent_supplier_documents,
+    request_json as paperless_request_json,
+    test_connection as paperless_test_connection,
+    update_document_metadata as paperless_update_document_metadata,
+    upload_document as paperless_upload_document,
+)
+from .services.sevdesk_service import (
+    book_invoice as sevdesk_book_invoice,
+    book_voucher as sevdesk_book_voucher,
+    build_api_url as sevdesk_build_api_url,
+    check_customer_number_availability as sevdesk_check_customer_number_availability,
+    create_datev_csv_export_job as sevdesk_create_datev_csv_export_job,
+    create_datev_xml_export_job as sevdesk_create_datev_xml_export_job,
+    create_invoice as sevdesk_create_invoice,
+    create_or_update_contact as sevdesk_create_or_update_contact,
+    create_order as sevdesk_create_order,
+    create_transaction as sevdesk_create_transaction,
+    create_voucher as sevdesk_create_voucher,
+    extract_object_id as sevdesk_extract_object_id,
+    find_contact as sevdesk_find_contact,
+    first_value as sevdesk_first_value,
+    generate_download_hash as sevdesk_generate_download_hash,
+    get_bookkeeping_system_version as sevdesk_get_bookkeeping_system_version,
+    get_check_accounts as sevdesk_get_check_accounts,
+    get_export_progress as sevdesk_get_export_progress,
+    get_job_download_info as sevdesk_get_job_download_info,
+    get_next_customer_number as sevdesk_get_next_customer_number,
+    get_transactions as sevdesk_get_transactions,
+    send_invoice as sevdesk_send_invoice,
+    send_order as sevdesk_send_order,
+    test_connection as sevdesk_test_connection,
+    update_export_config as sevdesk_update_export_config,
+)
+from .services.pricing_service import (
+    get_avg_ek,
+    get_last_ek,
+    get_last_ek_record,
+    get_product_purchase_summary,
+    get_recent_purchase_prices,
+    get_supplier_price_overview,
 )
 from .utils import ensure_dirs, get_session_secret, get_fernet, slugify, normalize_ean
 from .nav import all_nav_paths, flatten_nav, get_nav_for_user
@@ -148,17 +305,36 @@ def _compute_build_id() -> str:
             continue
     return h.hexdigest()[:10]
 
-APP_VERSION = os.environ.get("APP_VERSION", "0.1.8")
+APP_VERSION = os.environ.get("APP_VERSION", "0.1.20")
 _env_build = (os.environ.get("APP_BUILD") or "").strip()
 APP_BUILD = _env_build if _env_build and _env_build.lower() not in ("dev", "local") else _compute_build_id()
 GIT_SHA = os.environ.get("GIT_SHA", "local")
 BUILD_DATE = os.environ.get("BUILD_DATE") or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
+UPLOADS_DIR = DATA_DIR / "uploads"
+SPARE_PART_UPLOAD_DIR = UPLOADS_DIR / "spare_parts"
+REPAIR_EVENT_UPLOAD_DIR = UPLOADS_DIR / "repair_events"
 EMAIL_SENDER_ENABLED = os.environ.get("EMAIL_SENDER_ENABLED", "1").strip() not in ("0", "false", "False")
 EMAIL_SENDER_INTERVAL = max(10, int(os.environ.get("EMAIL_SENDER_INTERVAL", "30") or 30))
 EMAIL_IMAP_ENABLED = os.environ.get("EMAIL_IMAP_ENABLED", "1").strip() not in ("0", "false", "False")
 EMAIL_IMAP_INTERVAL = max(30, int(os.environ.get("EMAIL_IMAP_INTERVAL", "120") or 120))
+OUTSMART_SYNC_INTERVAL = max(60, int(os.environ.get("OUTSMART_SYNC_INTERVAL", "180") or 180))
+SEVDESK_SETTING_ENABLED = "sevdesk_enabled"
+SEVDESK_SETTING_BASE_URL = "sevdesk_base_url"
+SEVDESK_SETTING_BOOKKEEPING_SYSTEM_VERSION = "sevdesk_bookkeeping_system_version"
+SEVDESK_SETTING_DEFAULT_CONTACT_PERSON_ID = "sevdesk_default_contact_person_id"
+SEVDESK_SETTING_DEFAULT_TAX_RULE_ID = "sevdesk_default_tax_rule_id"
+SEVDESK_SETTING_DEFAULT_CURRENCY = "sevdesk_default_currency"
+SEVDESK_SETTING_EXPORT_CONFIG_JSON = "sevdesk_export_config_json"
+SEVDESK_SETTING_EXPORT_JOBS_JSON = "sevdesk_export_jobs_json"
+OPENAI_SETTING_ENABLED = "openai_enabled"
+OPENAI_SETTING_MODEL_DEFAULT = "openai_model_default"
+OPENAI_SETTING_MODEL_FAST = "openai_model_fast"
+OPENAI_SETTING_MODEL_REASONING = "openai_model_reasoning"
+OPENAI_SETTING_TIMEOUT = "openai_timeout_seconds"
+OPENAI_SETTING_RETRY = "openai_retry_count"
+OPENAI_SETTING_MAX_TOKENS = "openai_max_tokens"
 
 LEGACY_CONDITION_MAP = {
     "ok": "A_WARE",
@@ -184,21 +360,49 @@ RECEIPT_DEFAULT_CONDITION = "receipt_default_condition"
 RECEIPT_DEFAULT_SUPPLIER_ID = "receipt_default_supplier_id"
 RECEIPT_DEFAULT_QTY = "receipt_default_qty"
 RECEIPT_LOCK_WAREHOUSE = "receipt_lock_warehouse"
+REPAIR_DEFAULT_WAREHOUSE_ID = "repair_default_warehouse_id"
+SCRAP_DEFAULT_WAREHOUSE_ID = "repair_scrap_warehouse_id"
+REPAIR_MAILBOX_ACCOUNT_ID = "repair_mailbox_account_id"
+REPAIR_AUTO_PAPERLESS = "repair_auto_paperless"
+SPARE_AUTO_PAPERLESS = "spare_auto_paperless"
+REPAIR_LAST_SUPPLIER_COOKIE = "last_repair_supplier_id"
 VAT_RATE_STANDARD = 0.19
 PRODUCT_IMAGE_URL_MAX = 10
 PRODUCT_DATASHEET_ATTACHMENT_TYPE = "product_datasheet"
 PRODUCT_DATASHEET_MAX_BYTES = 15 * 1024 * 1024
 HARD_RESET_CONFIRM_TEXT = "ICH_WEISS_WAS_ICH_TUE"
-CSV_IMPORT_STATE_KEY = "csv_import_v2_state"
-ALLOWED_FEATURE_DATA_TYPES = {"text", "number", "bool"}
+ALLOWED_FEATURE_DATA_TYPES = {"text", "enum", "number", "bool"}
+ACCESSORY_SEPARATOR_MODES = ("auto", "semicolon", "comma")
+IMPORT_DRAFT_STATUS_UPLOADED = "uploaded"
+IMPORT_DRAFT_STATUS_MAPPING = "mapping"
+IMPORT_DRAFT_STATUS_VALIDATED = "validated"
+IMPORT_DRAFT_STATUS_IMPORTED = "imported"
+IMPORT_DRAFT_STATUS_FAILED = "failed"
+IMPORT_DRAFT_STATUS_WARNINGS = "validated_with_warnings"
 FEATURE_FILTER_OPTION_LIMIT = 300
+FEATURE_NORMALIZATION_UNKNOWN_LIMIT = 400
+DELIVERY_SCAN_STATE_KEY = "delivery_scan_state_v1"
+DELIVERY_SCAN_MAX_BYTES = 12 * 1024 * 1024
+DELIVERY_SCAN_ALLOWED_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff")
+DELIVERY_SCAN_SOURCE_LIEFERSCHEIN = "lieferschein"
+DELIVERY_SCAN_SOURCE_PRODUKTSCHILD = "produktschild"
+DELIVERY_SCAN_SOURCES = (DELIVERY_SCAN_SOURCE_LIEFERSCHEIN, DELIVERY_SCAN_SOURCE_PRODUKTSCHILD)
 
 REPAIR_ATTACHMENT_ALLOWED_MIME = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
 }
+SPARE_PART_IMAGE_ALLOWED_MIME = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+LAST_SPARE_OWNER_COOKIE = "last_spare_owner_id"
+LAST_SPARE_OWNER_COOKIE_MAX_AGE = 180 * 24 * 60 * 60
+LAST_REPAIR_SUPPLIER_COOKIE_MAX_AGE = 180 * 24 * 60 * 60
 REPAIR_ATTACHMENT_MAX_BYTES = 6 * 1024 * 1024
+REPAIR_EVENT_ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024
 CUSTOMER_VIEW_TIMEOUT_SECONDS = 5 * 60
 SETS_ALLOWED_DEVICE_TYPE_TERMS = ("kochfeld", "backofen")
 SETS_ONLY_MESSAGE = "Kombi-/Set-Funktionen sind nur für Kochfeld und Backofen verfügbar."
@@ -246,25 +450,62 @@ TX_FORM_FIELD_IDS = {
     "quantity": "tx_quantity",
     "reference": "tx_reference",
 }
-REPAIR_FORM_FIELD_IDS = {
-    "supplier_id": "repair_supplier_id",
-    "reference": "repair_reference",
-    "product_id": "repair_product_id",
-    "new_product_name": "repair_new_product_name",
-    "new_product_material_no": "repair_new_product_material_no",
-    "new_product_ean": "repair_new_product_ean",
-    "qty": "repair_qty",
-    "warehouse_from_id": "repair_warehouse_from_id",
-    "warehouse_to_id": "repair_warehouse_to_id",
-    "condition_in": "repair_condition_in",
-    "condition_out": "repair_condition_out",
-}
 PO_RECEIVE_FIELD_IDS = {
     "warehouse_to_id": "po_receive_warehouse_to_id",
     "owner_id": "po_receive_owner_id",
     "condition": "po_receive_condition",
     "delivery_note_no": "po_receive_delivery_note_no",
 }
+REPAIR_STATUS_ENTWURF = "ENTWURF"
+REPAIR_STATUS_ANGEFRAGT = "ANGEFRAGT"
+REPAIR_STATUS_WARTET = "WARTET_AUF_ANTWORT"
+REPAIR_STATUS_BEAUFTRAGT = "BEAUFTRAGT"
+REPAIR_STATUS_IN_REPARATUR = "IN_REPARATUR"
+REPAIR_STATUS_REPARIERT = "REPARIERT"
+REPAIR_STATUS_ERFOLGLOS = "ERFOLGLOS"
+REPAIR_STATUS_INS_LAGER = "INS_LAGER_EINGEBUCHT"
+REPAIR_STATUS_RESERVIERT = "RESERVIERT"
+REPAIR_STATUS_VERSCHROTTET = "VERSCHROTTET"
+REPAIR_STATUS_ABGESCHLOSSEN = "ABGESCHLOSSEN"
+REPAIR_STATUS_CHOICES = (
+    REPAIR_STATUS_ENTWURF,
+    REPAIR_STATUS_ANGEFRAGT,
+    REPAIR_STATUS_WARTET,
+    REPAIR_STATUS_BEAUFTRAGT,
+    REPAIR_STATUS_IN_REPARATUR,
+    REPAIR_STATUS_REPARIERT,
+    REPAIR_STATUS_ERFOLGLOS,
+    REPAIR_STATUS_INS_LAGER,
+    REPAIR_STATUS_RESERVIERT,
+    REPAIR_STATUS_VERSCHROTTET,
+    REPAIR_STATUS_ABGESCHLOSSEN,
+)
+REPAIR_OUTCOME_REPARIERT = "REPARIERT"
+REPAIR_OUTCOME_ERFOLGLOS = "ERFOLGLOS"
+REPAIR_OUTCOME_VERSCHROTTET = "VERSCHROTTET"
+REPAIR_OUTCOME_CHOICES = (
+    REPAIR_OUTCOME_REPARIERT,
+    REPAIR_OUTCOME_ERFOLGLOS,
+    REPAIR_OUTCOME_VERSCHROTTET,
+)
+REPAIR_EVENT_TYPES = (
+    "created",
+    "status_change",
+    "email_out",
+    "email_in",
+    "note",
+    "stock_move",
+    "integration",
+)
+PAPERLESS_SETTING_ENABLED = "paperless_enabled"
+PAPERLESS_SETTING_BASE_URL = "paperless_base_url"
+PAPERLESS_SETTING_TAGS = "paperless_default_tags"
+PAPERLESS_SETTING_DOCUMENT_TYPE = "paperless_default_document_type"
+PAPERLESS_SETTING_CORRESPONDENT = "paperless_default_correspondent"
+PAPERLESS_SETTING_MODE = "paperless_mode"
+OUTSMART_SETTING_ENABLED = "outsmart_enabled"
+OUTSMART_SETTING_HOST = "outsmart_host"
+OUTSMART_SETTING_LAST_SYNC_AT = "outsmart_last_sync_at"
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["de_label"] = lambda value, kind: de_label(kind, value)
@@ -272,6 +513,7 @@ templates.env.filters["eur_cents"] = lambda value: _format_eur(value)
 
 app = FastAPI(title="KDA Lager (Standalone Modul)")
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR), check_dir=False), name="uploads")
 app.state.version_meta = {
     "version": APP_VERSION,
     "build": APP_BUILD,
@@ -337,6 +579,28 @@ def _normalize_absolute_url(value: str | None) -> str | None:
     return raw
 
 
+def _normalize_product_image_url(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if any(ch in raw for ch in ("\n", "\r", "\t", " ")):
+        return None
+    absolute = _normalize_absolute_url(raw)
+    if absolute:
+        return absolute
+    parsed = urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return None
+    path = str(parsed.path or "")
+    if not path.startswith("/uploads/"):
+        return None
+    if "\\" in raw:
+        return None
+    if any(seg == ".." for seg in path.split("/")):
+        return None
+    return raw
+
+
 def _product_image_url_keys() -> list[str]:
     return [f"image_url_{idx}" for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1)]
 
@@ -353,7 +617,7 @@ def _product_image_slots(product: Product | None) -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     for idx, key in enumerate(_product_image_url_keys(), start=1):
         raw_value = str(getattr(product, key, "") or "").strip()
-        normalized = _normalize_absolute_url(raw_value)
+        normalized = _normalize_product_image_url(raw_value)
         out.append(
             {
                 "index": int(idx),
@@ -364,6 +628,19 @@ def _product_image_slots(product: Product | None) -> list[dict[str, object]]:
             }
         )
     return out
+
+
+def _product_primary_image_url(product: Product | None) -> str | None:
+    if not product:
+        return None
+    direct = _normalize_product_image_url(getattr(product, "image_url", ""))
+    if direct:
+        return direct
+    for key in _product_image_url_keys():
+        fallback = _normalize_product_image_url(getattr(product, key, ""))
+        if fallback:
+            return fallback
+    return None
 
 
 def _manufacturer_datasheet_var2_source(raw: str | None) -> str:
@@ -646,6 +923,7 @@ def _ctx(request: Request, user=None, **kwargs):
         except Exception:
             user = None
     nav_groups = get_nav_for_user(user) if user is not None else []
+    nav_group_lookup = {str(group.get("group_id") or ""): group for group in nav_groups}
     nav_items = flatten_nav(nav_groups) if nav_groups else []
     nav_top = [item for item in nav_items if bool(item.get("show_in_topnav"))]
     nav_mobile = [item for item in nav_items if bool(item.get("show_in_mobile"))]
@@ -676,12 +954,38 @@ def _ctx(request: Request, user=None, **kwargs):
         "customer_view": _customer_view_enabled(request),
         "can_view_costs": _can_view_costs(user),
         "nav_groups": nav_groups,
+        "nav_group_lookup": nav_group_lookup,
         "nav_items": nav_items,
         "nav_top_items": nav_top,
         "nav_mobile_items": nav_mobile,
         "nav_commands": nav_commands,
         "nav_hotkeys": nav_hotkeys,
         "product_image_url_max": PRODUCT_IMAGE_URL_MAX,
+        "document_inbox_status_label": _document_inbox_status_label,
+        "mail_thread_status_label": _mail_thread_status_label,
+        "mail_assignment_status_label": _mail_assignment_status_label,
+        "sync_job_direction_label": _sync_job_direction_label,
+        "sync_job_entity_label": _sync_job_entity_label,
+        "sync_job_status_label": _sync_job_status_label,
+        "purchase_status_label": _purchase_status_label,
+        "goods_receipt_status_label": _goods_receipt_status_label,
+        "purchase_invoice_status_label": _purchase_invoice_status_label,
+        "ai_task_label": _ai_task_label,
+        "ai_risk_label": _ai_risk_label,
+        "ai_status_label": _ai_status_label,
+        "ai_review_status_label": _ai_review_status_label,
+        "supervisor_severity_label": _supervisor_severity_label,
+        "ai_object_url": _ai_object_url,
+        "format_date": _format_date_local,
+        "repair_status_label": _repair_status_label,
+        "repair_outcome_label": _repair_outcome_label,
+        "crm_case_status_label": _crm_case_status_label,
+        "crm_case_priority_label": _crm_case_priority_label,
+        "crm_party_type_label": _crm_party_type_label,
+        "crm_customer_status_label": _crm_customer_status_label,
+        "crm_role_label": _crm_role_label,
+        "crm_external_system_label": _crm_external_system_label,
+        "crm_external_type_label": _crm_external_type_label,
         **kwargs,
     }
 
@@ -711,6 +1015,8 @@ def _wants_json(request: Request) -> bool:
 @app.on_event("startup")
 def startup():
     ensure_dirs()
+    SPARE_PART_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    REPAIR_EVENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     engine = get_engine()
     if os.environ.get("DEV_CREATE_ALL", "0").strip() == "1":
         Base.metadata.create_all(bind=engine)
@@ -728,6 +1034,7 @@ def startup():
     _ensure_ui_preferences_schema()
     _ensure_system_settings_schema()
     _ensure_item_type_field_rules_schema()
+    _ensure_spare_part_capture_schema()
     _migrate_item_type_rules_for_device_kind_only()
     _migrate_legacy_condition_codes()
     # seed defaults
@@ -750,11 +1057,14 @@ async def startup_background_jobs():
         task = getattr(app.state, "email_imap_task", None)
         if task is None or task.done():
             app.state.email_imap_task = asyncio.create_task(_email_imap_loop())
+    task = getattr(app.state, "outsmart_sync_task", None)
+    if task is None or task.done():
+        app.state.outsmart_sync_task = asyncio.create_task(_outsmart_sync_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown_background_jobs():
-    for name in ("email_sender_task", "email_imap_task"):
+    for name in ("email_sender_task", "email_imap_task", "outsmart_sync_task"):
         task = getattr(app.state, name, None)
         if task is None:
             continue
@@ -792,6 +1102,8 @@ def _ensure_products_extra_columns() -> None:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN product_title_2 VARCHAR(200)")
         if "material_no" not in cols:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN material_no VARCHAR(120)")
+        if "image_url" not in cols:
+            conn.exec_driver_sql("ALTER TABLE products ADD COLUMN image_url VARCHAR(600)")
         if "active" not in cols:
             conn.exec_driver_sql("ALTER TABLE products ADD COLUMN active BOOLEAN DEFAULT 1")
         for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
@@ -1068,15 +1380,89 @@ def _ensure_prompt_pack5_schema() -> None:
             """
             CREATE TABLE IF NOT EXISTS repair_orders (
                 id INTEGER PRIMARY KEY,
+                repair_no VARCHAR(40) UNIQUE,
+                article_id INTEGER,
+                qty INTEGER NOT NULL DEFAULT 1,
                 supplier_id INTEGER,
-                status VARCHAR(20) NOT NULL DEFAULT 'open',
+                status VARCHAR(40) NOT NULL DEFAULT 'ENTWURF',
+                outcome VARCHAR(40),
+                source_warehouse_id INTEGER,
+                repair_warehouse_id INTEGER,
+                target_warehouse_id INTEGER,
+                reservation_ref VARCHAR(240),
+                notes TEXT,
+                outsmart_row_id VARCHAR(120),
                 reference VARCHAR(120),
                 note TEXT,
-                created_at DATETIME
+                commissioned_at DATETIME,
+                commission_account_id INTEGER,
+                commission_email_uid VARCHAR(120),
+                commission_message_id VARCHAR(400),
+                commission_reference VARCHAR(160),
+                repair_cost_cents INTEGER,
+                shipping_carrier VARCHAR(120),
+                tracking_no VARCHAR(160),
+                tracking_url VARCHAR(500),
+                commission_note TEXT,
+                created_at DATETIME,
+                updated_at DATETIME,
+                closed_at DATETIME,
+                created_by_user_id INTEGER
             )
             """
         )
+        repair_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(repair_orders)").fetchall()}
+        if "repair_no" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN repair_no VARCHAR(40)")
+        if "article_id" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN article_id INTEGER")
+        if "qty" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN qty INTEGER NOT NULL DEFAULT 1")
+        if "outcome" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN outcome VARCHAR(40)")
+        if "source_warehouse_id" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN source_warehouse_id INTEGER")
+        if "repair_warehouse_id" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN repair_warehouse_id INTEGER")
+        if "target_warehouse_id" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN target_warehouse_id INTEGER")
+        if "reservation_ref" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN reservation_ref VARCHAR(240)")
+        if "notes" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN notes TEXT")
+        if "outsmart_row_id" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN outsmart_row_id VARCHAR(120)")
+        if "commissioned_at" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN commissioned_at DATETIME")
+        if "commission_account_id" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN commission_account_id INTEGER")
+        if "commission_email_uid" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN commission_email_uid VARCHAR(120)")
+        if "commission_message_id" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN commission_message_id VARCHAR(400)")
+        if "commission_reference" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN commission_reference VARCHAR(160)")
+        if "repair_cost_cents" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN repair_cost_cents INTEGER")
+        if "shipping_carrier" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN shipping_carrier VARCHAR(120)")
+        if "tracking_no" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN tracking_no VARCHAR(160)")
+        if "tracking_url" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN tracking_url VARCHAR(500)")
+        if "commission_note" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN commission_note TEXT")
+        if "updated_at" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN updated_at DATETIME")
+        if "closed_at" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN closed_at DATETIME")
+        if "created_by_user_id" not in repair_cols:
+            conn.exec_driver_sql("ALTER TABLE repair_orders ADD COLUMN created_by_user_id INTEGER")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_order_status ON repair_orders(status)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_orders_article_id ON repair_orders(article_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_orders_supplier_id ON repair_orders(supplier_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_orders_commission_account_id ON repair_orders(commission_account_id)")
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_repair_orders_repair_no ON repair_orders(repair_no)")
         conn.exec_driver_sql(
             """
             CREATE TABLE IF NOT EXISTS repair_order_lines (
@@ -1092,6 +1478,51 @@ def _ensure_prompt_pack5_schema() -> None:
             """
         )
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_order_line_order ON repair_order_lines(repair_order_id)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS repair_events (
+                id INTEGER PRIMARY KEY,
+                repair_order_id INTEGER NOT NULL,
+                ts DATETIME,
+                event_type VARCHAR(40) NOT NULL,
+                title VARCHAR(240) NOT NULL,
+                body TEXT,
+                meta_json TEXT
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_event_order_ts ON repair_events(repair_order_id, ts)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_event_type ON repair_events(event_type)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS repair_attachments (
+                id INTEGER PRIMARY KEY,
+                repair_event_id INTEGER NOT NULL,
+                filename VARCHAR(260) NOT NULL,
+                mime VARCHAR(120),
+                size INTEGER NOT NULL DEFAULT 0,
+                storage_path VARCHAR(500) NOT NULL,
+                paperless_document_id VARCHAR(80),
+                outsmart_reference VARCHAR(120),
+                created_at DATETIME
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_attachment_event ON repair_attachments(repair_event_id)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS repair_mail_links (
+                id INTEGER PRIMARY KEY,
+                repair_order_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                uid VARCHAR(120) NOT NULL,
+                message_id VARCHAR(400),
+                created_at DATETIME
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_repair_mail_account_uid ON repair_mail_links(account_id, uid)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_repair_mail_order ON repair_mail_links(repair_order_id)")
 
 
 def _ensure_prompt_pack9_schema() -> None:
@@ -1250,6 +1681,8 @@ def _ensure_catalog_v2_schema() -> None:
                 id INTEGER PRIMARY KEY,
                 product_id INTEGER NOT NULL,
                 feature_def_id INTEGER NOT NULL,
+                raw_text TEXT,
+                option_id INTEGER,
                 value_text TEXT,
                 value_num FLOAT,
                 value_bool BOOLEAN,
@@ -1259,17 +1692,97 @@ def _ensure_catalog_v2_schema() -> None:
             )
             """
         )
+        fv_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(feature_values)").fetchall()}
+        if "raw_text" not in fv_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_values ADD COLUMN raw_text TEXT")
+        if "option_id" not in fv_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_values ADD COLUMN option_id INTEGER")
+        conn.exec_driver_sql(
+            "UPDATE feature_values SET raw_text = value_text WHERE raw_text IS NULL AND value_text IS NOT NULL"
+        )
         conn.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_featurevalue_product_feature ON feature_values(product_id, feature_def_id)"
         )
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature ON feature_values(feature_def_id)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_product ON feature_values(product_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_option ON feature_values(option_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_option ON feature_values(feature_def_id, option_id)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_norm ON feature_values(value_norm)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_num ON feature_values(value_num)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_bool ON feature_values(value_bool)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_text ON feature_values(feature_def_id, value_text)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_num ON feature_values(feature_def_id, value_num)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_bool ON feature_values(feature_def_id, value_bool)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS feature_options (
+                id INTEGER PRIMARY KEY,
+                feature_def_id INTEGER NOT NULL,
+                canonical_key VARCHAR(160) NOT NULL,
+                label_de VARCHAR(200) NOT NULL,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(feature_def_id) REFERENCES feature_defs(id)
+            )
+            """
+        )
+        fo_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(feature_options)").fetchall()}
+        if "canonical_key" not in fo_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_options ADD COLUMN canonical_key VARCHAR(160)")
+        if "label_de" not in fo_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_options ADD COLUMN label_de VARCHAR(200)")
+        if "active" not in fo_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_options ADD COLUMN active BOOLEAN NOT NULL DEFAULT 1")
+        if "sort_order" not in fo_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_options ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_feature_option_canonical ON feature_options(feature_def_id, canonical_key)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_feature_option_feature_active ON feature_options(feature_def_id, active)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_feature_option_feature_sort ON feature_options(feature_def_id, sort_order)"
+        )
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS feature_option_aliases (
+                id INTEGER PRIMARY KEY,
+                option_id INTEGER NOT NULL,
+                alias_text VARCHAR(220) NOT NULL,
+                alias_norm VARCHAR(220) NOT NULL,
+                manufacturer_id INTEGER,
+                priority INTEGER NOT NULL DEFAULT 100,
+                FOREIGN KEY(option_id) REFERENCES feature_options(id),
+                FOREIGN KEY(manufacturer_id) REFERENCES manufacturers(id)
+            )
+            """
+        )
+        foa_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(feature_option_aliases)").fetchall()}
+        if "alias_text" not in foa_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_option_aliases ADD COLUMN alias_text VARCHAR(220)")
+        if "alias_norm" not in foa_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_option_aliases ADD COLUMN alias_norm VARCHAR(220)")
+        if "manufacturer_id" not in foa_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_option_aliases ADD COLUMN manufacturer_id INTEGER")
+        if "priority" not in foa_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_option_aliases ADD COLUMN priority INTEGER NOT NULL DEFAULT 100")
+        conn.exec_driver_sql(
+            "UPDATE feature_option_aliases SET alias_norm = lower(trim(alias_text)) WHERE (alias_norm IS NULL OR trim(alias_norm)='') AND alias_text IS NOT NULL"
+        )
+        conn.exec_driver_sql(
+            "UPDATE feature_option_aliases SET priority = 100 WHERE priority IS NULL"
+        )
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_feature_option_alias ON feature_option_aliases(option_id, alias_text, manufacturer_id)"
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_feature_option_alias_option ON feature_option_aliases(option_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_feature_option_alias_norm ON feature_option_aliases(alias_norm)")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_feature_option_alias_manufacturer ON feature_option_aliases(manufacturer_id)"
+        )
 
         conn.exec_driver_sql(
             """
@@ -1332,6 +1845,86 @@ def _ensure_catalog_v2_schema() -> None:
         )
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_import_runs_started ON import_runs(started_at)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_import_runs_profile ON import_runs(profile_id)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS import_drafts (
+                id INTEGER PRIMARY KEY,
+                created_at DATETIME,
+                updated_at DATETIME,
+                status VARCHAR(40) NOT NULL DEFAULT 'uploaded',
+                filename_original VARCHAR(260),
+                file_path_tmp VARCHAR(600),
+                delimiter VARCHAR(5) NOT NULL DEFAULT ';',
+                encoding VARCHAR(40) NOT NULL DEFAULT 'utf-8',
+                has_header BOOLEAN NOT NULL DEFAULT 1,
+                manufacturer_id INTEGER,
+                device_kind_id INTEGER,
+                import_profile_id INTEGER,
+                current_step VARCHAR(40),
+                mapping_json TEXT,
+                validation_errors_json TEXT,
+                last_preview_json TEXT,
+                created_by_user_id INTEGER,
+                FOREIGN KEY(manufacturer_id) REFERENCES manufacturers(id),
+                FOREIGN KEY(device_kind_id) REFERENCES device_kinds(id),
+                FOREIGN KEY(import_profile_id) REFERENCES import_profiles(id),
+                FOREIGN KEY(created_by_user_id) REFERENCES users(id)
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_import_drafts_updated_at ON import_drafts(updated_at)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_import_drafts_status ON import_drafts(status)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_import_drafts_lookup ON import_drafts(manufacturer_id, device_kind_id)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS product_accessory_links (
+                id INTEGER PRIMARY KEY,
+                product_id INTEGER NOT NULL,
+                accessory_product_id INTEGER NOT NULL,
+                source VARCHAR(20) NOT NULL DEFAULT 'csv',
+                import_run_id INTEGER,
+                created_at DATETIME,
+                FOREIGN KEY(product_id) REFERENCES products(id),
+                FOREIGN KEY(accessory_product_id) REFERENCES products(id),
+                FOREIGN KEY(import_run_id) REFERENCES import_runs(id)
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_product_accessory_link_pair ON product_accessory_links(product_id, accessory_product_id)"
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_accessory_link_product ON product_accessory_links(product_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_accessory_link_accessory ON product_accessory_links(accessory_product_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_accessory_link_run ON product_accessory_links(import_run_id)")
+
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS product_accessory_references (
+                id INTEGER PRIMARY KEY,
+                product_id INTEGER NOT NULL,
+                raw_value VARCHAR(260) NOT NULL,
+                normalized_value VARCHAR(260) NOT NULL,
+                manufacturer_id INTEGER,
+                device_kind_id INTEGER,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                matched_product_id INTEGER,
+                import_run_id INTEGER,
+                created_at DATETIME,
+                FOREIGN KEY(product_id) REFERENCES products(id),
+                FOREIGN KEY(manufacturer_id) REFERENCES manufacturers(id),
+                FOREIGN KEY(device_kind_id) REFERENCES device_kinds(id),
+                FOREIGN KEY(matched_product_id) REFERENCES products(id),
+                FOREIGN KEY(import_run_id) REFERENCES import_runs(id)
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_accessory_ref_product ON product_accessory_references(product_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_accessory_ref_status ON product_accessory_references(status)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_accessory_ref_norm ON product_accessory_references(normalized_value)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_accessory_ref_matched ON product_accessory_references(matched_product_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_accessory_ref_run ON product_accessory_references(import_run_id)")
 
 
 def _migrate_item_type_rules_for_device_kind_only() -> None:
@@ -1407,6 +2000,31 @@ def _ensure_item_type_field_rules_schema() -> None:
         conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_item_type_field_rule_order ON item_type_field_rules(item_type, sort_order)"
         )
+
+
+def _ensure_spare_part_capture_schema() -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS spare_part_captures (
+                id INTEGER PRIMARY KEY,
+                product_id INTEGER NOT NULL,
+                owner_id INTEGER NOT NULL,
+                warehouse_id INTEGER NOT NULL,
+                qty INTEGER NOT NULL DEFAULT 1,
+                image_path VARCHAR(500) NOT NULL,
+                created_at DATETIME,
+                note TEXT,
+                FOREIGN KEY(product_id) REFERENCES products(id),
+                FOREIGN KEY(owner_id) REFERENCES owners(id),
+                FOREIGN KEY(warehouse_id) REFERENCES warehouses(id)
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_spare_part_capture_created_at ON spare_part_captures(created_at)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_spare_part_capture_owner_id ON spare_part_captures(owner_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_spare_part_capture_warehouse_id ON spare_part_captures(warehouse_id)")
 
 
 def _migrate_legacy_condition_codes() -> None:
@@ -1533,7 +2151,1007 @@ def _default_min_stock_condition(db: Session) -> str:
 
 
 def _repair_reference(order: RepairOrder) -> str:
-    return (order.reference or "").strip() or f"REP-{order.id}"
+    return (order.repair_no or order.reference or "").strip() or f"REP-{int(order.id or 0):06d}"
+
+
+def _repair_normalize_status_code(status: str | None) -> str:
+    legacy_map = {
+        "OPEN": REPAIR_STATUS_ENTWURF,
+        "IN_REPAIR": REPAIR_STATUS_IN_REPARATUR,
+        "RETURNED": REPAIR_STATUS_REPARIERT,
+        "CLOSED": REPAIR_STATUS_ABGESCHLOSSEN,
+    }
+    key = str(status or "").strip().upper()
+    if not key:
+        return REPAIR_STATUS_ENTWURF
+    return legacy_map.get(key, key)
+
+
+def _repair_status_label(status: str | None) -> str:
+    mapping = {
+        REPAIR_STATUS_ENTWURF: "Entwurf",
+        REPAIR_STATUS_ANGEFRAGT: "Angefragt",
+        REPAIR_STATUS_WARTET: "Wartet auf Antwort",
+        REPAIR_STATUS_BEAUFTRAGT: "Beauftragt",
+        REPAIR_STATUS_IN_REPARATUR: "In Reparatur",
+        REPAIR_STATUS_REPARIERT: "Repariert",
+        REPAIR_STATUS_ERFOLGLOS: "Erfolglos",
+        REPAIR_STATUS_INS_LAGER: "Ins Lager eingebucht",
+        REPAIR_STATUS_RESERVIERT: "Reserviert",
+        REPAIR_STATUS_VERSCHROTTET: "Verschrottet",
+        REPAIR_STATUS_ABGESCHLOSSEN: "Abgeschlossen",
+    }
+    key = _repair_normalize_status_code(status)
+    return mapping.get(key, status or "-")
+
+
+def _repair_outcome_label(outcome: str | None) -> str:
+    mapping = {
+        REPAIR_OUTCOME_REPARIERT: "Repariert",
+        REPAIR_OUTCOME_ERFOLGLOS: "Erfolglos",
+        REPAIR_OUTCOME_VERSCHROTTET: "Verschrottet",
+    }
+    key = str(outcome or "").strip().upper()
+    if not key:
+        return "-"
+    return mapping.get(key, outcome or "-")
+
+
+def _repair_event_type_label(event_type: str | None) -> str:
+    mapping = {
+        "created": "Angelegt",
+        "status_change": "Status",
+        "email_out": "E-Mail aus",
+        "email_in": "E-Mail ein",
+        "note": "Notiz",
+        "stock_move": "Lagerbewegung",
+        "integration": "Integration",
+    }
+    key = str(event_type or "").strip().lower()
+    if not key:
+        return "-"
+    return mapping.get(key, event_type or "-")
+
+
+def _format_dt_short(value) -> str:
+    if value is None:
+        return "-"
+    try:
+        return value.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return str(value or "-")
+
+
+def _repair_email_account_label(account: EmailAccount | None) -> str:
+    if not account:
+        return "-"
+    label = (account.label or "").strip()
+    email_addr = (account.email or "").strip()
+    if label and email_addr:
+        return f"{label} ({email_addr})"
+    return label or email_addr or f"Konto #{int(account.id)}"
+
+
+def _repair_email_message_lookup(db: Session, account_id: int | None, uid: str | None) -> EmailMessage | None:
+    if not account_id or not str(uid or "").strip():
+        return None
+    return (
+        db.query(EmailMessage)
+        .filter(EmailMessage.account_id == int(account_id), EmailMessage.uid == str(uid).strip())
+        .order_by(EmailMessage.id.desc())
+        .first()
+    )
+
+
+def _repair_mail_reference_view(
+    db: Session,
+    *,
+    account_id: int | None,
+    uid: str | None,
+    message_id: str | None,
+) -> dict[str, object]:
+    account = db.get(EmailAccount, int(account_id)) if account_id else None
+    msg = _repair_email_message_lookup(db, int(account_id), uid) if account_id and uid else None
+    subject = (msg.subject or "").strip() if msg else ""
+    from_text = (msg.from_text or "").strip() if msg else ""
+    date_text = (msg.date_text or "").strip() if msg else ""
+    uid_text = str(uid or "").strip()
+    message_ref = str(message_id or "").strip()
+    headline = subject or (f"UID {uid_text}" if uid_text else (message_ref or "-"))
+    parts: list[str] = []
+    account_label = _repair_email_account_label(account)
+    if account_label and account_label != "-":
+        parts.append(account_label)
+    if from_text:
+        parts.append(from_text)
+    if date_text:
+        parts.append(date_text)
+    if message_ref:
+        parts.append(f"Ref: {message_ref}")
+    return {
+        "account": account,
+        "account_label": account_label,
+        "message": msg,
+        "headline": headline,
+        "subline": " | ".join(parts) if parts else "",
+        "uid": uid_text,
+        "message_id": message_ref,
+        "subject": subject,
+        "from_text": from_text,
+        "date_text": date_text,
+        "has_data": bool(account_id or uid_text or message_ref or subject or from_text or date_text),
+    }
+
+
+def _repair_recent_email_options(db: Session, limit: int = 80) -> list[dict[str, object]]:
+    rows = (
+        db.query(EmailMessage, EmailAccount)
+        .join(EmailAccount, EmailAccount.id == EmailMessage.account_id)
+        .filter(EmailAccount.enabled == True)
+        .order_by(EmailMessage.fetched_at.desc(), EmailMessage.id.desc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+    options: list[dict[str, object]] = []
+    for msg, account in rows:
+        subject = (msg.subject or "").strip() or "(ohne Betreff)"
+        from_text = (msg.from_text or "").strip()
+        date_label = (msg.date_text or "").strip() or _format_dt_short(msg.fetched_at)
+        label_parts = [_repair_email_account_label(account), date_label, subject]
+        if from_text:
+            label_parts.append(from_text)
+        options.append(
+            {
+                "id": int(msg.id),
+                "account_id": int(account.id),
+                "uid": str(msg.uid or "").strip(),
+                "label": " | ".join(part for part in label_parts if part),
+            }
+        )
+    return options
+
+
+def _repair_linked_mail_views(db: Session, order_id: int) -> list[dict[str, object]]:
+    rows = (
+        db.query(RepairMailLink)
+        .filter(RepairMailLink.repair_order_id == int(order_id))
+        .order_by(RepairMailLink.created_at.desc(), RepairMailLink.id.desc())
+        .all()
+    )
+    items: list[dict[str, object]] = []
+    for row in rows:
+        ref = _repair_mail_reference_view(
+            db,
+            account_id=int(row.account_id or 0) or None,
+            uid=row.uid,
+            message_id=row.message_id,
+        )
+        items.append(
+            {
+                "link": row,
+                "account_label": str(ref.get("account_label") or "-"),
+                "headline": str(ref.get("headline") or "-"),
+                "subline": str(ref.get("subline") or ""),
+                "uid": str(ref.get("uid") or ""),
+                "message_id": str(ref.get("message_id") or ""),
+                "created_at_label": _format_dt_short(row.created_at),
+            }
+        )
+    return items
+
+
+def _repair_commission_snapshot(order: RepairOrder) -> dict[str, object]:
+    return {
+        "commissioned_at": order.commissioned_at,
+        "commission_account_id": int(order.commission_account_id or 0) or None,
+        "commission_email_uid": str(order.commission_email_uid or "").strip() or None,
+        "commission_message_id": str(order.commission_message_id or "").strip() or None,
+        "commission_reference": str(order.commission_reference or "").strip() or None,
+        "repair_cost_cents": int(order.repair_cost_cents) if order.repair_cost_cents is not None else None,
+        "shipping_carrier": str(order.shipping_carrier or "").strip() or None,
+        "tracking_no": str(order.tracking_no or "").strip() or None,
+        "tracking_url": str(order.tracking_url or "").strip() or None,
+        "commission_note": str(order.commission_note or "").strip() or None,
+    }
+
+
+def _repair_commission_value_label(db: Session, field_key: str, value) -> str:
+    if field_key == "commissioned_at":
+        return _format_dt_short(value) if value else "-"
+    if field_key == "commission_account_id":
+        account = db.get(EmailAccount, int(value)) if value else None
+        return _repair_email_account_label(account)
+    if field_key == "repair_cost_cents":
+        return _format_eur(value) if value is not None else "-"
+    text = str(value or "").strip()
+    return text or "-"
+
+
+def _repair_commission_change_lines(db: Session, before: dict[str, object], after: dict[str, object]) -> list[str]:
+    labels = {
+        "commissioned_at": "Beauftragt am",
+        "commission_account_id": "IMAP-/E-Mail-Konto",
+        "commission_email_uid": "Mail-UID",
+        "commission_message_id": "Mail-Referenz",
+        "commission_reference": "Dienstleister-Referenz",
+        "repair_cost_cents": "Reparaturpreis",
+        "shipping_carrier": "Paketdienst",
+        "tracking_no": "Trackingnummer",
+        "tracking_url": "Tracking-URL",
+        "commission_note": "Hinweis",
+    }
+    lines: list[str] = []
+    for key, label in labels.items():
+        if before.get(key) == after.get(key):
+            continue
+        old_label = _repair_commission_value_label(db, key, before.get(key))
+        new_label = _repair_commission_value_label(db, key, after.get(key))
+        lines.append(f"{label}: {old_label} -> {new_label}")
+    return lines
+
+
+def _repair_commission_summary_dict(db: Session, order: RepairOrder) -> dict[str, object]:
+    mail_ref = _repair_mail_reference_view(
+        db,
+        account_id=int(order.commission_account_id or 0) or None,
+        uid=order.commission_email_uid,
+        message_id=order.commission_message_id,
+    )
+    return {
+        "has_data": bool(
+            order.commissioned_at
+            or order.commission_account_id
+            or str(order.commission_email_uid or "").strip()
+            or str(order.commission_message_id or "").strip()
+            or str(order.commission_reference or "").strip()
+            or order.repair_cost_cents is not None
+            or str(order.shipping_carrier or "").strip()
+            or str(order.tracking_no or "").strip()
+            or str(order.tracking_url or "").strip()
+            or str(order.commission_note or "").strip()
+        ),
+        "commissioned_at_label": _format_dt_short(order.commissioned_at) if order.commissioned_at else "-",
+        "mail": mail_ref,
+        "commission_reference": (order.commission_reference or "").strip() or "-",
+        "repair_cost_label": _format_eur(order.repair_cost_cents) if order.repair_cost_cents is not None else "-",
+        "shipping_carrier": (order.shipping_carrier or "").strip() or "-",
+        "tracking_no": (order.tracking_no or "").strip() or "-",
+        "tracking_url": (order.tracking_url or "").strip() or "-",
+        "commission_note": (order.commission_note or "").strip() or "-",
+    }
+
+
+def _repair_event_supports_commission_details(event: RepairEvent, meta: dict | None = None) -> bool:
+    payload = meta or _repair_event_meta(event)
+    workflow = str(payload.get("workflow") or "").strip().lower()
+    if workflow == "commission":
+        return True
+    if str(event.event_type or "").strip().lower() != "status_change":
+        return False
+    return _repair_normalize_status_code(payload.get("new_status")) == REPAIR_STATUS_BEAUFTRAGT
+
+
+def _repair_parse_no_from_subject(subject: str | None) -> str | None:
+    text = str(subject or "").strip()
+    if not text:
+        return None
+    m = re.search(r"\[(REP-\d{6})\]", text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    return str(m.group(1) or "").upper().strip() or None
+
+
+def _repair_subject_default(order: RepairOrder, product: Product | None) -> str:
+    repair_no = _repair_reference(order)
+    product_label = _mobile_display_name(product)
+    return f"Reparaturanfrage [{repair_no}] {product_label}".strip()
+
+
+def _repair_note_text(order: RepairOrder) -> str:
+    for value in (order.notes, order.note):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _repair_write_note(order: RepairOrder, text: str | None) -> None:
+    value = (text or "").strip() or None
+    order.notes = value
+    order.note = value
+
+
+def _repair_next_no(db: Session) -> str:
+    latest = db.query(RepairOrder.id).order_by(RepairOrder.id.desc()).first()
+    next_id = int(latest[0] if latest and latest[0] else 0) + 1
+    return f"REP-{next_id:06d}"
+
+
+def _repair_default_warehouse_id(db: Session) -> int:
+    configured = _int_from_setting(_system_setting_get(db, REPAIR_DEFAULT_WAREHOUSE_ID, "0"), default=0, minimum=0)
+    if configured and db.get(Warehouse, configured):
+        return configured
+    wh = _ensure_repair_warehouse(db)
+    return int(wh.id)
+
+
+def _scrap_default_warehouse_id(db: Session) -> int:
+    configured = _int_from_setting(_system_setting_get(db, SCRAP_DEFAULT_WAREHOUSE_ID, "0"), default=0, minimum=0)
+    if configured and db.get(Warehouse, configured):
+        return configured
+    wh = _ensure_scrap_warehouse(db)
+    return int(wh.id)
+
+
+def _ensure_repair_warehouse(db: Session) -> Warehouse:
+    configured_id = _int_from_setting(_system_setting_get(db, REPAIR_DEFAULT_WAREHOUSE_ID, "0"), default=0, minimum=0)
+    if configured_id:
+        configured = db.get(Warehouse, configured_id)
+        if configured:
+            return configured
+
+    for name in ("extern - reparatur", "reparatur"):
+        warehouse = db.query(Warehouse).filter(func.lower(Warehouse.name) == name).one_or_none()
+        if warehouse:
+            _system_setting_set(db, REPAIR_DEFAULT_WAREHOUSE_ID, str(int(warehouse.id)))
+            return warehouse
+
+    warehouse = Warehouse(name="Extern - Reparatur", description="Virtuelles Lager für externe Reparaturaufträge")
+    db.add(warehouse)
+    db.flush()
+    _system_setting_set(db, REPAIR_DEFAULT_WAREHOUSE_ID, str(int(warehouse.id)))
+    return warehouse
+
+
+def _ensure_scrap_warehouse(db: Session) -> Warehouse:
+    configured_id = _int_from_setting(_system_setting_get(db, SCRAP_DEFAULT_WAREHOUSE_ID, "0"), default=0, minimum=0)
+    if configured_id:
+        configured = db.get(Warehouse, configured_id)
+        if configured:
+            return configured
+
+    for name in ("verschrottet", "schrott"):
+        warehouse = db.query(Warehouse).filter(func.lower(Warehouse.name) == name).one_or_none()
+        if warehouse:
+            _system_setting_set(db, SCRAP_DEFAULT_WAREHOUSE_ID, str(int(warehouse.id)))
+            return warehouse
+
+    warehouse = Warehouse(name="Verschrottet", description="Virtuelles Lager für verschrottete Teile")
+    db.add(warehouse)
+    db.flush()
+    _system_setting_set(db, SCRAP_DEFAULT_WAREHOUSE_ID, str(int(warehouse.id)))
+    return warehouse
+
+
+def _repair_mailbox_account(db: Session) -> EmailAccount | None:
+    configured_id = _int_from_setting(_system_setting_get(db, REPAIR_MAILBOX_ACCOUNT_ID, "0"), default=0, minimum=0)
+    if configured_id:
+        account = db.get(EmailAccount, configured_id)
+        if account and bool(account.enabled):
+            return account
+    return _pick_default_enabled_account(db)
+
+
+def _repair_add_event(
+    db: Session,
+    order: RepairOrder,
+    event_type: str,
+    title: str,
+    body: str = "",
+    meta: dict | None = None,
+) -> RepairEvent:
+    normalized_type = str(event_type or "note").strip().lower() or "note"
+    if normalized_type not in REPAIR_EVENT_TYPES:
+        normalized_type = "note"
+    row = RepairEvent(
+        repair_order_id=int(order.id),
+        ts=_utcnow_naive(),
+        event_type=normalized_type,
+        title=(title or "").strip() or "Ereignis",
+        body=(body or "").strip() or None,
+        meta_json=(json.dumps(meta, ensure_ascii=False) if meta else None),
+    )
+    db.add(row)
+    now = _utcnow_naive()
+    order.updated_at = now
+    db.add(order)
+    db.flush()
+    return row
+
+
+def _repair_set_status(
+    db: Session,
+    order: RepairOrder,
+    status: str,
+    *,
+    title: str = "",
+    body: str = "",
+    meta: dict | None = None,
+    outcome: str | None = None,
+    close_order: bool = False,
+) -> None:
+    old_status = _repair_normalize_status_code(order.status)
+    new_status = _repair_normalize_status_code(status) or old_status
+    if new_status not in REPAIR_STATUS_CHOICES:
+        raise ValueError("Ungültiger Reparaturstatus.")
+    order.status = new_status
+    if outcome is not None:
+        out = str(outcome or "").strip().upper()
+        order.outcome = out if out in REPAIR_OUTCOME_CHOICES else None
+    if close_order and not order.closed_at:
+        order.closed_at = _utcnow_naive()
+    db.add(order)
+    if old_status == new_status and not title and not body:
+        return
+    meta_payload = {"old_status": old_status, "new_status": new_status}
+    if meta:
+        meta_payload.update(meta)
+    _repair_add_event(
+        db,
+        order,
+        "status_change",
+        title or f"Status geändert: {_repair_status_label(old_status)} → {_repair_status_label(new_status)}",
+        body=body,
+        meta=meta_payload,
+    )
+
+
+def _repair_best_condition_for_warehouse(db: Session, product_id: int, warehouse_id: int) -> str:
+    row = (
+        db.query(StockBalance.condition, func.coalesce(func.sum(StockBalance.quantity), 0).label("qty"))
+        .filter(
+            StockBalance.product_id == int(product_id),
+            StockBalance.warehouse_id == int(warehouse_id),
+            StockBalance.quantity > 0,
+        )
+        .group_by(StockBalance.condition)
+        .order_by(func.coalesce(func.sum(StockBalance.quantity), 0).desc(), StockBalance.condition.asc())
+        .first()
+    )
+    if row and row[0]:
+        condition = _condition_code_from_input(str(row[0]))
+        if _condition_exists(db, condition, active_only=False):
+            return condition
+    return _mobile_spare_default_condition(db)
+
+
+def _repair_transfer_stock(
+    db: Session,
+    *,
+    product_id: int,
+    qty: int,
+    warehouse_from_id: int,
+    warehouse_to_id: int,
+    condition: str,
+    reference: str,
+    note: str,
+    actor_user_id: int | None,
+) -> InventoryTransaction:
+    tx = InventoryTransaction(
+        tx_type="transfer",
+        product_id=int(product_id),
+        warehouse_from_id=int(warehouse_from_id),
+        warehouse_to_id=int(warehouse_to_id),
+        bin_from_id=None,
+        bin_to_id=None,
+        owner_id=None,
+        supplier_id=None,
+        delivery_note_no=None,
+        unit_cost=None,
+        condition=str(condition),
+        quantity=int(qty),
+        serial_number=None,
+        reference=reference,
+        note=note,
+    )
+    apply_transaction(db, tx, actor_user_id=actor_user_id)
+    return tx
+
+
+def _safe_filename(raw_name: str | None, fallback: str = "datei") -> str:
+    name = Path(str(raw_name or "")).name
+    if not name:
+        name = fallback
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    return clean or fallback
+
+
+def _repair_attachment_abs_path(storage_path: str | None) -> Path:
+    raw = str(storage_path or "").strip()
+    if not raw:
+        return Path("")
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+    return UPLOADS_DIR / raw
+
+
+def _repair_store_attachment_bytes(repair_event_id: int, filename: str, payload: bytes) -> tuple[str, int]:
+    if len(payload) > REPAIR_EVENT_ATTACHMENT_MAX_BYTES:
+        raise ValueError("Anhang ist zu groß (max. 15 MB).")
+    event_dir = REPAIR_EVENT_UPLOAD_DIR / str(int(repair_event_id))
+    event_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_filename(filename or "anhang")
+    stored = f"{uuid.uuid4().hex}_{safe_name}"
+    abs_path = event_dir / stored
+    abs_path.write_bytes(payload)
+    rel_path = str(Path("repair_events") / str(int(repair_event_id)) / stored)
+    return rel_path, len(payload)
+
+
+def _mail_decode_header(value: str | None) -> str:
+    if not value:
+        return ""
+    out: list[str] = []
+    for chunk, encoding in decode_header(value):
+        if isinstance(chunk, bytes):
+            enc = encoding or "utf-8"
+            try:
+                out.append(chunk.decode(enc, errors="replace"))
+            except Exception:
+                out.append(chunk.decode("utf-8", errors="replace"))
+        else:
+            out.append(str(chunk))
+    return "".join(out).strip()
+
+
+def _mail_extract_plain_text(msg: email.message.Message) -> str:
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = str(part.get_content_type() or "").lower()
+            disp = str(part.get("Content-Disposition") or "").lower()
+            if content_type == "text/plain" and "attachment" not in disp:
+                payload = part.get_payload(decode=True)
+                if payload is None:
+                    return str(part.get_payload() or "")
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    return payload.decode(charset, errors="replace")
+                except Exception:
+                    return payload.decode("utf-8", errors="replace")
+        return ""
+    payload = msg.get_payload(decode=True)
+    if payload is None:
+        return str(msg.get_payload() or "")
+    charset = msg.get_content_charset() or "utf-8"
+    try:
+        return payload.decode(charset, errors="replace")
+    except Exception:
+        return payload.decode("utf-8", errors="replace")
+
+
+def _repair_imap_client(account: EmailAccount):
+    if not account.imap_host or not account.imap_port:
+        raise ValueError("IMAP-Host/Port fehlen.")
+    if bool(account.imap_tls):
+        client = imaplib.IMAP4_SSL(account.imap_host, int(account.imap_port), timeout=12)
+    else:
+        client = imaplib.IMAP4(account.imap_host, int(account.imap_port), timeout=12)
+    username = (account.imap_username or "").strip()
+    password = decrypt_password(account.imap_password_enc) or ""
+    if username:
+        client.login(username, password)
+    return client
+
+
+def _repair_create_order(
+    db: Session,
+    *,
+    article_id: int,
+    qty: int,
+    supplier_id: int | None,
+    source_warehouse_id: int | None,
+    target_warehouse_id: int | None,
+    reservation_ref: str | None,
+    notes: str | None,
+    created_by_user_id: int | None,
+) -> RepairOrder:
+    order = RepairOrder(
+        repair_no=None,
+        article_id=int(article_id),
+        qty=max(1, int(qty)),
+        supplier_id=(int(supplier_id) if supplier_id else None),
+        status=REPAIR_STATUS_ENTWURF,
+        outcome=None,
+        source_warehouse_id=(int(source_warehouse_id) if source_warehouse_id else None),
+        repair_warehouse_id=int(_repair_default_warehouse_id(db)),
+        target_warehouse_id=(int(target_warehouse_id) if target_warehouse_id else None),
+        reservation_ref=(reservation_ref or "").strip() or None,
+        notes=(notes or "").strip() or None,
+        outsmart_row_id=None,
+        reference=(reservation_ref or "").strip() or None,
+        note=(notes or "").strip() or None,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+        closed_at=None,
+        created_by_user_id=(int(created_by_user_id) if created_by_user_id else None),
+    )
+    db.add(order)
+    db.flush()
+    if not order.repair_no:
+        order.repair_no = f"REP-{int(order.id):06d}"
+        db.add(order)
+        db.flush()
+    _repair_add_event(db, order, "created", "Reparaturauftrag angelegt", body="")
+    return order
+
+
+def _repair_pick_send_account(db: Session, account_id: int | None = None) -> EmailAccount | None:
+    if account_id:
+        acc = db.get(EmailAccount, int(account_id))
+        if acc and bool(acc.enabled):
+            return acc
+    return _pick_default_enabled_account(db)
+
+
+def _repair_validate_tracking_url(raw: str | None) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    parsed = urlsplit(text)
+    if str(parsed.scheme or "").lower() not in ("http", "https") or not str(parsed.netloc or "").strip():
+        raise ValueError("Tracking-URL muss mit http:// oder https:// beginnen.")
+    return text
+
+
+def _repair_parse_commission_form(
+    db: Session,
+    form,
+    *,
+    default_account_id: int | None = None,
+) -> tuple[dict[str, object], dict[str, str]]:
+    errors: dict[str, str] = {}
+
+    try:
+        message_row_id = int(form.get("commission_email_message_id") or 0)
+    except Exception:
+        message_row_id = 0
+        errors["commission_email_message_id"] = "Mail-Auswahl ist ungültig."
+
+    message_row = db.get(EmailMessage, message_row_id) if message_row_id > 0 else None
+    if message_row_id > 0 and not message_row:
+        errors["commission_email_message_id"] = "Die ausgewählte IMAP-Mail wurde nicht gefunden."
+
+    try:
+        account_id = int(form.get("commission_email_account_id") or 0)
+    except Exception:
+        account_id = 0
+        errors["commission_email_account_id"] = "E-Mail-Konto ist ungültig."
+
+    account: EmailAccount | None = None
+    if message_row:
+        account = db.get(EmailAccount, int(message_row.account_id))
+        if not account or not bool(account.enabled):
+            errors["commission_email_message_id"] = "Die ausgewählte Mail gehört zu keinem aktiven E-Mail-Konto."
+    elif account_id > 0:
+        account = _repair_pick_send_account(db, account_id=account_id)
+        if not account:
+            errors["commission_email_account_id"] = "Bitte ein aktives E-Mail-Konto wählen."
+    elif default_account_id:
+        account = _repair_pick_send_account(db, account_id=int(default_account_id))
+
+    commission_message_id = (form.get("commission_message_id") or "").strip() or None
+    commission_reference = (form.get("commission_reference") or "").strip() or None
+    shipping_carrier = (form.get("shipping_carrier") or "").strip() or None
+    tracking_no = (form.get("tracking_no") or "").strip() or None
+    commission_note = (form.get("commission_note") or "").strip() or None
+
+    try:
+        tracking_url = _repair_validate_tracking_url(form.get("tracking_url"))
+    except ValueError as exc:
+        tracking_url = None
+        errors["tracking_url"] = str(exc)
+
+    try:
+        repair_cost_cents = _parse_eur_to_cents(form.get("repair_cost"), "Reparaturpreis")
+    except ValueError as exc:
+        repair_cost_cents = None
+        errors["repair_cost"] = str(exc)
+
+    payload: dict[str, object] = {
+        "commission_account_id": int(account.id) if account else None,
+        "commission_email_uid": str(message_row.uid or "").strip() if message_row else None,
+        "commission_message_id": commission_message_id,
+        "commission_reference": commission_reference,
+        "repair_cost_cents": repair_cost_cents,
+        "shipping_carrier": shipping_carrier,
+        "tracking_no": tracking_no,
+        "tracking_url": tracking_url,
+        "commission_note": commission_note,
+        "commission_email_message_row_id": int(message_row.id) if message_row else None,
+        "commission_email_subject": (message_row.subject or "").strip() if message_row else "",
+        "commission_email_from_text": (message_row.from_text or "").strip() if message_row else "",
+        "commission_email_date_text": (message_row.date_text or "").strip() if message_row else "",
+    }
+    return payload, errors
+
+
+def _repair_apply_commission_payload(
+    db: Session,
+    order: RepairOrder,
+    payload: dict[str, object],
+    *,
+    set_commissioned_at: bool = False,
+) -> list[str]:
+    before = _repair_commission_snapshot(order)
+    if set_commissioned_at and not order.commissioned_at:
+        order.commissioned_at = _utcnow_naive()
+    order.commission_account_id = int(payload.get("commission_account_id") or 0) or None
+    order.commission_email_uid = str(payload.get("commission_email_uid") or "").strip() or None
+    order.commission_message_id = str(payload.get("commission_message_id") or "").strip() or None
+    order.commission_reference = str(payload.get("commission_reference") or "").strip() or None
+    order.repair_cost_cents = int(payload.get("repair_cost_cents")) if payload.get("repair_cost_cents") is not None else None
+    order.shipping_carrier = str(payload.get("shipping_carrier") or "").strip() or None
+    order.tracking_no = str(payload.get("tracking_no") or "").strip() or None
+    order.tracking_url = str(payload.get("tracking_url") or "").strip() or None
+    order.commission_note = str(payload.get("commission_note") or "").strip() or None
+    after = _repair_commission_snapshot(order)
+    if before != after:
+        order.updated_at = _utcnow_naive()
+    db.add(order)
+
+    account_id = int(payload.get("commission_account_id") or 0) or None
+    uid = str(payload.get("commission_email_uid") or "").strip() or None
+    message_id = str(payload.get("commission_message_id") or "").strip() or None
+    if account_id and uid:
+        linked_elsewhere = (
+            db.query(RepairMailLink)
+            .filter(RepairMailLink.account_id == int(account_id), RepairMailLink.uid == uid)
+            .one_or_none()
+        )
+        if linked_elsewhere is not None and int(linked_elsewhere.repair_order_id or 0) != int(order.id):
+            other_order = db.get(RepairOrder, int(linked_elsewhere.repair_order_id))
+            other_ref = _repair_reference(other_order) if other_order else f"#{int(linked_elsewhere.repair_order_id)}"
+            raise ValueError(f"Die ausgewählte IMAP-Mail ist bereits dem Reparaturauftrag {other_ref} zugeordnet.")
+        link = (
+            db.query(RepairMailLink)
+            .filter(RepairMailLink.repair_order_id == int(order.id), RepairMailLink.account_id == int(account_id), RepairMailLink.uid == uid)
+            .one_or_none()
+        )
+        if link is None:
+            db.add(
+                RepairMailLink(
+                    repair_order_id=int(order.id),
+                    account_id=int(account_id),
+                    uid=uid,
+                    message_id=message_id,
+                )
+            )
+        elif message_id and not str(link.message_id or "").strip():
+            link.message_id = message_id
+            db.add(link)
+
+    db.flush()
+    return _repair_commission_change_lines(db, before, after)
+
+
+def _repair_send_request_email(
+    db: Session,
+    *,
+    order: RepairOrder,
+    supplier: Supplier,
+    product: Product | None,
+    account_id: int | None = None,
+    subject: str | None = None,
+    body: str | None = None,
+    send_now: bool = True,
+) -> EmailOutbox:
+    supplier_email = str(supplier.email or "").strip()
+    if "@" not in supplier_email:
+        raise ValueError("Lieferant hat keine gültige E-Mail-Adresse.")
+    account = _repair_pick_send_account(db, account_id=account_id)
+    if not account:
+        raise ValueError("Kein aktives E-Mail-Konto verfügbar.")
+
+    subj = (subject or "").strip() or _repair_subject_default(order, product)
+    if "[" not in subj or "]" not in subj or "[" + _repair_reference(order) + "]" not in subj:
+        subj = _repair_subject_default(order, product)
+    text = (body or "").strip()
+    if not text:
+        text = (
+            f"Reparaturanfrage {order.repair_no}\\n"
+            f"Artikel: {_mobile_display_name(product)}\\n"
+            f"Materialnummer: {(product.material_no if product else '') or '-'}\\n"
+            f"Menge: {int(order.qty or 1)}\\n"
+            f"Referenz: {order.reservation_ref or '-'}\\n"
+            f"Hinweis: {_repair_note_text(order) or '-'}\\n"
+        ).strip()
+
+    outbox_row = EmailOutbox(
+        account_id=int(account.id),
+        to_email=supplier_email,
+        subject=subj,
+        body_text=text,
+        status="queued",
+        attempts=0,
+    )
+    db.add(outbox_row)
+    db.flush()
+    if send_now:
+        send_outbox_once(db, batch_size=50)
+    _repair_add_event(
+        db,
+        order,
+        "email_out",
+        title=f"E-Mail versendet: {subj}",
+        body=text[:3000],
+        meta={
+            "to": supplier_email,
+            "account_id": int(account.id),
+            "email_outbox_id": int(outbox_row.id),
+        },
+    )
+    _repair_set_status(
+        db,
+        order,
+        REPAIR_STATUS_WARTET,
+        title="Anfrage gesendet",
+        body="Reparaturanfrage wurde per E-Mail versendet.",
+    )
+    return outbox_row
+
+
+def _repair_sync_inbound_mail(db: Session, limit: int = 30) -> dict[str, int]:
+    account = _repair_mailbox_account(db)
+    if not account or not account.imap_host or not account.imap_port:
+        return {"scanned": 0, "matched": 0, "events": 0}
+
+    client = None
+    scanned = 0
+    matched = 0
+    events = 0
+    try:
+        client = _repair_imap_client(account)
+        status, _ = client.select("INBOX", readonly=True)
+        if status != "OK":
+            return {"scanned": 0, "matched": 0, "events": 0}
+        status, data = client.uid("search", None, "ALL")
+        if status != "OK":
+            return {"scanned": 0, "matched": 0, "events": 0}
+        raw_ids = (data[0] or b"").split() if data and data[0] else []
+        wanted = raw_ids[-max(1, int(limit)) :]
+        scanned = len(wanted)
+
+        paperless_cfg = _paperless_settings(db, include_secret=True)
+        auto_paperless = bool(_bool_from_setting(_system_setting_get(db, REPAIR_AUTO_PAPERLESS, "0"), default=False))
+        paperless_ready = bool(paperless_cfg.get("enabled")) and bool(paperless_cfg.get("token")) and auto_paperless
+
+        for uid_bytes in wanted:
+            uid = uid_bytes.decode("utf-8", errors="ignore")
+            if not uid:
+                continue
+            if db.query(RepairMailLink).filter(RepairMailLink.account_id == int(account.id), RepairMailLink.uid == uid).count() > 0:
+                continue
+
+            st, msg_data = client.uid("fetch", uid, "(RFC822)")
+            if st != "OK" or not msg_data:
+                continue
+            raw_msg = b""
+            for item in msg_data:
+                if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+                    raw_msg = bytes(item[1])
+                    break
+            if not raw_msg:
+                continue
+
+            parsed = email.message_from_bytes(raw_msg)
+            subject = _mail_decode_header(parsed.get("Subject"))
+            repair_no = _repair_parse_no_from_subject(subject)
+            if not repair_no:
+                continue
+
+            order = (
+                db.query(RepairOrder)
+                .filter(func.upper(func.coalesce(RepairOrder.repair_no, "")) == repair_no.upper())
+                .one_or_none()
+            )
+            if not order:
+                continue
+
+            message_id = str(parsed.get("Message-ID") or "").strip() or None
+            if message_id:
+                msg_exists = (
+                    db.query(RepairMailLink)
+                    .filter(
+                        RepairMailLink.account_id == int(account.id),
+                        RepairMailLink.message_id == message_id,
+                    )
+                    .count()
+                )
+                if msg_exists:
+                    continue
+
+            from_text = _mail_decode_header(parsed.get("From"))
+            date_text = _mail_decode_header(parsed.get("Date"))
+            body_plain = (_mail_extract_plain_text(parsed) or "").strip()
+            if len(body_plain) > 6000:
+                body_plain = body_plain[:6000] + "\n..."
+
+            event = _repair_add_event(
+                db,
+                order,
+                "email_in",
+                title=f"E-Mail eingegangen: {subject or '(ohne Betreff)'}",
+                body=body_plain,
+                meta={
+                    "from": from_text,
+                    "date": date_text,
+                    "subject": subject,
+                    "uid": uid,
+                    "account_id": int(account.id),
+                },
+            )
+            events += 1
+            matched += 1
+
+            for part in parsed.walk():
+                if part.is_multipart():
+                    continue
+                filename_raw = part.get_filename()
+                if not filename_raw:
+                    continue
+                filename = _mail_decode_header(filename_raw)
+                payload = part.get_payload(decode=True)
+                if not payload:
+                    continue
+                try:
+                    rel_path, size_bytes = _repair_store_attachment_bytes(int(event.id), filename, payload)
+                except Exception:
+                    continue
+                mime = str(part.get_content_type() or "").strip() or None
+                att = RepairAttachment(
+                    repair_event_id=int(event.id),
+                    filename=_safe_filename(filename, fallback="anhang"),
+                    mime=mime,
+                    size=int(size_bytes),
+                    storage_path=rel_path,
+                    paperless_document_id=None,
+                    outsmart_reference=None,
+                )
+                db.add(att)
+                db.flush()
+
+                if paperless_ready:
+                    try:
+                        upload_result = _paperless_upload_document(
+                            settings=paperless_cfg,
+                            filename=att.filename,
+                            mime=(mime or "application/octet-stream"),
+                            payload=payload,
+                        )
+                        paperless_id = str(upload_result.get("document_id") or "").strip()
+                        if paperless_id:
+                            att.paperless_document_id = paperless_id
+                            db.add(att)
+                    except Exception as exc:
+                        _repair_add_event(
+                            db,
+                            order,
+                            "integration",
+                            title="Paperless-Upload fehlgeschlagen",
+                            body=str(exc),
+                            meta={"integration": "paperless", "attachment_id": int(att.id)},
+                        )
+
+            db.add(
+                RepairMailLink(
+                    repair_order_id=int(order.id),
+                    account_id=int(account.id),
+                    uid=uid,
+                    message_id=message_id,
+                )
+            )
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+            try:
+                client.logout()
+            except Exception:
+                pass
+    return {"scanned": scanned, "matched": matched, "events": events}
 
 
 def _is_sets_device_type_name(name: str | None) -> bool:
@@ -1576,17 +3194,7 @@ def _is_sets_product(
 
 
 def _purchase_reference(order: PurchaseOrder) -> str:
-    return (order.po_number or "").strip() or f"PO-{order.id}"
-
-
-def _ensure_repair_warehouse(db: Session) -> Warehouse:
-    warehouse = db.query(Warehouse).filter(func.lower(Warehouse.name) == "reparatur").one_or_none()
-    if warehouse:
-        return warehouse
-    warehouse = Warehouse(name="Reparatur", description="Zwischenlager für Reparaturaufträge")
-    db.add(warehouse)
-    db.flush()
-    return warehouse
+    return (getattr(order, "order_no", None) or order.po_number or "").strip() or f"PO-{order.id}"
 
 
 def _format_eur(cents: int | None) -> str:
@@ -1732,9 +3340,88 @@ def _next_po_number(db: Session) -> str:
     year = dt.datetime.utcnow().year
     prefix = f"PO-{year}-"
     rows = (
-        db.query(PurchaseOrder.po_number)
-        .filter(PurchaseOrder.po_number.like(f"{prefix}%"))
-        .order_by(PurchaseOrder.po_number.desc())
+        db.query(PurchaseOrder.order_no, PurchaseOrder.po_number)
+        .filter(or_(PurchaseOrder.order_no.like(f"{prefix}%"), PurchaseOrder.po_number.like(f"{prefix}%")))
+        .order_by(PurchaseOrder.order_no.desc(), PurchaseOrder.po_number.desc())
+        .limit(1)
+        .all()
+    )
+    seq = 1
+    if rows:
+        candidate = str(rows[0][0] or rows[0][1] or "")
+        tail = candidate.replace(prefix, "", 1)
+        try:
+            seq = int(tail) + 1
+        except Exception:
+            seq = 1
+    return f"{prefix}{seq:04d}"
+
+
+def _purchase_status_label(status: str | None) -> str:
+    mapping = {
+        "draft": "Entwurf",
+        "sent": "Gesendet",
+        "confirmed": "Bestätigt",
+        "partially_received": "Teilweise geliefert",
+        "received": "Geliefert",
+        "closed": "Abgeschlossen",
+        "cancelled": "Storniert",
+    }
+    key = (status or "").strip().lower()
+    return mapping.get(key, status or "")
+
+
+def _goods_receipt_status_label(status: str | None) -> str:
+    mapping = {
+        "open": "Offen",
+        "posted": "Gebucht",
+        "closed": "Abgeschlossen",
+    }
+    key = (status or "").strip().lower()
+    return mapping.get(key, status or "")
+
+
+def _purchase_invoice_status_label(status: str | None) -> str:
+    mapping = {
+        "draft": "Entwurf",
+        "matched": "Abgeglichen",
+        "approved": "Freigegeben",
+        "booked": "Gebucht",
+        "paid": "Bezahlt",
+        "disputed": "Geklärt",
+    }
+    key = (status or "").strip().lower()
+    return mapping.get(key, status or "")
+
+
+def _parse_date_input(raw: str | None) -> dt.datetime | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return dt.datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    raise ValueError("Ungültiges Datum.")
+
+
+def _format_date_local(value: dt.datetime | None) -> str:
+    if not value:
+        return "-"
+    try:
+        return value.strftime("%d.%m.%Y")
+    except Exception:
+        return str(value)
+
+
+def _next_receipt_number(db: Session) -> str:
+    year = dt.datetime.utcnow().year
+    prefix = f"WE-{year}-"
+    rows = (
+        db.query(GoodsReceipt.receipt_no)
+        .filter(GoodsReceipt.receipt_no.like(f"{prefix}%"))
+        .order_by(GoodsReceipt.receipt_no.desc())
         .limit(1)
         .all()
     )
@@ -1748,15 +3435,1504 @@ def _next_po_number(db: Session) -> str:
     return f"{prefix}{seq:04d}"
 
 
-def _purchase_status_label(status: str | None) -> str:
-    mapping = {
-        "draft": "Entwurf",
-        "sent": "Gesendet",
-        "confirmed": "Bestätigt",
-        "received": "Geliefert",
+def _receipt_line_effective_cost(unit_cost_received: int | None) -> int | None:
+    if unit_cost_received is None:
+        return None
+    return int(unit_cost_received)
+
+
+def _record_purchase_price(
+    db: Session,
+    *,
+    product_id: int,
+    supplier_id: int | None,
+    source_type: str,
+    source_id: int | None,
+    effective_date: dt.datetime | None,
+    qty: int | None,
+    unit_cost: int | None,
+    extra_cost: int | None = None,
+    discount_value: int | None = None,
+) -> ProductPurchasePrice | None:
+    if unit_cost is None:
+        return None
+    effective_unit_cost = int(unit_cost) + int(extra_cost or 0) - int(discount_value or 0)
+    row = ProductPurchasePrice(
+        product_id=int(product_id),
+        supplier_id=(int(supplier_id) if supplier_id else None),
+        source_type=str(source_type or "manual"),
+        source_id=(int(source_id) if source_id else None),
+        effective_date=effective_date or _utcnow_naive(),
+        qty=int(qty or 0) or None,
+        unit_cost=int(unit_cost),
+        extra_cost=(int(extra_cost) if extra_cost is not None else None),
+        discount_value=(int(discount_value) if discount_value is not None else None),
+        effective_unit_cost=int(effective_unit_cost),
+        created_at=_utcnow_naive(),
+    )
+    db.add(row)
+    product = db.get(Product, int(product_id))
+    if product:
+        product.last_cost_cents = int(effective_unit_cost)
+        product.price_source = str(source_type or "manual")
+        db.add(product)
+    return row
+
+
+def _purchase_order_sum_cents(lines: list[PurchaseOrderLine]) -> int:
+    total = 0
+    for line in lines:
+        qty = int(getattr(line, "qty_ordered", None) or line.qty or 0)
+        price = getattr(line, "unit_price_expected", None)
+        if price is None:
+            price = line.confirmed_cost_cents if line.confirmed_cost_cents is not None else line.expected_cost_cents
+        if price is None:
+            continue
+        total += qty * int(price)
+    return total
+
+
+def _goods_receipt_sum_cents(lines: list[GoodsReceiptLine]) -> int:
+    total = 0
+    for line in lines:
+        if line.unit_cost_received is None:
+            continue
+        total += int(line.qty_received or 0) * int(line.unit_cost_received)
+    return total
+
+
+def _ensure_paperless_link(
+    db: Session,
+    *,
+    object_type: str,
+    object_id: int,
+    paperless_document_id: str,
+    paperless_title: str | None = None,
+) -> PaperlessLink:
+    row = (
+        db.query(PaperlessLink)
+        .filter(
+            PaperlessLink.object_type == str(object_type),
+            PaperlessLink.object_id == int(object_id),
+            PaperlessLink.paperless_document_id == str(paperless_document_id),
+        )
+        .one_or_none()
+    )
+    if row:
+        if paperless_title and not row.paperless_title:
+            row.paperless_title = paperless_title
+            db.add(row)
+        return row
+    row = PaperlessLink(
+        object_type=str(object_type),
+        object_id=int(object_id),
+        paperless_document_id=str(paperless_document_id),
+        paperless_title=(paperless_title or "").strip() or None,
+        created_at=_utcnow_naive(),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _paperless_links_for_object(db: Session, object_type: str, object_id: int) -> list[PaperlessLink]:
+    return (
+        db.query(PaperlessLink)
+        .filter(PaperlessLink.object_type == str(object_type), PaperlessLink.object_id == int(object_id))
+        .order_by(PaperlessLink.created_at.desc(), PaperlessLink.id.desc())
+        .all()
+    )
+
+
+MAIL_TEMPLATE_DEFAULTS: list[dict[str, str]] = [
+    {
+        "template_key": "angebot_versenden",
+        "name": "Angebot versenden",
+        "subject_template": "Ihr Angebot {{ case_no }}",
+        "body_template": "Guten Tag,\n\nanbei erhalten Sie unser Angebot {{ case_no }}.\n\nViele Grüße",
+    },
+    {
+        "template_key": "rechnung_versenden",
+        "name": "Rechnung versenden",
+        "subject_template": "Ihre Rechnung {{ invoice_no }}",
+        "body_template": "Guten Tag,\n\nanbei erhalten Sie die Rechnung {{ invoice_no }}.\n\nViele Grüße",
+    },
+    {
+        "template_key": "eingangsrechnung_rueckfrage",
+        "name": "Eingangsrechnungs-Rückfrage",
+        "subject_template": "Rückfrage zu Rechnung {{ invoice_no }}",
+        "body_template": "Guten Tag,\n\nzu der Rechnung {{ invoice_no }} haben wir noch eine Rückfrage.\n\nViele Grüße",
+    },
+    {
+        "template_key": "mahnung_stufe_1",
+        "name": "Mahnung Stufe 1",
+        "subject_template": "Zahlungserinnerung {{ invoice_no }}",
+        "body_template": "Guten Tag,\n\nbitte prüfen Sie die offene Rechnung {{ invoice_no }}.\n\nViele Grüße",
+    },
+    {
+        "template_key": "mahnung_stufe_2",
+        "name": "Mahnung Stufe 2",
+        "subject_template": "2. Mahnung {{ invoice_no }}",
+        "body_template": "Guten Tag,\n\nleider ist die Rechnung {{ invoice_no }} weiterhin offen.\n\nViele Grüße",
+    },
+    {
+        "template_key": "servicetermin_kommunikation",
+        "name": "Servicetermin-Kommunikation",
+        "subject_template": "Servicetermin {{ case_no }}",
+        "body_template": "Guten Tag,\n\nhier die Informationen zum Servicetermin {{ case_no }}.\n\nViele Grüße",
+    },
+]
+
+
+def _mail_templates(db: Session) -> list[MailTemplate]:
+    existing = {str(row.template_key or ""): row for row in db.query(MailTemplate).all()}
+    created = False
+    for payload in MAIL_TEMPLATE_DEFAULTS:
+        key = str(payload.get("template_key") or "")
+        row = existing.get(key)
+        if row is None:
+            row = MailTemplate(
+                template_key=key,
+                name=str(payload.get("name") or key),
+                subject_template=str(payload.get("subject_template") or ""),
+                body_template=str(payload.get("body_template") or ""),
+                active=True,
+                created_at=_utcnow_naive(),
+            )
+            db.add(row)
+            created = True
+            continue
+        changed = False
+        if not str(row.name or "").strip():
+            row.name = str(payload.get("name") or key)
+            changed = True
+        if not str(row.subject_template or "").strip():
+            row.subject_template = str(payload.get("subject_template") or "")
+            changed = True
+        if not str(row.body_template or "").strip():
+            row.body_template = str(payload.get("body_template") or "")
+            changed = True
+        if changed:
+            db.add(row)
+    if created:
+        db.flush()
+    return db.query(MailTemplate).order_by(MailTemplate.active.desc(), MailTemplate.name.asc(), MailTemplate.id.asc()).all()
+
+
+def _mail_render_template_text(text: str | None, context: dict[str, object]) -> str:
+    result = str(text or "")
+    for key, value in context.items():
+        result = result.replace(f"{{{{ {key} }}}}", str(value or ""))
+        result = result.replace(f"{{{{{key}}}}}", str(value or ""))
+    return result.strip()
+
+
+def _mail_attachment_abs_path(file_path: str | None) -> Path | None:
+    rel = str(file_path or "").strip()
+    if not rel:
+        return None
+    abs_path = ensure_dirs()["uploads"] / rel
+    return abs_path if abs_path.exists() else None
+
+
+def _mail_customer_options(db: Session) -> list[dict[str, object]]:
+    rows = db.query(MasterCustomer).order_by(MasterCustomer.customer_no_internal.asc(), MasterCustomer.id.asc()).limit(300).all()
+    party_ids = [int(row.party_id) for row in rows]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    return [
+        {
+            "id": int(row.id),
+            "label": f"{row.customer_no_internal} | {str(parties.get(int(row.party_id)).display_name if parties.get(int(row.party_id)) else '').strip() or '-'}",
+        }
+        for row in rows
+    ]
+
+
+def _mail_case_options(db: Session) -> list[dict[str, object]]:
+    rows = db.query(CrmCase).order_by(CrmCase.id.desc()).limit(300).all()
+    return [{"id": int(row.id), "label": f"{row.case_no} | {row.title}"} for row in rows]
+
+
+def _mail_thread_latest_message_map(db: Session, thread_ids: list[int]) -> dict[int, EmailMessage]:
+    out: dict[int, EmailMessage] = {}
+    if not thread_ids:
+        return out
+    rows = (
+        db.query(EmailMessage)
+        .filter(EmailMessage.thread_id.in_(thread_ids))
+        .order_by(func.coalesce(EmailMessage.received_at, EmailMessage.sent_at, EmailMessage.fetched_at).desc(), EmailMessage.id.desc())
+        .all()
+    )
+    for row in rows:
+        thread_id = int(row.thread_id or 0)
+        if thread_id > 0 and thread_id not in out:
+            out[thread_id] = row
+    return out
+
+
+def _mail_messages_for_thread(db: Session, thread_id: int) -> list[EmailMessage]:
+    return (
+        db.query(EmailMessage)
+        .filter(EmailMessage.thread_id == int(thread_id))
+        .order_by(func.coalesce(EmailMessage.received_at, EmailMessage.sent_at, EmailMessage.fetched_at).asc(), EmailMessage.id.asc())
+        .all()
+    )
+
+
+def _mail_attachments_map(db: Session, message_ids: list[int]) -> dict[int, list[MailAttachment]]:
+    out: dict[int, list[MailAttachment]] = {}
+    if not message_ids:
+        return out
+    rows = (
+        db.query(MailAttachment)
+        .filter(MailAttachment.mail_message_id.in_(message_ids))
+        .order_by(MailAttachment.id.asc())
+        .all()
+    )
+    for row in rows:
+        out.setdefault(int(row.mail_message_id), []).append(row)
+    return out
+
+
+def _mail_assign_thread(db: Session, thread: MailThread, *, customer_id: int | None, case_id: int | None, status: str = "assigned") -> None:
+    customer_value = int(customer_id or 0)
+    case_value = int(case_id or 0)
+    if customer_value > 0:
+        thread.master_customer_id = customer_value
+    if case_value > 0:
+        thread.case_id = case_value
+    thread.status = "waiting" if status == "suggested" else "open"
+    db.add(thread)
+    message_rows = db.query(EmailMessage).filter(EmailMessage.thread_id == int(thread.id)).all()
+    for row in message_rows:
+        if customer_value > 0:
+            row.master_customer_id = customer_value
+        if case_value > 0:
+            row.case_id = case_value
+        row.assignment_status = status
+        db.add(row)
+
+
+def _mail_backfill_legacy_threads(db: Session, limit: int = 200) -> None:
+    rows = (
+        db.query(EmailMessage)
+        .filter(EmailMessage.thread_id.is_(None))
+        .order_by(EmailMessage.id.asc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+    for row in rows:
+        suggestion = mail_suggest_assignments(
+            db,
+            from_email=str(row.from_email or ""),
+            to_emails=str(row.to_emails or ""),
+            cc_emails=str(row.cc_emails or ""),
+            subject=str(row.subject or ""),
+            body_text=str(row.body_text or row.snippet or ""),
+            in_reply_to=str(row.in_reply_to or ""),
+            references_header=str(row.references_header or ""),
+            attachment_names=[],
+        )
+        customer_ids = list(suggestion.get("customer_ids") or [])
+        case_ids = list(suggestion.get("case_ids") or [])
+        thread = (
+            db.get(MailThread, int(suggestion.get("thread_id") or 0))
+            if int(suggestion.get("thread_id") or 0) > 0
+            else None
+        )
+        if thread is None:
+            subject_normalized = mail_normalize_subject(row.subject or row.snippet or f"Nachricht {row.id}")
+            thread = (
+                db.query(MailThread)
+                .filter(MailThread.subject_normalized == subject_normalized)
+                .order_by(MailThread.last_message_at.desc(), MailThread.id.desc())
+                .first()
+            )
+        if thread is None:
+            thread = MailThread(
+                subject_normalized=mail_normalize_subject(row.subject or row.snippet or f"Nachricht {row.id}"),
+                master_customer_id=customer_ids[0] if len(customer_ids) == 1 else (int(row.master_customer_id or 0) or None),
+                case_id=case_ids[0] if len(case_ids) == 1 else (int(row.case_id or 0) or None),
+                status="open",
+                last_message_at=row.received_at or row.sent_at or row.fetched_at or _utcnow_naive(),
+                created_at=row.fetched_at or _utcnow_naive(),
+            )
+            db.add(thread)
+            db.flush()
+        row.thread_id = int(thread.id)
+        if len(customer_ids) == 1 and int(row.master_customer_id or 0) <= 0:
+            row.master_customer_id = int(customer_ids[0])
+        if len(case_ids) == 1 and int(row.case_id or 0) <= 0:
+            row.case_id = int(case_ids[0])
+        row.assignment_status = str(suggestion.get("status") or row.assignment_status or "unassigned")
+        if int(thread.master_customer_id or 0) <= 0 and int(row.master_customer_id or 0) > 0:
+            thread.master_customer_id = int(row.master_customer_id)
+        if int(thread.case_id or 0) <= 0 and int(row.case_id or 0) > 0:
+            thread.case_id = int(row.case_id)
+        thread.last_message_at = row.received_at or row.sent_at or row.fetched_at or thread.last_message_at or _utcnow_naive()
+        db.add(thread)
+        db.add(row)
+    if rows:
+        db.flush()
+
+
+def _mail_thread_rows(db: Session, *, q: str = "", status: str = "", assignment: str = "", limit: int = 120) -> list[dict[str, object]]:
+    _mail_backfill_legacy_threads(db, limit=300)
+    query = db.query(MailThread)
+    status_norm = (status or "").strip().lower()
+    if status_norm in ("open", "waiting", "closed"):
+        query = query.filter(MailThread.status == status_norm)
+    rows = query.order_by(func.coalesce(MailThread.last_message_at, MailThread.created_at).desc(), MailThread.id.desc()).limit(max(1, int(limit))).all()
+    latest_map = _mail_thread_latest_message_map(db, [int(row.id) for row in rows])
+    out: list[dict[str, object]] = []
+    q_norm = (q or "").strip().lower()
+    assignment_norm = (assignment or "").strip().lower()
+    customers = {int(row.id): row for row in db.query(MasterCustomer).filter(MasterCustomer.id.in_([int(item.master_customer_id) for item in rows if int(item.master_customer_id or 0) > 0])).all()} if rows else {}
+    cases = {int(row.id): row for row in db.query(CrmCase).filter(CrmCase.id.in_([int(item.case_id) for item in rows if int(item.case_id or 0) > 0])).all()} if rows else {}
+    party_ids = [int(row.party_id) for row in customers.values()]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    for row in rows:
+        latest = latest_map.get(int(row.id))
+        search_blob = " ".join(
+            [
+                str(latest.subject if latest else ""),
+                str(latest.from_email if latest else ""),
+                str(row.subject_normalized or ""),
+                str(cases.get(int(row.case_id or 0)).case_no if cases.get(int(row.case_id or 0)) else ""),
+                str(customers.get(int(row.master_customer_id or 0)).customer_no_internal if customers.get(int(row.master_customer_id or 0)) else ""),
+                str(parties.get(int(customers.get(int(row.master_customer_id or 0)).party_id or 0)).display_name if customers.get(int(row.master_customer_id or 0)) and parties.get(int(customers.get(int(row.master_customer_id or 0)).party_id or 0)) else ""),
+            ]
+        ).lower()
+        if q_norm and q_norm not in search_blob:
+            continue
+        if assignment_norm == "unassigned" and (int(row.master_customer_id or 0) > 0 or int(row.case_id or 0) > 0):
+            continue
+        if assignment_norm == "assigned" and int(row.master_customer_id or 0) <= 0 and int(row.case_id or 0) <= 0:
+            continue
+        out.append(
+            {
+                "thread": row,
+                "latest": latest,
+                "customer": customers.get(int(row.master_customer_id or 0)),
+                "customer_party": parties.get(int(customers.get(int(row.master_customer_id or 0)).party_id or 0)) if customers.get(int(row.master_customer_id or 0)) else None,
+                "crm_case": cases.get(int(row.case_id or 0)),
+            }
+        )
+    return out
+
+
+def _document_search_blob(item: DocumentInboxItem) -> str:
+    parts = [str(item.title or ""), str(item.correspondent or ""), str(item.document_type or "")]
+    try:
+        meta = json.loads(item.metadata_json or "{}")
+        if isinstance(meta, dict):
+            for key in ("content", "ocr", "title", "original_file_name", "correspondent_name"):
+                value = meta.get(key)
+                if value not in (None, ""):
+                    parts.append(str(value))
+    except Exception:
+        pass
+    return "\n".join(parts)
+
+
+def _document_match_candidates(db: Session, item: DocumentInboxItem) -> dict[str, list[object]]:
+    text = _document_search_blob(item).lower()
+    customers = []
+    for row in db.query(MasterCustomer).order_by(MasterCustomer.id.desc()).limit(200).all():
+        if str(row.customer_no_internal or "").lower() in text:
+            customers.append(row)
+    cases = []
+    for row in db.query(CrmCase).order_by(CrmCase.id.desc()).limit(200).all():
+        if str(row.case_no or "").lower() in text:
+            cases.append(row)
+    repairs = []
+    for row in db.query(RepairOrder).order_by(RepairOrder.id.desc()).limit(200).all():
+        if str(row.repair_no or "").lower() in text:
+            repairs.append(row)
+    orders = []
+    for row in db.query(PurchaseOrder).order_by(PurchaseOrder.id.desc()).limit(200).all():
+        tokens = [str(row.po_number or "").lower(), str(row.order_no or "").lower()]
+        if any(token and token in text for token in tokens):
+            orders.append(row)
+    receipts = []
+    for row in db.query(GoodsReceipt).order_by(GoodsReceipt.id.desc()).limit(200).all():
+        if str(row.receipt_no or "").lower() in text:
+            receipts.append(row)
+    invoices = []
+    for row in db.query(PurchaseInvoice).order_by(PurchaseInvoice.id.desc()).limit(200).all():
+        if str(row.invoice_no or "").lower() in text:
+            invoices.append(row)
+    return {
+        "customers": customers[:20],
+        "cases": cases[:20],
+        "repairs": repairs[:20],
+        "orders": orders[:20],
+        "receipts": receipts[:20],
+        "invoices": invoices[:20],
     }
-    key = (status or "").strip().lower()
-    return mapping.get(key, status or "")
+
+
+def _document_timeline_targets(db: Session, object_type: str, object_id: int) -> dict[str, int | None]:
+    kind = str(object_type or "").strip()
+    if kind == "customer":
+        return {"master_customer_id": int(object_id), "case_id": None}
+    if kind == "case":
+        row = db.get(CrmCase, int(object_id))
+        customer_id = None
+        if row:
+            role = (
+                db.query(RoleAssignment)
+                .filter(RoleAssignment.case_id == int(row.id), RoleAssignment.role_type == CRM_ROLE_ORDERING_PARTY)
+                .first()
+            )
+            customer_id = int(role.master_customer_id or 0) or None if role else None
+        return {"master_customer_id": customer_id, "case_id": int(object_id)}
+    if kind == "repair_order":
+        return {"master_customer_id": None, "case_id": None}
+    return {"master_customer_id": None, "case_id": None}
+
+
+def _document_timeline_add(
+    db: Session,
+    *,
+    object_type: str,
+    object_id: int,
+    title: str,
+    paperless_document_id: str | None = None,
+    external_ref: str | None = None,
+) -> None:
+    targets = _document_timeline_targets(db, object_type, object_id)
+    if int(targets.get("master_customer_id") or 0) <= 0 and int(targets.get("case_id") or 0) <= 0:
+        return
+    ref = external_ref or (f"paperless:{paperless_document_id}" if paperless_document_id else f"{object_type}:{object_id}:{title}")
+    exists = (
+        db.query(CrmTimelineEvent)
+        .filter(CrmTimelineEvent.source_system == "paperless", CrmTimelineEvent.external_ref == ref)
+        .first()
+    )
+    if exists:
+        return
+    db.add(
+        CrmTimelineEvent(
+            case_id=int(targets.get("case_id") or 0) or None,
+            master_customer_id=int(targets.get("master_customer_id") or 0) or None,
+            source_system="paperless",
+            event_type="document",
+            title=title,
+            body=f"Dokument zugeordnet: {object_type} #{int(object_id)}",
+            event_ts=_utcnow_naive(),
+            external_ref=ref,
+            meta_json=json.dumps({"paperless_document_id": paperless_document_id or "", "object_type": object_type, "object_id": int(object_id)}, ensure_ascii=False),
+            created_at=_utcnow_naive(),
+        )
+    )
+
+
+def _store_uploaded_attachment(
+    *,
+    entity_type: str,
+    entity_id: int,
+    upload: UploadFile,
+) -> Attachment:
+    original_name = Path(str(upload.filename or "").strip()).name or "dokument"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", original_name).strip("._") or "dokument"
+    rel_dir = Path("documents") / str(entity_type) / str(int(entity_id))
+    abs_dir = ensure_dirs()["uploads"] / rel_dir
+    abs_dir.mkdir(parents=True, exist_ok=True)
+    file_name = f"{dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe_name}"
+    abs_path = abs_dir / file_name
+    payload = upload.file.read() or b""
+    abs_path.write_bytes(payload)
+    return Attachment(
+        entity_type=str(entity_type),
+        entity_id=int(entity_id),
+        filename=str(rel_dir / file_name),
+        original_name=original_name,
+        mime_type=str(upload.content_type or "application/octet-stream"),
+        size_bytes=len(payload),
+        created_at=_utcnow_naive(),
+    )
+
+
+def _attachments_for_entity(db: Session, entity_type: str, entity_id: int) -> list[Attachment]:
+    return (
+        db.query(Attachment)
+        .filter(Attachment.entity_type == str(entity_type), Attachment.entity_id == int(entity_id))
+        .order_by(Attachment.id.desc())
+        .all()
+    )
+
+
+def _json_dict(raw: str | None) -> dict[str, object]:
+    try:
+        payload = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _document_object_url(object_type: str, object_id: int) -> str:
+    mapping = {
+        "customer": f"/crm/kunden/{int(object_id)}",
+        "case": f"/crm/vorgaenge/{int(object_id)}",
+        "purchase_order": f"/einkauf/bestellungen/{int(object_id)}",
+        "goods_receipt": f"/einkauf/wareneingaenge/{int(object_id)}",
+        "purchase_invoice": f"/einkauf/rechnungen/{int(object_id)}",
+        "supplier": f"/stammdaten/lieferanten/{int(object_id)}",
+        "repair_order": f"/inventory/reparaturen/{int(object_id)}",
+        "supplier_condition_set": f"/einkauf/konditionen/{int(object_id)}",
+    }
+    return mapping.get(str(object_type or "").strip(), "")
+
+
+def _document_object_exists(db: Session, object_type: str, object_id: int) -> bool:
+    target_id = int(object_id or 0)
+    if target_id <= 0:
+        return False
+    mapping = {
+        "customer": MasterCustomer,
+        "case": CrmCase,
+        "purchase_order": PurchaseOrder,
+        "goods_receipt": GoodsReceipt,
+        "purchase_invoice": PurchaseInvoice,
+        "supplier": Supplier,
+        "repair_order": RepairOrder,
+        "supplier_condition_set": SupplierConditionSet,
+    }
+    model = mapping.get(str(object_type or "").strip())
+    return bool(model and db.get(model, target_id))
+
+
+def _document_object_label(db: Session, object_type: str, object_id: int) -> str:
+    target_id = int(object_id or 0)
+    if target_id <= 0:
+        return "-"
+    kind = str(object_type or "").strip()
+    if kind == "customer":
+        row = db.get(MasterCustomer, target_id)
+        if not row:
+            return "-"
+        party = db.get(Party, int(row.party_id))
+        return f"{row.customer_no_internal} | {party.display_name if party else 'Kunde'}"
+    if kind == "case":
+        row = db.get(CrmCase, target_id)
+        return f"{row.case_no} | {row.title}" if row else "-"
+    if kind == "purchase_order":
+        row = db.get(PurchaseOrder, target_id)
+        return (row.order_no or row.po_number) if row else "-"
+    if kind == "goods_receipt":
+        row = db.get(GoodsReceipt, target_id)
+        return (row.receipt_no or f"WE-{target_id:06d}") if row else "-"
+    if kind == "purchase_invoice":
+        row = db.get(PurchaseInvoice, target_id)
+        return row.invoice_no if row else "-"
+    if kind == "supplier":
+        row = db.get(Supplier, target_id)
+        return row.name if row else "-"
+    if kind == "repair_order":
+        row = db.get(RepairOrder, target_id)
+        return row.repair_no or f"REP-{target_id:06d}" if row else "-"
+    if kind == "supplier_condition_set":
+        row = db.get(SupplierConditionSet, target_id)
+        return row.name if row else "-"
+    return f"{kind} #{target_id}"
+
+
+def _document_link_item_to_target(
+    db: Session,
+    *,
+    item: DocumentInboxItem,
+    object_type: str,
+    object_id: int,
+) -> None:
+    target_type = str(object_type or "").strip()
+    target_id = int(object_id or 0)
+    if not _document_object_exists(db, target_type, target_id):
+        raise ValueError("Zielobjekt wurde nicht gefunden.")
+    _link_inbox_item_to_object(db, item=item, object_type=target_type, object_id=target_id)
+    if target_type == "purchase_order":
+        row = db.get(PurchaseOrder, target_id)
+        if row and not str(row.paperless_document_id or "").strip():
+            row.paperless_document_id = item.paperless_document_id
+            db.add(row)
+    elif target_type == "goods_receipt":
+        row = db.get(GoodsReceipt, target_id)
+        if row and not str(row.paperless_document_id or "").strip():
+            row.paperless_document_id = item.paperless_document_id
+            db.add(row)
+    elif target_type == "purchase_invoice":
+        row = db.get(PurchaseInvoice, target_id)
+        if row and not str(row.paperless_document_id or "").strip():
+            row.paperless_document_id = item.paperless_document_id
+            db.add(row)
+
+
+def _document_inbox_item_from_paperless_id(db: Session, paperless_document_id: str | None) -> DocumentInboxItem | None:
+    document_id = str(paperless_document_id or "").strip()
+    if not document_id:
+        return None
+    return (
+        db.query(DocumentInboxItem)
+        .filter(DocumentInboxItem.paperless_document_id == document_id)
+        .order_by(DocumentInboxItem.id.desc())
+        .first()
+    )
+
+
+def _upsert_uploaded_document_item(
+    db: Session,
+    *,
+    paperless_document_id: str,
+    title: str,
+    object_type: str,
+    object_id: int,
+    metadata: dict[str, object] | None = None,
+) -> DocumentInboxItem:
+    row = _document_inbox_item_from_paperless_id(db, paperless_document_id)
+    if row is None:
+        row = DocumentInboxItem(
+            paperless_document_id=str(paperless_document_id),
+            created_at=_utcnow_naive(),
+        )
+    row.title = str(title or "").strip() or row.title
+    row.status = "matched"
+    row.suggested_object_type = str(object_type or "").strip() or None
+    row.suggested_object_id = int(object_id or 0) or None
+    row.created_date = row.created_date or _utcnow_naive()
+    row.metadata_json = json.dumps(metadata or {}, ensure_ascii=False) if metadata else row.metadata_json
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _crm_first_service_location(db: Session, customer_id: int) -> ServiceLocation | None:
+    if int(customer_id or 0) <= 0:
+        return None
+    return (
+        db.query(ServiceLocation)
+        .filter(ServiceLocation.master_customer_id == int(customer_id), ServiceLocation.active == True)
+        .order_by(ServiceLocation.id.asc())
+        .first()
+    )
+
+
+def _mail_thread_subject(thread: MailThread | None, messages: list[EmailMessage]) -> str:
+    for row in reversed(messages):
+        text = str(row.subject or "").strip()
+        if text:
+            return text
+    subject = str(thread.subject_normalized if thread else "").strip()
+    return subject or "(ohne Betreff)"
+
+
+def _mail_default_recipient(db: Session, customer: MasterCustomer | None, crm_case: CrmCase | None = None) -> str:
+    target_customer = customer
+    if target_customer is None and crm_case is not None:
+        role = (
+            db.query(RoleAssignment)
+            .filter(RoleAssignment.case_id == int(crm_case.id), RoleAssignment.role_type == CRM_ROLE_ORDERING_PARTY)
+            .first()
+        )
+        if role and int(role.master_customer_id or 0) > 0:
+            target_customer = db.get(MasterCustomer, int(role.master_customer_id))
+    if target_customer is None:
+        return ""
+    contact = (
+        db.query(CustomerContactPerson)
+        .filter(
+            CustomerContactPerson.master_customer_id == int(target_customer.id),
+            CustomerContactPerson.active == True,
+            CustomerContactPerson.email.is_not(None),
+        )
+        .order_by(CustomerContactPerson.id.asc())
+        .first()
+    )
+    if contact and str(contact.email or "").strip():
+        return str(contact.email or "").strip()
+    default_address = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id == int(target_customer.party_id), CrmAddress.active == True)
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc())
+        .first()
+    )
+    return str(default_address.email or "").strip() if default_address else ""
+
+
+def _start_sync_job(db: Session, *, system_name: str, direction: str, entity_type: str, log_text: str = "") -> ExternalSyncJob:
+    row = ExternalSyncJob(
+        system_name=str(system_name),
+        direction=str(direction),
+        entity_type=str(entity_type),
+        status="running",
+        started_at=_utcnow_naive(),
+        log_text=(log_text or "").strip() or None,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _finish_sync_job(db: Session, row: ExternalSyncJob, *, status: str, log_text: str) -> None:
+    row.status = str(status)
+    row.finished_at = _utcnow_naive()
+    row.log_text = (log_text or "").strip() or row.log_text
+    db.add(row)
+
+
+def _upsert_external_link(
+    db: Session,
+    *,
+    system_name: str,
+    object_type: str,
+    object_id: int,
+    external_key: str,
+    external_row_id: str | None = None,
+    deep_link_url: str | None = None,
+) -> ExternalLink:
+    row = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == str(system_name),
+            ExternalLink.object_type == str(object_type),
+            ExternalLink.object_id == int(object_id),
+        )
+        .one_or_none()
+    )
+    if not row:
+        row = ExternalLink(
+            system_name=str(system_name),
+            object_type=str(object_type),
+            object_id=int(object_id),
+            external_key=str(external_key),
+            external_row_id=(external_row_id or "").strip() or None,
+            deep_link_url=(deep_link_url or "").strip() or None,
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+    else:
+        row.external_key = str(external_key)
+        row.external_row_id = (external_row_id or "").strip() or row.external_row_id
+        row.deep_link_url = (deep_link_url or "").strip() or row.deep_link_url
+        row.updated_at = _utcnow_naive()
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _build_plaintext_export(title: str, lines: list[str]) -> Path:
+    temp_dir = Path(tempfile.mkdtemp(prefix="kda_einkauf_"))
+    target = temp_dir / f"{slugify(title) or 'dokument'}.txt"
+    target.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return target
+
+
+def _mobile_display_name(product: Product | None) -> str:
+    if not product:
+        return ""
+    item_type = _normalize_item_type(getattr(product, "item_type", ""), fallback="material")
+    if item_type == "appliance":
+        sales_name = str(getattr(product, "sales_name", "") or "").strip()
+        if sales_name:
+            return sales_name
+    name = str(getattr(product, "name", "") or "").strip()
+    if name:
+        return name
+    return f"Produkt {int(getattr(product, 'id', 0) or 0)}"
+
+
+def _mobile_manufacturer_label(product: Product | None, fallback_name: str = "") -> str:
+    if not product:
+        return str(fallback_name or "").strip()
+    for value in (
+        getattr(product, "manufacturer_name", ""),
+        getattr(product, "manufacturer", ""),
+        fallback_name,
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return "-"
+
+
+def _mobile_catalog_feature_filters(
+    db: Session,
+    *,
+    kind_id: int,
+    query_params,
+) -> list[dict[str, object]]:
+    selected_kind_id = int(kind_id or 0)
+    if selected_kind_id <= 0:
+        return []
+    feature_defs = (
+        db.query(FeatureDef)
+        .filter(FeatureDef.device_kind_id == int(selected_kind_id), FeatureDef.filterable == True)
+        .order_by(FeatureDef.label_de.asc(), FeatureDef.id.asc())
+        .limit(24)
+        .all()
+    )
+    filters: list[dict[str, object]] = []
+    for feature_def in feature_defs:
+        fid = int(feature_def.id)
+        data_type = str(feature_def.data_type or "text")
+        filter_row: dict[str, object] = {
+            "id": fid,
+            "label": str(feature_def.label_de or feature_def.key or f"Merkmal {fid}"),
+            "data_type": data_type,
+            "text_mode": "canonical",
+            "value": "",
+            "min": "",
+            "max": "",
+            "min_value": None,
+            "max_value": None,
+            "options": [],
+            "min_options": [],
+            "max_options": [],
+            "bool_options": [],
+        }
+        if data_type == "number":
+            number_values, has_more = _feature_filter_number_options(
+                db,
+                device_kind_id=int(selected_kind_id),
+                feature_def_id=fid,
+                limit=FEATURE_FILTER_OPTION_LIMIT,
+            )
+            number_options = [
+                {"value": _format_feature_number_option(value), "label": _format_feature_number_option(value), "disabled": False}
+                for value in number_values
+            ]
+            if has_more:
+                number_options.append({"value": "", "label": "(weitere Werte vorhanden ...)", "disabled": True})
+            filter_row["min_options"] = list(number_options)
+            filter_row["max_options"] = list(number_options)
+
+            raw_min = str(query_params.get(f"f_{fid}_min") or "").strip()
+            raw_max = str(query_params.get(f"f_{fid}_max") or "").strip()
+            min_selected = _resolve_number_filter_selection(raw_min, number_values)
+            max_selected = _resolve_number_filter_selection(raw_max, number_values)
+
+            min_label = str(min_selected[0]) if min_selected else ""
+            max_label = str(max_selected[0]) if max_selected else ""
+            min_value = float(min_selected[1]) if min_selected else None
+            max_value = float(max_selected[1]) if max_selected else None
+            if min_value is not None and max_value is not None and min_value > max_value:
+                min_label, max_label = max_label, min_label
+                min_value, max_value = max_value, min_value
+
+            filter_row["min"] = min_label
+            filter_row["max"] = max_label
+            filter_row["min_value"] = min_value
+            filter_row["max_value"] = max_value
+        elif data_type == "bool":
+            bool_values = _feature_filter_bool_options(db, device_kind_id=int(selected_kind_id), feature_def_id=fid)
+            bool_options: list[dict[str, object]] = []
+            if True in bool_values:
+                bool_options.append({"value": "1", "label": "Ja", "disabled": False})
+            if False in bool_values:
+                bool_options.append({"value": "0", "label": "Nein", "disabled": False})
+            filter_row["bool_options"] = bool_options
+            raw_bool = str(query_params.get(f"f_{fid}") or "").strip().lower()
+            if raw_bool in ("1", "true", "ja") and True in bool_values:
+                filter_row["value"] = "1"
+            elif raw_bool in ("0", "false", "nein") and False in bool_values:
+                filter_row["value"] = "0"
+        else:
+            text_options, has_more, text_mode = _feature_filter_text_options(
+                db,
+                device_kind_id=int(selected_kind_id),
+                feature_def_id=fid,
+                limit=FEATURE_FILTER_OPTION_LIMIT,
+            )
+            filter_row["text_mode"] = text_mode
+            options_for_ui = list(text_options)
+            if has_more:
+                options_for_ui.append({"value": "", "label": "(weitere Werte vorhanden ...)", "disabled": True, "option_id": 0})
+            filter_row["options"] = options_for_ui
+
+            raw_filter_value = str(query_params.get(f"f_{fid}") or "").strip()
+            if text_mode == "legacy_text":
+                if raw_filter_value:
+                    selected_opt = next(
+                        (
+                            row
+                            for row in text_options
+                            if str(row.get("value") or "").strip().casefold() == raw_filter_value.casefold()
+                        ),
+                        None,
+                    )
+                    if selected_opt and not bool(selected_opt.get("disabled")):
+                        filter_row["value"] = str(selected_opt.get("value") or "")
+            else:
+                raw_option_id = _to_int(raw_filter_value, 0)
+                if raw_option_id > 0:
+                    selected_opt = next(
+                        (row for row in text_options if int(row.get("option_id") or 0) == int(raw_option_id)),
+                        None,
+                    )
+                    if not selected_opt:
+                        selected_row = (
+                            db.query(FeatureOption.id, FeatureOption.label_de, FeatureOption.canonical_key, FeatureOption.active)
+                            .filter(
+                                FeatureOption.id == int(raw_option_id),
+                                FeatureOption.feature_def_id == fid,
+                            )
+                            .one_or_none()
+                        )
+                        if selected_row and bool(selected_row[3]):
+                            selected_label = str(selected_row[1] or "").strip() or str(selected_row[2] or "").strip()
+                            selected_opt = {
+                                "value": str(int(selected_row[0])),
+                                "label": selected_label,
+                                "disabled": False,
+                                "option_id": int(selected_row[0]),
+                            }
+                            filter_row["options"] = [selected_opt] + options_for_ui
+                    if selected_opt and not bool(selected_opt.get("disabled")):
+                        filter_row["value"] = str(int(raw_option_id))
+        filters.append(filter_row)
+    return filters
+
+
+def _mobile_catalog_apply_feature_filters(query, feature_filters: list[dict[str, object]]):
+    for filter_row in feature_filters:
+        fid = int(filter_row.get("id") or 0)
+        if fid <= 0:
+            continue
+        data_type = str(filter_row.get("data_type") or "text")
+        if data_type == "number":
+            min_value_raw = filter_row.get("min_value")
+            max_value_raw = filter_row.get("max_value")
+            min_value = float(min_value_raw) if min_value_raw is not None else None
+            max_value = float(max_value_raw) if max_value_raw is not None else None
+            if min_value is not None:
+                query = query.filter(
+                    exists().where(
+                        and_(
+                            FeatureValue.product_id == Product.id,
+                            FeatureValue.feature_def_id == fid,
+                            FeatureValue.value_num.isnot(None),
+                            FeatureValue.value_num >= min_value,
+                        )
+                    )
+                )
+            if max_value is not None:
+                query = query.filter(
+                    exists().where(
+                        and_(
+                            FeatureValue.product_id == Product.id,
+                            FeatureValue.feature_def_id == fid,
+                            FeatureValue.value_num.isnot(None),
+                            FeatureValue.value_num <= max_value,
+                        )
+                    )
+                )
+            continue
+        if data_type == "bool":
+            value = str(filter_row.get("value") or "").strip()
+            if value == "1":
+                query = query.filter(
+                    exists().where(
+                        and_(
+                            FeatureValue.product_id == Product.id,
+                            FeatureValue.feature_def_id == fid,
+                            FeatureValue.value_bool == True,
+                        )
+                    )
+                )
+            elif value == "0":
+                query = query.filter(
+                    exists().where(
+                        and_(
+                            FeatureValue.product_id == Product.id,
+                            FeatureValue.feature_def_id == fid,
+                            FeatureValue.value_bool == False,
+                        )
+                    )
+                )
+            continue
+        text_mode = str(filter_row.get("text_mode") or "canonical").strip().lower()
+        if text_mode == "legacy_text":
+            selected_legacy_value = str(filter_row.get("value") or "").strip()
+            if selected_legacy_value:
+                query = query.filter(
+                    exists().where(
+                        and_(
+                            FeatureValue.product_id == Product.id,
+                            FeatureValue.feature_def_id == fid,
+                            FeatureValue.value_text.isnot(None),
+                            func.lower(func.trim(FeatureValue.value_text)) == selected_legacy_value.casefold(),
+                        )
+                    )
+                )
+            continue
+        selected_option_id = _to_int(filter_row.get("value"), 0)
+        if selected_option_id > 0:
+            query = query.filter(_feature_text_option_filter_exists(fid, int(selected_option_id)))
+    return query
+
+
+def _mobile_catalog_filter_payload(feature_filters: list[dict[str, object]]) -> list[dict[str, object]]:
+    payload: list[dict[str, object]] = []
+    for row in feature_filters:
+        payload.append(
+            {
+                "id": int(row.get("id") or 0),
+                "label": str(row.get("label") or ""),
+                "data_type": str(row.get("data_type") or "text"),
+                "text_mode": str(row.get("text_mode") or "canonical"),
+                "value": str(row.get("value") or ""),
+                "min": str(row.get("min") or ""),
+                "max": str(row.get("max") or ""),
+                "options": row.get("options") or [],
+                "min_options": row.get("min_options") or [],
+                "max_options": row.get("max_options") or [],
+                "bool_options": row.get("bool_options") or [],
+            }
+        )
+    return payload
+
+
+def _mobile_default_warehouse_id(db: Session) -> int:
+    defaults = _receipt_defaults(db)
+    warehouse_id = int(defaults.get("warehouse_id") or 0)
+    if warehouse_id and db.get(Warehouse, warehouse_id):
+        return warehouse_id
+    first = db.query(Warehouse).order_by(Warehouse.name.asc(), Warehouse.id.asc()).first()
+    return int(first.id) if first else 0
+
+
+def _mobile_spare_default_owner_id(request: Request, owners: list[Owner]) -> int:
+    by_id = {int(row.id): row for row in owners}
+    raw_cookie = str(request.cookies.get(LAST_SPARE_OWNER_COOKIE) or "").strip()
+    cookie_owner_id = _to_int(raw_cookie, 0)
+    if cookie_owner_id > 0:
+        owner = by_id.get(cookie_owner_id)
+        if owner and bool(owner.active):
+            return int(owner.id)
+    if len(owners) == 1:
+        return int(owners[0].id)
+    return 0
+
+
+def _mobile_spare_default_condition(db: Session) -> str:
+    defaults = _receipt_defaults(db)
+    condition = _condition_code_from_input(str(defaults.get("condition") or _default_condition_code()))
+    if _condition_exists(db, condition, active_only=True):
+        return condition
+    fallback_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    if fallback_defs:
+        return str(fallback_defs[0].code or _default_condition_code())
+    return _default_condition_code()
+
+
+def _mobile_first_other_warehouse_id(warehouses: list[Warehouse], from_warehouse_id: int) -> int:
+    if not warehouses:
+        return 0
+    first_id = int(warehouses[0].id)
+    for row in warehouses:
+        row_id = int(row.id)
+        if row_id != int(from_warehouse_id or 0):
+            return row_id
+    return first_id
+
+
+def _mobile_cost_param_from_cents(cents: int | None) -> str:
+    if cents is None:
+        return ""
+    value = int(cents)
+    euro_value = float(value) / 100.0
+    return f"{euro_value:.2f}".rstrip("0").rstrip(".")
+
+
+def _delivery_scan_normalize_source(raw_source: str | None) -> str:
+    value = str(raw_source or "").strip().lower()
+    if value in DELIVERY_SCAN_SOURCES:
+        return value
+    return DELIVERY_SCAN_SOURCE_LIEFERSCHEIN
+
+
+def _delivery_scan_source_label(source: str) -> str:
+    normalized = _delivery_scan_normalize_source(source)
+    if normalized == DELIVERY_SCAN_SOURCE_PRODUKTSCHILD:
+        return "Produktschild"
+    return "Lieferschein"
+
+
+def _delivery_scan_page_href(source: str) -> str:
+    normalized = _delivery_scan_normalize_source(source)
+    if normalized == DELIVERY_SCAN_SOURCE_PRODUKTSCHILD:
+        return "/m/lieferschein?scan_source=produktschild"
+    return "/m/lieferschein"
+
+
+def _delivery_scan_tesseract_available() -> bool:
+    return bool(shutil.which("tesseract"))
+
+
+def _delivery_scan_compact_token(raw: str | None) -> str:
+    return "".join(ch for ch in str(raw or "").upper() if ch.isalnum())
+
+
+def _delivery_scan_extract_text(filename: str, payload: bytes) -> str:
+    if not payload:
+        raise ValueError("Datei ist leer.")
+    if len(payload) > DELIVERY_SCAN_MAX_BYTES:
+        raise ValueError("Datei ist zu groß (max. 12 MB).")
+    if not _delivery_scan_tesseract_available():
+        raise ValueError("OCR ist nicht verfügbar. Bitte Tesseract installieren.")
+
+    suffix = str(Path(filename or "").suffix or "").lower().strip()
+    if suffix not in DELIVERY_SCAN_ALLOWED_SUFFIXES:
+        raise ValueError("Nur Bilddateien (JPG/PNG/WEBP/BMP/TIFF) sind erlaubt.")
+
+    dirs = ensure_dirs()
+    scan_dir = dirs["tmp"] / "delivery_scan"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tempfile.NamedTemporaryFile(
+        dir=str(scan_dir),
+        prefix="scan_",
+        suffix=suffix,
+        delete=False,
+    )
+    tmp_path = Path(tmp_file.name)
+    try:
+        tmp_file.write(payload)
+        tmp_file.flush()
+        tmp_file.close()
+
+        text_parts: list[str] = []
+        for psm in ("6", "11"):
+            cmd = ["tesseract", str(tmp_path), "stdout", "-l", "deu+eng", "--psm", psm]
+            run = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=35,
+            )
+            if run.returncode != 0:
+                err = (run.stderr or "").strip() or "OCR fehlgeschlagen."
+                raise ValueError(err)
+            chunk = str(run.stdout or "").strip()
+            if chunk and chunk not in text_parts:
+                text_parts.append(chunk)
+        text = "\n\n".join(text_parts).strip()
+        if not text:
+            raise ValueError("Kein lesbarer Text gefunden. Bitte klareres Foto aufnehmen.")
+        return text
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _delivery_scan_extract_references(raw_text: str) -> list[str]:
+    text = str(raw_text or "")
+    out: list[str] = []
+
+    def _append(value: str):
+        token = str(value or "").strip().upper()
+        if not token:
+            return
+        if len(token) < 3 or len(token) > 40:
+            return
+        if token not in out:
+            out.append(token)
+
+    for po in _extract_po_numbers(text):
+        _append(po)
+
+    pattern = re.compile(
+        r"(?:kommission|auftrag|auftragsnr|auftragsnummer|ref|referenz|lieferschein|ls)\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9\-/]{2,})",
+        re.IGNORECASE,
+    )
+    for match in pattern.findall(text):
+        _append(match)
+
+    return out[:8]
+
+
+def _delivery_scan_detect_mode(raw_text: str, has_reservation_hint: bool) -> str:
+    text = _normalize_search_text(raw_text)
+    if any(word in text for word in ("umlagerung", "umlagern", "transfer", "von lager", "nach lager")):
+        return "transfer"
+    if any(word in text for word in ("kommission", "kunde", "ausgang", "versand", "auslieferung", "warenausgang")):
+        return "issue"
+    if any(word in text for word in ("wareneingang", "lieferschein", "anlieferung", "lieferung", "eingang")):
+        return "receipt"
+    if has_reservation_hint:
+        return "issue"
+    return "receipt"
+
+
+def _delivery_scan_guess_qty_from_line(line_text: str) -> int:
+    text = str(line_text or "")
+    patterns = [
+        r"\b(?:menge|anzahl|qty)\s*[:=]?\s*(\d{1,4})\b",
+        r"\b(\d{1,4})\s*(?:x|stk|st\.?|stueck|stück|pcs)\b",
+        r"\b(\d{1,4})\b\s*$",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            qty = int(m.group(1))
+        except Exception:
+            qty = 0
+        if 0 < qty <= 1000:
+            return qty
+    return 1
+
+
+def _delivery_scan_build_suggestions(
+    db: Session,
+    recognized_text: str,
+    mode_hint: str,
+    scan_source: str = DELIVERY_SCAN_SOURCE_LIEFERSCHEIN,
+) -> dict[str, object]:
+    source = _delivery_scan_normalize_source(scan_source)
+    is_label_scan = source == DELIVERY_SCAN_SOURCE_PRODUKTSCHILD
+    lines = [str(line).strip() for line in str(recognized_text or "").splitlines() if str(line).strip()]
+    line_rows = [
+        {
+            "raw": line,
+            "norm": _normalize_search_text(line),
+            "compact": _delivery_scan_compact_token(line),
+        }
+        for line in lines
+    ]
+    doc_norm = _normalize_search_text(recognized_text)
+    doc_compact = _delivery_scan_compact_token(recognized_text)
+    reference_candidates = _delivery_scan_extract_references(recognized_text)
+
+    products = (
+        db.query(Product)
+        .filter(Product.active == True)
+        .order_by(Product.id.desc())
+        .limit(5000)
+        .all()
+    )
+
+    matched_rows: list[dict[str, object]] = []
+    for product in products:
+        best_score = 0
+        best_line_idx = -1
+        best_by = ""
+
+        ean = str(product.ean or "").strip()
+        if len(ean) >= 8:
+            token = _delivery_scan_compact_token(ean)
+            if token and token in doc_compact:
+                for idx, line_row in enumerate(line_rows):
+                    if token in str(line_row["compact"]):
+                        best_score = 180
+                        best_line_idx = idx
+                        best_by = "EAN"
+                        break
+
+        material_no = str(product.material_no or "").strip()
+        if len(material_no) >= 4:
+            token = _delivery_scan_compact_token(material_no)
+            if token and token in doc_compact and best_score < 160:
+                for idx, line_row in enumerate(line_rows):
+                    if token in str(line_row["compact"]):
+                        best_score = 160
+                        best_line_idx = idx
+                        best_by = "Materialnummer"
+                        break
+
+        sku = str(product.sku or "").strip()
+        if len(sku) >= 3:
+            token = _delivery_scan_compact_token(sku)
+            if token and token in doc_compact and best_score < 150:
+                for idx, line_row in enumerate(line_rows):
+                    if token in str(line_row["compact"]):
+                        best_score = 150
+                        best_line_idx = idx
+                        best_by = "Artikelnummer"
+                        break
+
+        title_1 = _normalize_search_text(product.product_title_1 or "")
+        title_1_min = 6 if is_label_scan else 10
+        if len(title_1) >= title_1_min and title_1 in doc_norm and best_score < 100:
+            for idx, line_row in enumerate(line_rows):
+                if title_1 in str(line_row["norm"]):
+                    best_score = 100
+                    best_line_idx = idx
+                    best_by = "Produkttitel 1"
+                    break
+
+        title_2 = _normalize_search_text(product.product_title_2 or "")
+        title_2_min = 6 if is_label_scan else 10
+        if len(title_2) >= title_2_min and title_2 in doc_norm and best_score < 97:
+            for idx, line_row in enumerate(line_rows):
+                if title_2 in str(line_row["norm"]):
+                    best_score = 97
+                    best_line_idx = idx
+                    best_by = "Produkttitel 2"
+                    break
+
+        sales_name = _normalize_search_text(product.sales_name or "")
+        sales_name_min = 6 if is_label_scan else 10
+        if len(sales_name) >= sales_name_min and sales_name in doc_norm and best_score < 95:
+            for idx, line_row in enumerate(line_rows):
+                if sales_name in str(line_row["norm"]):
+                    best_score = 95
+                    best_line_idx = idx
+                    best_by = "Verkaufsname"
+                    break
+
+        name = _normalize_search_text(product.name or "")
+        needs_two_words = not is_label_scan
+        if len(name) >= (6 if is_label_scan else 10) and (not needs_two_words or len(name.split()) >= 2) and name in doc_norm and best_score < 85:
+            for idx, line_row in enumerate(line_rows):
+                if name in str(line_row["norm"]):
+                    best_score = 85
+                    best_line_idx = idx
+                    best_by = "Produktname"
+                    break
+
+        if best_score <= 0:
+            continue
+        line_text = ""
+        if 0 <= best_line_idx < len(line_rows):
+            line_text = str(line_rows[best_line_idx]["raw"])
+        qty_guess = _delivery_scan_guess_qty_from_line(line_text)
+        matched_rows.append(
+            {
+                "product": product,
+                "score": best_score,
+                "line_index": best_line_idx,
+                "line_text": line_text,
+                "qty_guess": qty_guess,
+                "matched_by": best_by,
+            }
+        )
+
+    matched_rows.sort(key=lambda row: (-int(row["score"]), int(row["line_index"] if int(row["line_index"]) >= 0 else 999999)))
+    matched_rows = matched_rows[:40]
+    if not matched_rows:
+        return {
+            "recognized_text": recognized_text,
+            "mode": "receipt" if mode_hint == "auto" else mode_hint,
+            "references": reference_candidates,
+            "scan_source": source,
+            "lines": [],
+        }
+
+    product_ids = [int(row["product"].id) for row in matched_rows]
+    active_reservations = (
+        db.query(Reservation)
+        .filter(
+            Reservation.status == "active",
+            Reservation.product_id.in_(product_ids),
+        )
+        .order_by(Reservation.id.desc())
+        .all()
+    )
+    reservations_by_product: dict[int, list[Reservation]] = {}
+    for row in active_reservations:
+        reservations_by_product.setdefault(int(row.product_id), []).append(row)
+
+    has_reservation_hint = any(bool(rows) for rows in reservations_by_product.values())
+    if mode_hint in ("receipt", "issue", "transfer"):
+        detected_mode = mode_hint
+    else:
+        detected_mode = _delivery_scan_detect_mode(recognized_text, has_reservation_hint)
+
+    receipt_defaults = _receipt_defaults(db)
+    default_condition = str(receipt_defaults.get("condition") or _default_condition_code())
+    default_to_warehouse_id = int(receipt_defaults.get("warehouse_id") or 0)
+    if default_to_warehouse_id and not db.get(Warehouse, default_to_warehouse_id):
+        default_to_warehouse_id = 0
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc(), Warehouse.id.asc()).all()
+    if default_to_warehouse_id <= 0 and warehouses:
+        default_to_warehouse_id = int(warehouses[0].id)
+    default_from_warehouse_id = _mobile_default_warehouse_id(db)
+    default_transfer_to = _mobile_first_other_warehouse_id(warehouses, default_from_warehouse_id)
+
+    out_lines: list[dict[str, object]] = []
+    seen_product_ids: set[int] = set()
+    for idx, match_row in enumerate(matched_rows, start=1):
+        product: Product = match_row["product"]
+        product_id = int(product.id)
+        if product_id in seen_product_ids:
+            continue
+        seen_product_ids.add(product_id)
+
+        reservation_rows = reservations_by_product.get(product_id, [])
+        matched_reservation: Reservation | None = None
+        if reservation_rows:
+            if reference_candidates:
+                lowered_refs = [ref.casefold() for ref in reference_candidates]
+                for res in reservation_rows:
+                    ref_text = str(res.reference or "").strip().casefold()
+                    if ref_text and any(ref in ref_text for ref in lowered_refs):
+                        matched_reservation = res
+                        break
+            if matched_reservation is None and len(reservation_rows) == 1:
+                matched_reservation = reservation_rows[0]
+
+        qty = int(match_row["qty_guess"] or 1)
+        if matched_reservation and int(matched_reservation.qty or 0) > 0:
+            qty = int(matched_reservation.qty)
+        qty = max(1, min(1000, int(qty)))
+
+        tx_type = detected_mode
+        if matched_reservation:
+            tx_type = "issue"
+
+        line_reference = ""
+        if matched_reservation and str(matched_reservation.reference or "").strip():
+            line_reference = str(matched_reservation.reference or "").strip()
+        elif reference_candidates:
+            line_reference = str(reference_candidates[0])
+
+        warehouse_from_id = int(matched_reservation.warehouse_id) if matched_reservation else int(default_from_warehouse_id or 0)
+        warehouse_to_id = int(default_to_warehouse_id or 0)
+        if tx_type == "transfer":
+            warehouse_from_id = int(default_from_warehouse_id or 0)
+            warehouse_to_id = int(default_transfer_to or 0)
+        if matched_reservation and tx_type == "issue":
+            warehouse_to_id = 0
+        if tx_type == "issue":
+            warehouse_to_id = 0
+        if tx_type == "receipt":
+            warehouse_from_id = 0
+
+        condition = str(matched_reservation.condition or default_condition) if matched_reservation else default_condition
+        if not _condition_exists(db, condition, active_only=True):
+            condition = default_condition
+
+        out_lines.append(
+            {
+                "idx": idx,
+                "product_id": product_id,
+                "product_name": _mobile_display_name(product),
+                "material_no": str(product.material_no or "").strip(),
+                "matched_by": str(match_row["matched_by"] or ""),
+                "line_text": str(match_row["line_text"] or ""),
+                "score": int(match_row["score"] or 0),
+                "qty": qty,
+                "tx_type": tx_type,
+                "warehouse_from_id": int(warehouse_from_id or 0),
+                "warehouse_to_id": int(warehouse_to_id or 0),
+                "condition": condition,
+                "reference": line_reference,
+                "reservation_id": int(matched_reservation.id) if matched_reservation else 0,
+                "reservation_qty": int(matched_reservation.qty or 0) if matched_reservation else 0,
+                "reservation_ref": str(matched_reservation.reference or "").strip() if matched_reservation else "",
+            }
+        )
+
+    return {
+        "recognized_text": recognized_text,
+        "mode": detected_mode,
+        "references": reference_candidates,
+        "scan_source": source,
+        "lines": out_lines,
+    }
 
 
 _po_re = re.compile(r"PO-\d{4}-\d{4}", re.IGNORECASE)
@@ -1894,9 +5070,9 @@ def _parse_product_image_urls(form, add_error) -> dict[str, str | None]:
         if not raw:
             out[key] = None
             continue
-        normalized = _normalize_absolute_url(raw)
+        normalized = _normalize_product_image_url(raw)
         if not normalized:
-            add_error(key, f"Bild-Link in '{key}' muss eine absolute URL mit http:// oder https:// sein.")
+            add_error(key, f"Bild-Link in '{key}' muss mit http://, https:// oder /uploads/ beginnen.")
             out[key] = None
             continue
         out[key] = normalized
@@ -1951,6 +5127,11 @@ def _seed_defaults(db: Session):
             db.add(StockConditionDef(code=code, label_de=label_de, sort_order=sort_order, active=active))
     _seed_item_type_field_rules(db)
     _ensure_repair_warehouse(db)
+    _ensure_scrap_warehouse(db)
+    if _system_setting_get(db, REPAIR_AUTO_PAPERLESS, None) is None:
+        _system_setting_set(db, REPAIR_AUTO_PAPERLESS, "0")
+    if _system_setting_get(db, SPARE_AUTO_PAPERLESS, None) is None:
+        _system_setting_set(db, SPARE_AUTO_PAPERLESS, "0")
     db.query(User).filter(User.role == "user").update({User.role: "lesen"})
     db.commit()
 
@@ -1987,12 +5168,28 @@ async def _email_imap_loop() -> None:
             account = _pick_default_enabled_account(db)
             if account and account.imap_host and account.imap_port:
                 fetch_inbox_once(db, account.id, limit=30)
-                db.commit()
+            _repair_sync_inbound_mail(db, limit=30)
+            db.commit()
         except Exception:
             db.rollback()
         finally:
             db.close()
         await asyncio.sleep(EMAIL_IMAP_INTERVAL)
+
+
+async def _outsmart_sync_loop() -> None:
+    while True:
+        SessionLocal = get_sessionmaker()
+        db = SessionLocal()
+        try:
+            _outsmart_delta_sync_once(db, limit=20)
+            _outsmart_sync_completed_once(db, limit=20)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+        await asyncio.sleep(OUTSMART_SYNC_INTERVAL)
 
 
 def _current_qty_for_min_scope(db: Session, product: Product, warehouse_id: int, bin_id: int | None) -> int:
@@ -2276,7 +5473,10 @@ async def setup_step_post(step: int, request: Request, db: Session = Depends(db_
             tmp.write_bytes(content)
             try:
                 manifest = restore_backup(tmp)
-                _flash(request, f"Backup wiederhergestellt (Schema {manifest.get('schema_version')}).", "info")
+                message = f"Backup wiederhergestellt (Schema {manifest.get('schema_version')})."
+                if manifest.get("secrets_skipped"):
+                    message += " Zugangsschlüssel und Secrets blieben unverändert."
+                _flash(request, message, "info")
             except Exception as e:
                 _flash(request, f"Restore fehlgeschlagen: {e}", "error")
                 return RedirectResponse("/setup/1", status_code=302)
@@ -2441,8 +5641,23 @@ def dashboard(request: Request, user=Depends(require_user), db: Session = Depend
     serials_in_stock = db.query(StockSerial).filter(StockSerial.status == "in_stock").count()
     qty_lines = db.query(StockBalance).count()
     reservations = db.query(Reservation).filter(Reservation.status == "active").count()
-    open_repairs = db.query(RepairOrder).filter(RepairOrder.status.in_(("open", "in_repair"))).count()
+    closed_statuses = (
+        REPAIR_STATUS_INS_LAGER,
+        REPAIR_STATUS_RESERVIERT,
+        REPAIR_STATUS_VERSCHROTTET,
+        REPAIR_STATUS_ABGESCHLOSSEN,
+        "RETURNED",
+        "CLOSED",
+    )
+    open_repairs = (
+        db.query(RepairOrder)
+        .filter(~func.upper(func.coalesce(RepairOrder.status, "")).in_(tuple(str(s).upper() for s in closed_statuses)))
+        .count()
+    )
     warnings = _collect_min_stock_warnings(db, limit=50)
+    is_admin = str(getattr(user, "role", "") or "").strip().lower() == "admin"
+    purchase_stats = _dashboard_purchase_stats(db) if is_admin else None
+    ai_stats = _dashboard_ai_stats(db) if is_admin else None
     return templates.TemplateResponse(
         "dashboard.html",
         _ctx(
@@ -2457,6 +5672,8 @@ def dashboard(request: Request, user=Depends(require_user), db: Session = Depend
                 "open_repairs": open_repairs,
                 "low_stock": len(warnings),
             },
+            purchase_stats=purchase_stats,
+            ai_stats=ai_stats,
             warnings=warnings,
         ),
     )
@@ -2512,6 +5729,1563 @@ def quick_index(request: Request, user=Depends(require_user)):
     if query:
         target = f"{target}?{query}"
     return RedirectResponse(target, status_code=302)
+
+
+@app.get("/api/products/quicksearch")
+def api_products_quicksearch(
+    request: Request,
+    user=Depends(require_lager_access),
+    q: str = "",
+    kind_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    _ = request
+    _ = user
+    q = (q or "").strip()
+    if not q:
+        return JSONResponse({"items": []})
+
+    query = db.query(Product).filter(Product.active == True)
+    if int(kind_id or 0) > 0:
+        query = query.filter(Product.device_kind_id == int(kind_id))
+    search_filter = build_product_search_filter(q, include_attribute_values=True)
+    if search_filter is not None:
+        query = query.filter(search_filter)
+
+    rows = query.order_by(Product.id.desc()).limit(20).all()
+    if not rows:
+        return JSONResponse({"items": []})
+
+    product_ids = [int(row.id) for row in rows]
+    kind_ids = sorted({int(row.device_kind_id) for row in rows if row.device_kind_id})
+    manufacturer_ids = sorted({int(row.manufacturer_id) for row in rows if row.manufacturer_id})
+
+    kind_name_map: dict[int, str] = {}
+    if kind_ids:
+        kind_rows = db.query(DeviceKind).filter(DeviceKind.id.in_(kind_ids)).all()
+        kind_name_map = {int(row.id): str(row.name or "").strip() for row in kind_rows}
+
+    manufacturer_name_map: dict[int, str] = {}
+    if manufacturer_ids:
+        manufacturer_rows = db.query(Manufacturer).filter(Manufacturer.id.in_(manufacturer_ids)).all()
+        manufacturer_name_map = {int(row.id): str(row.name or "").strip() for row in manufacturer_rows}
+
+    stock_total_map: dict[int, int] = {}
+    stock_rows = (
+        db.query(StockBalance.product_id, func.coalesce(func.sum(StockBalance.quantity), 0))
+        .filter(StockBalance.product_id.in_(product_ids))
+        .group_by(StockBalance.product_id)
+        .all()
+    )
+    for product_id, qty_sum in stock_rows:
+        stock_total_map[int(product_id)] = int(qty_sum or 0)
+
+    items: list[dict[str, object]] = []
+    for row in rows:
+        manufacturer_fallback = manufacturer_name_map.get(int(row.manufacturer_id or 0), "")
+        items.append(
+            {
+                "id": int(row.id),
+                "display_name": _mobile_display_name(row),
+                "manufacturer_name": _mobile_manufacturer_label(row, manufacturer_fallback),
+                "kind_name": kind_name_map.get(int(row.device_kind_id or 0), "-"),
+                "ean": str(row.ean or "").strip() or None,
+                "stock_total": int(stock_total_map.get(int(row.id), 0)),
+            }
+        )
+
+    return JSONResponse({"items": items})
+
+
+@app.get("/api/mobile/catalog")
+def api_mobile_catalog(
+    request: Request,
+    user=Depends(require_lager_access),
+    q: str = "",
+    kind_id: int = 0,
+    limit: int = 30,
+    include_filters: int = 0,
+    db: Session = Depends(db_session),
+):
+    _ = user
+    query_text = str(q or "").strip()
+    selected_kind_id = int(kind_id or 0)
+    if selected_kind_id > 0 and not db.get(DeviceKind, selected_kind_id):
+        selected_kind_id = 0
+    max_limit = max(1, min(int(limit or 30), 30))
+
+    query = db.query(Product).filter(Product.active == True)
+    if selected_kind_id > 0:
+        query = query.filter(Product.device_kind_id == int(selected_kind_id))
+
+    search_filter = build_product_search_filter(query_text, include_attribute_values=True)
+    if search_filter is not None:
+        query = query.filter(search_filter)
+
+    feature_filters = _mobile_catalog_feature_filters(
+        db,
+        kind_id=int(selected_kind_id),
+        query_params=request.query_params,
+    )
+    if feature_filters:
+        query = _mobile_catalog_apply_feature_filters(query, feature_filters)
+
+    title_expr = func.lower(func.trim(func.coalesce(Product.sales_name, Product.name, "")))
+    query_prefix = str(query_text).casefold()
+    if query_prefix:
+        query = query.order_by(title_expr.like(f"{query_prefix}%").desc(), title_expr.asc(), Product.id.asc())
+    else:
+        query = query.order_by(title_expr.asc(), Product.id.asc())
+
+    rows = query.limit(int(max_limit)).all()
+    items: list[dict[str, object]] = []
+    for row in rows:
+        items.append(
+            {
+                "id": int(row.id),
+                "title": _mobile_display_name(row),
+                "image_url": _product_primary_image_url(row),
+            }
+        )
+
+    payload: dict[str, object] = {"items": items}
+    if int(include_filters or 0) == 1:
+        payload["filters"] = _mobile_catalog_filter_payload(feature_filters)
+    return JSONResponse(payload)
+
+
+@app.get("/m", response_class=HTMLResponse)
+def mobile_home(
+    request: Request,
+    user=Depends(require_lager_access),
+    kind_id: int = 0,
+    action: str = "einbuchen",
+    db: Session = Depends(db_session),
+):
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    valid_kind_ids = {int(row.id) for row in kinds}
+    selected_kind_id = int(kind_id or 0)
+    if selected_kind_id and selected_kind_id not in valid_kind_ids:
+        selected_kind_id = 0
+
+    action_key = str(action or "einbuchen").strip().lower()
+    if action_key not in ("einbuchen", "ausbuchen", "umlagerung", "bestellen"):
+        action_key = "einbuchen"
+
+    return templates.TemplateResponse(
+        "mobile/home.html",
+        _ctx(
+            request,
+            user=user,
+            kinds=kinds,
+            kind_id=selected_kind_id,
+            current_action=action_key,
+        ),
+    )
+
+
+@app.get("/m/katalog", response_class=HTMLResponse)
+def mobile_catalog(
+    request: Request,
+    user=Depends(require_lager_access),
+    q: str = "",
+    kind_id: int = 0,
+    next: str = "",
+    db: Session = Depends(db_session),
+):
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    valid_kind_ids = {int(row.id) for row in kinds}
+    selected_kind_id = int(kind_id or 0)
+    if selected_kind_id and selected_kind_id not in valid_kind_ids:
+        selected_kind_id = 0
+    feature_filters = _mobile_catalog_feature_filters(
+        db,
+        kind_id=int(selected_kind_id),
+        query_params=request.query_params,
+    )
+    next_path = _safe_return_to_path(next, fallback="")
+    return templates.TemplateResponse(
+        "mobile/catalog.html",
+        _ctx(
+            request,
+            user=user,
+            q=str(q or "").strip(),
+            kinds=kinds,
+            kind_id=int(selected_kind_id),
+            feature_filters=feature_filters,
+            next_path=next_path,
+        ),
+    )
+
+
+@app.get("/m/ersatzteil", response_class=HTMLResponse)
+def mobile_spare_part_get(
+    request: Request,
+    user=Depends(require_lager_access),
+    warehouse_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    done = str(request.query_params.get("done") or "").strip() == "1"
+    last_capture_id = _to_int(request.query_params.get("last"), 0)
+
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc(), Warehouse.id.asc()).all()
+    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc(), Owner.id.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+
+    selected_warehouse_id = _mobile_default_warehouse_id(db)
+    query_warehouse_id = int(warehouse_id or 0)
+    if query_warehouse_id > 0 and db.get(Warehouse, query_warehouse_id):
+        selected_warehouse_id = query_warehouse_id
+    valid_warehouse_ids = {int(row.id) for row in warehouses}
+    if selected_warehouse_id not in valid_warehouse_ids:
+        selected_warehouse_id = int(warehouses[0].id) if warehouses else 0
+
+    selected_owner_id = _mobile_spare_default_owner_id(request, owners)
+    selected_condition = _mobile_spare_default_condition(db)
+    valid_condition_codes = {str(row.code) for row in condition_defs}
+    if selected_condition not in valid_condition_codes and condition_defs:
+        selected_condition = str(condition_defs[0].code)
+
+    form_data = {
+        "article_no": "",
+        "warehouse_id": str(selected_warehouse_id or 0),
+        "owner_id": str(selected_owner_id or 0),
+        "qty": "1",
+        "condition": selected_condition,
+        "note": "",
+    }
+
+    last_capture = None
+    last_product = None
+    if done and last_capture_id > 0:
+        last_capture = db.get(SparePartCapture, last_capture_id)
+        if last_capture:
+            last_product = db.get(Product, int(last_capture.product_id))
+
+    return templates.TemplateResponse(
+        "mobile/ersatzteil.html",
+        _ctx(
+            request,
+            user=user,
+            warehouses=warehouses,
+            owners=owners,
+            condition_defs=condition_defs,
+            form_data=form_data,
+            form_errors={},
+            first_error_field_id="",
+            done=done,
+            last_capture=last_capture,
+            last_product=last_product,
+        ),
+    )
+
+
+@app.post("/m/ersatzteil")
+async def mobile_spare_part_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    field_ids = {
+        "image_file": "m_spare_image_file",
+        "article_no": "m_spare_article_no",
+        "warehouse_id": "m_spare_warehouse_id",
+        "owner_id": "m_spare_owner_id",
+        "qty": "m_spare_qty",
+        "condition": "m_spare_condition",
+        "note": "m_spare_note",
+    }
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        if field_key == "__all__":
+            _flash(request, message, "error")
+        response = mobile_spare_part_get(
+            request=request,
+            user=user,
+            warehouse_id=_to_int(_form_scalar(form_data, "warehouse_id"), 0),
+            db=db,
+        )
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, field_ids)
+        response.context["done"] = False
+        response.context["last_capture"] = None
+        response.context["last_product"] = None
+        return _rerender_template_response(response)
+
+    image_upload: UploadFile = form.get("image_file")  # type: ignore
+    if not image_upload or not str(getattr(image_upload, "filename", "") or "").strip():
+        return render_error("image_file", "Bitte ein Bild aufnehmen oder auswählen.")
+
+    image_mime = str(getattr(image_upload, "content_type", "") or "").strip().lower()
+    image_ext = SPARE_PART_IMAGE_ALLOWED_MIME.get(image_mime)
+    if not image_ext:
+        return render_error("image_file", "Bildformat nicht erlaubt (nur JPG, PNG oder WEBP).")
+
+    image_bytes = await image_upload.read()
+    if not image_bytes:
+        return render_error("image_file", "Das Bild ist leer oder konnte nicht gelesen werden.")
+
+    article_no = (form.get("article_no") or "").strip()
+    if not article_no:
+        return render_error("article_no", "Artikelnummer ist Pflicht.")
+
+    warehouse_id = _to_int(form.get("warehouse_id"), 0)
+    warehouse = db.get(Warehouse, warehouse_id) if warehouse_id > 0 else None
+    if not warehouse:
+        return render_error("warehouse_id", "Bitte einen gültigen Lagerort wählen.")
+
+    owner_id, owner = _parse_owner_id(db, form.get("owner_id"), active_only=True)
+    if not owner_id or not owner:
+        return render_error("owner_id", "Bitte einen aktiven Inhaber wählen.")
+
+    raw_qty = str(form.get("qty") or "").strip()
+    qty = _to_int(raw_qty if raw_qty else "1", 1)
+    if qty <= 0:
+        return render_error("qty", "Menge muss größer 0 sein.")
+
+    raw_condition = str(form.get("condition") or "").strip()
+    condition = _condition_code_from_input(raw_condition) if raw_condition else _mobile_spare_default_condition(db)
+    if not _condition_exists(db, condition, active_only=True):
+        return render_error("condition", "Bitte einen gültigen Zustand wählen.")
+
+    note = (form.get("note") or "").strip() or None
+
+    saved_image_path = None
+    try:
+        product = (
+            db.query(Product)
+            .filter(
+                func.lower(func.coalesce(Product.item_type, "")) == "spare_part",
+                func.lower(func.trim(func.coalesce(Product.material_no, ""))) == article_no.lower(),
+            )
+            .order_by(Product.id.asc())
+            .first()
+        )
+        if not product:
+            product = Product(
+                item_type="spare_part",
+                material_no=article_no,
+                name=article_no,
+                track_mode="quantity",
+                active=True,
+            )
+            db.add(product)
+            db.flush()
+            _refresh_product_search_blob(db, product)
+
+        SPARE_PART_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        file_name = f"{uuid.uuid4().hex}{image_ext}"
+        saved_image_path = SPARE_PART_UPLOAD_DIR / file_name
+        saved_image_path.write_bytes(image_bytes)
+        image_path = f"/uploads/spare_parts/{file_name}"
+
+        tx = InventoryTransaction(
+            tx_type="receipt",
+            product_id=int(product.id),
+            warehouse_from_id=None,
+            warehouse_to_id=int(warehouse.id),
+            bin_from_id=None,
+            bin_to_id=None,
+            owner_id=int(owner.id),
+            supplier_id=None,
+            delivery_note_no=None,
+            unit_cost=None,
+            condition=condition,
+            quantity=int(qty),
+            serial_number=None,
+            reference="MOB-ERSATZTEIL",
+            note=note,
+        )
+        apply_transaction(db, tx, actor_user_id=user.id)
+
+        paperless_document_hint = ""
+        auto_paperless = _bool_from_setting(_system_setting_get(db, SPARE_AUTO_PAPERLESS, "0"), default=False)
+        if auto_paperless:
+            paperless_cfg = _paperless_settings(db, include_secret=True)
+            if bool(paperless_cfg.get("enabled")) and bool(paperless_cfg.get("token")):
+                try:
+                    upload_result = _paperless_upload_document(
+                        settings=paperless_cfg,
+                        filename=file_name,
+                        mime=image_mime,
+                        payload=image_bytes,
+                    )
+                    doc_id = str(upload_result.get("document_id") or "").strip()
+                    if doc_id:
+                        paperless_document_hint = f"Paperless-Dokument: {doc_id}"
+                except Exception:
+                    paperless_document_hint = ""
+
+        capture_note = note
+        if paperless_document_hint:
+            capture_note = f"{note}\\n{paperless_document_hint}".strip() if note else paperless_document_hint
+
+        capture = SparePartCapture(
+            product_id=int(product.id),
+            owner_id=int(owner.id),
+            warehouse_id=int(warehouse.id),
+            qty=int(qty),
+            image_path=image_path,
+            note=capture_note,
+        )
+        db.add(capture)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if saved_image_path and saved_image_path.exists():
+            try:
+                saved_image_path.unlink()
+            except Exception:
+                pass
+        return render_error("__all__", f"Ersatzteil-Erfassung fehlgeschlagen: {exc}")
+
+    redirect_url = "/m/ersatzteil?" + urlencode(
+        {
+            "done": "1",
+            "last": str(int(capture.id)),
+            "warehouse_id": str(int(warehouse.id)),
+        }
+    )
+    response = RedirectResponse(redirect_url, status_code=302)
+    response.set_cookie(
+        LAST_SPARE_OWNER_COOKIE,
+        str(int(owner.id)),
+        max_age=LAST_SPARE_OWNER_COOKIE_MAX_AGE,
+        path="/",
+        samesite="lax",
+    )
+    _flash(request, "Erfasst & eingebucht.", "info")
+    return response
+
+
+@app.get("/m/reparatur", response_class=HTMLResponse)
+def mobile_repair_quick_get(
+    request: Request,
+    user=Depends(require_lager_access),
+    product_id: int = 0,
+    warehouse_id: int = 0,
+    qty: int = 1,
+    done: int = 0,
+    repair_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    done_flag = int(done or 0) == 1
+    order = db.get(RepairOrder, int(repair_id)) if done_flag and int(repair_id or 0) > 0 else None
+    resolved_product_id = int(product_id or 0)
+    if order and int(order.article_id or 0) > 0:
+        resolved_product_id = int(order.article_id)
+    product = db.get(Product, resolved_product_id) if resolved_product_id > 0 else None
+    if not product:
+        _flash(request, "Artikel für mobile Reparatur fehlt.", "error")
+        return RedirectResponse("/m/ersatzteil", status_code=302)
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc(), Supplier.id.asc()).all()
+    cookie_supplier_id = _to_int(request.cookies.get(REPAIR_LAST_SUPPLIER_COOKIE), 0)
+    form_data = {
+        "product_id": str(int(product.id)),
+        "source_warehouse_id": str(int(warehouse_id or 0)),
+        "supplier_id": str(int(cookie_supplier_id or 0)),
+        "qty": str(max(1, int(qty or 1))),
+        "reservation_ref": "",
+    }
+    return templates.TemplateResponse(
+        "mobile/reparatur_quick.html",
+        _ctx(
+            request,
+            user=user,
+            done=done_flag,
+            order=order,
+            product=product,
+            suppliers=suppliers,
+            source_warehouse_id=int(warehouse_id or 0),
+            default_qty=max(1, int(qty or 1)),
+            default_supplier_id=int(cookie_supplier_id or 0),
+            form_data=form_data,
+            form_errors={},
+            first_error_field_id="",
+        ),
+    )
+
+
+@app.post("/m/reparatur")
+async def mobile_repair_quick_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+
+    try:
+        product_id = int(form.get("product_id") or 0)
+    except Exception:
+        product_id = 0
+    product = db.get(Product, product_id) if product_id > 0 else None
+    if not product:
+        _flash(request, "Artikel fehlt.", "error")
+        return RedirectResponse("/m/ersatzteil", status_code=302)
+
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc(), Supplier.id.asc()).all()
+    cookie_supplier_id = _to_int(request.cookies.get(REPAIR_LAST_SUPPLIER_COOKIE), 0)
+
+    def render_error(field_key: str, message: str):
+        if field_key and field_key not in form_errors:
+            form_errors[field_key] = message
+        _flash(request, message, "error")
+        response = templates.TemplateResponse(
+            "mobile/reparatur_quick.html",
+            _ctx(
+                request,
+                user=user,
+                done=False,
+                order=None,
+                product=product,
+                suppliers=suppliers,
+                source_warehouse_id=_to_int(form.get("source_warehouse_id"), 0),
+                default_qty=max(1, _to_int(form.get("qty"), 1)),
+                default_supplier_id=int(cookie_supplier_id or 0),
+                form_data=form_data,
+                form_errors=form_errors,
+                first_error_field_id=_first_error_field_id(
+                    form_errors,
+                    {
+                        "supplier_id": "m_repair_supplier_id",
+                        "qty": "m_repair_qty",
+                    },
+                ),
+            ),
+        )
+        return _rerender_template_response(response)
+
+    supplier_id, supplier = _parse_supplier_id(db, form.get("supplier_id"), active_only=True)
+    if not supplier_id or not supplier:
+        return render_error("supplier_id", "Bitte einen aktiven Lieferanten wählen.")
+
+    try:
+        qty = int(form.get("qty") or 0)
+    except Exception:
+        qty = 0
+    if qty <= 0:
+        return render_error("qty", "Menge muss größer 0 sein.")
+
+    try:
+        source_warehouse_id = int(form.get("source_warehouse_id") or 0) or None
+    except Exception:
+        source_warehouse_id = None
+    if source_warehouse_id and not db.get(Warehouse, int(source_warehouse_id)):
+        return render_error("source_warehouse_id", "Quelllager wurde nicht gefunden.")
+
+    reservation_ref = (form.get("reservation_ref") or "").strip() or None
+    submit_action = (form.get("submit_action") or "").strip().lower()
+    if submit_action not in ("send", "later"):
+        submit_action = "later"
+    if submit_action == "send" and "@" not in str(supplier.email or "").strip():
+        return render_error("supplier_id", "Lieferant hat keine gültige E-Mail-Adresse für den Versand.")
+
+    try:
+        order = _repair_create_order(
+            db,
+            article_id=int(product.id),
+            qty=int(qty),
+            supplier_id=int(supplier.id),
+            source_warehouse_id=(int(source_warehouse_id) if source_warehouse_id else None),
+            target_warehouse_id=(int(source_warehouse_id) if source_warehouse_id else None),
+            reservation_ref=reservation_ref,
+            notes=None,
+            created_by_user_id=user.id,
+        )
+        if submit_action == "send":
+            _repair_send_request_email(
+                db,
+                order=order,
+                supplier=supplier,
+                product=product,
+                account_id=None,
+                subject=None,
+                body=None,
+                send_now=True,
+            )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return render_error("__all__", f"Reparaturauftrag konnte nicht angelegt werden: {exc}")
+
+    response = RedirectResponse(
+        f"/m/reparatur?done=1&repair_id={int(order.id)}&product_id={int(product.id)}",
+        status_code=302,
+    )
+    response.set_cookie(
+        REPAIR_LAST_SUPPLIER_COOKIE,
+        str(int(supplier.id)),
+        max_age=LAST_REPAIR_SUPPLIER_COOKIE_MAX_AGE,
+        path="/",
+        samesite="lax",
+    )
+    _flash(request, f"Reparaturauftrag {order.repair_no} gespeichert.", "info")
+    return response
+
+
+@app.get("/m/einbuchen", response_class=HTMLResponse)
+def mobile_receipt_get(
+    request: Request,
+    user=Depends(require_lager_access),
+    product_id: int = 0,
+    qty: int = 0,
+    supplier_id: int = 0,
+    unit_cost: str = "",
+    delivery_note_no: str = "",
+    db: Session = Depends(db_session),
+):
+    done = str(request.query_params.get("done") or "").strip() == "1"
+    receipt_defaults = _receipt_defaults(db)
+    lock_warehouse = bool(receipt_defaults.get("lock_warehouse"))
+    default_warehouse_id = int(receipt_defaults.get("warehouse_id") or 0)
+    if default_warehouse_id and not db.get(Warehouse, default_warehouse_id):
+        default_warehouse_id = 0
+
+    selected_product_id = int(product_id or 0)
+    selected_product = db.get(Product, selected_product_id) if selected_product_id else None
+    if selected_product and not bool(selected_product.active):
+        selected_product = None
+        selected_product_id = 0
+
+    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc(), Product.id.asc()).all()
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc(), Warehouse.id.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc(), Supplier.id.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+
+    default_qty = int(receipt_defaults.get("quantity") or 1)
+    form_data = {
+        "product_id": str(selected_product_id) if selected_product_id else "",
+        "quantity": str(int(qty or default_qty) if int(qty or 0) > 0 else default_qty),
+        "warehouse_to_id": str(default_warehouse_id if default_warehouse_id else 0),
+        "condition": str(receipt_defaults.get("condition") or _default_condition_code()),
+        "supplier_id": str(int(supplier_id or 0) if int(supplier_id or 0) > 0 else int(receipt_defaults.get("supplier_id") or 0)),
+        "delivery_note_no": str(delivery_note_no or "").strip(),
+        "unit_cost": str(unit_cost or "").strip(),
+        "note": "",
+    }
+    if not form_data["delivery_note_no"]:
+        form_data["delivery_note_no"] = str(request.query_params.get("delivery_note_no") or "").strip()
+    query_qty = _to_int(request.query_params.get("qty"), 0)
+    if query_qty > 0:
+        form_data["quantity"] = str(query_qty)
+    query_supplier_id = _to_int(request.query_params.get("supplier_id"), 0)
+    if query_supplier_id > 0:
+        form_data["supplier_id"] = str(query_supplier_id)
+    query_unit_cost = str(request.query_params.get("unit_cost") or "").strip()
+    if query_unit_cost:
+        form_data["unit_cost"] = query_unit_cost
+    query_warehouse_id = _to_int(request.query_params.get("warehouse_to_id"), 0)
+    if query_warehouse_id > 0:
+        form_data["warehouse_to_id"] = str(query_warehouse_id)
+    query_condition = str(request.query_params.get("condition") or "").strip()
+    if query_condition:
+        form_data["condition"] = _condition_code_from_input(query_condition)
+    query_note = str(request.query_params.get("note") or "").strip()
+    if query_note:
+        form_data["note"] = query_note
+
+    if lock_warehouse and default_warehouse_id > 0:
+        form_data["warehouse_to_id"] = str(default_warehouse_id)
+
+    return templates.TemplateResponse(
+        "mobile/einbuchen.html",
+        _ctx(
+            request,
+            user=user,
+            products=products,
+            warehouses=warehouses,
+            suppliers=suppliers,
+            condition_defs=condition_defs,
+            form_data=form_data,
+            form_errors={},
+            first_error_field_id="",
+            selected_product=selected_product,
+            receipt_lock_warehouse=lock_warehouse and default_warehouse_id > 0,
+            done=done,
+        ),
+    )
+
+
+@app.post("/m/einbuchen")
+async def mobile_receipt_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    field_ids = {
+        "product_id": "m_receipt_product_id",
+        "quantity": "m_receipt_quantity",
+        "warehouse_to_id": "m_receipt_warehouse_to_id",
+        "condition": "m_receipt_condition",
+        "supplier_id": "m_receipt_supplier_id",
+        "delivery_note_no": "m_receipt_delivery_note_no",
+        "unit_cost": "m_receipt_unit_cost",
+        "note": "m_receipt_note",
+    }
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        if field_key == "__all__":
+            _flash(request, message, "error")
+        response = mobile_receipt_get(
+            request=request,
+            user=user,
+            product_id=_to_int(_form_scalar(form_data, "product_id"), 0),
+            qty=_to_int(_form_scalar(form_data, "quantity"), 0),
+            supplier_id=_to_int(_form_scalar(form_data, "supplier_id"), 0),
+            unit_cost=_form_scalar(form_data, "unit_cost"),
+            delivery_note_no=_form_scalar(form_data, "delivery_note_no"),
+            db=db,
+        )
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, field_ids)
+        response.context["done"] = False
+        return _rerender_template_response(response)
+
+    product_id = _to_int(form.get("product_id"), 0)
+    product = db.get(Product, product_id) if product_id else None
+    if not product:
+        return render_error("product_id", "Bitte ein Produkt auswählen.")
+    if not bool(product.active):
+        return render_error("product_id", "Archivierte Produkte können nicht eingebucht werden.")
+
+    quantity = _to_int(form.get("quantity"), 0)
+    if quantity <= 0:
+        return render_error("quantity", "Menge muss größer 0 sein.")
+
+    receipt_defaults = _receipt_defaults(db)
+    lock_warehouse = bool(receipt_defaults.get("lock_warehouse"))
+    locked_warehouse_id = int(receipt_defaults.get("warehouse_id") or 0)
+    warehouse_to_id = _to_int(form.get("warehouse_to_id"), 0)
+    if lock_warehouse and locked_warehouse_id > 0 and db.get(Warehouse, locked_warehouse_id):
+        warehouse_to_id = locked_warehouse_id
+        form_data["warehouse_to_id"] = str(warehouse_to_id)
+    if warehouse_to_id <= 0 or not db.get(Warehouse, warehouse_to_id):
+        return render_error("warehouse_to_id", "Bitte ein gültiges Ziel-Lager auswählen.")
+
+    condition = _condition_code_from_input(form.get("condition"))
+    if not _condition_exists(db, condition, active_only=True):
+        return render_error("condition", "Bitte einen gültigen Zustand auswählen.")
+
+    supplier_raw = form.get("supplier_id")
+    supplier_id, _supplier = _parse_supplier_id(db, supplier_raw, active_only=True)
+    if _to_int(supplier_raw, 0) > 0 and not supplier_id:
+        return render_error("supplier_id", "Lieferant wurde nicht gefunden oder ist inaktiv.")
+
+    delivery_note_no = (form.get("delivery_note_no") or "").strip() or None
+    note = (form.get("note") or "").strip() or None
+    try:
+        unit_cost = _parse_eur_to_cents(form.get("unit_cost"), "Preis pro Stück")
+    except ValueError as exc:
+        return render_error("unit_cost", str(exc))
+
+    tx = InventoryTransaction(
+        tx_type="receipt",
+        product_id=product_id,
+        warehouse_from_id=None,
+        warehouse_to_id=warehouse_to_id,
+        bin_from_id=None,
+        bin_to_id=None,
+        owner_id=None,
+        supplier_id=supplier_id,
+        delivery_note_no=delivery_note_no,
+        unit_cost=unit_cost,
+        condition=condition,
+        quantity=quantity,
+        serial_number=None,
+        reference="MOB-WE",
+        note=note,
+    )
+    try:
+        apply_transaction(db, tx, actor_user_id=user.id)
+        if unit_cost is not None:
+            product.last_cost_cents = int(unit_cost)
+            product.price_source = "bestellung"
+            db.add(product)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return render_error("__all__", f"Einbuchen fehlgeschlagen: {exc}")
+
+    _flash(request, "Eingebucht.", "info")
+    redirect_params = {"done": "1", "product_id": str(product_id)}
+    return RedirectResponse(f"/m/einbuchen?{urlencode(redirect_params)}", status_code=302)
+
+
+@app.get("/m/ausbuchen", response_class=HTMLResponse)
+def mobile_issue_get(
+    request: Request,
+    user=Depends(require_lager_access),
+    product_id: int = 0,
+    qty: int = 0,
+    warehouse_from_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    done = str(request.query_params.get("done") or "").strip() == "1"
+    default_warehouse_id = _mobile_default_warehouse_id(db)
+    selected_product_id = int(product_id or 0)
+    selected_product = db.get(Product, selected_product_id) if selected_product_id else None
+    if selected_product and not bool(selected_product.active):
+        selected_product = None
+        selected_product_id = 0
+
+    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc(), Product.id.asc()).all()
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc(), Warehouse.id.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+
+    form_data = {
+        "product_id": str(selected_product_id) if selected_product_id else "",
+        "quantity": str(int(qty or 1) if int(qty or 0) > 0 else 1),
+        "warehouse_from_id": str(int(warehouse_from_id or 0) if int(warehouse_from_id or 0) > 0 else default_warehouse_id),
+        "condition": _default_condition_code(),
+        "reason": "",
+        "note": "",
+    }
+    query_qty = _to_int(request.query_params.get("qty"), 0)
+    if query_qty > 0:
+        form_data["quantity"] = str(query_qty)
+    query_wh = _to_int(request.query_params.get("warehouse_from_id"), 0)
+    if query_wh > 0:
+        form_data["warehouse_from_id"] = str(query_wh)
+    query_condition = str(request.query_params.get("condition") or "").strip()
+    if query_condition:
+        form_data["condition"] = _condition_code_from_input(query_condition)
+    query_reason = str(request.query_params.get("reason") or "").strip()
+    if query_reason:
+        form_data["reason"] = query_reason
+    query_note = str(request.query_params.get("note") or "").strip()
+    if query_note:
+        form_data["note"] = query_note
+
+    return templates.TemplateResponse(
+        "mobile/ausbuchen.html",
+        _ctx(
+            request,
+            user=user,
+            products=products,
+            warehouses=warehouses,
+            condition_defs=condition_defs,
+            form_data=form_data,
+            form_errors={},
+            first_error_field_id="",
+            selected_product=selected_product,
+            done=done,
+        ),
+    )
+
+
+@app.post("/m/ausbuchen")
+async def mobile_issue_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    field_ids = {
+        "product_id": "m_issue_product_id",
+        "quantity": "m_issue_quantity",
+        "warehouse_from_id": "m_issue_warehouse_from_id",
+        "condition": "m_issue_condition",
+        "reason": "m_issue_reason",
+        "note": "m_issue_note",
+    }
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        if field_key == "__all__":
+            _flash(request, message, "error")
+        response = mobile_issue_get(
+            request=request,
+            user=user,
+            product_id=_to_int(_form_scalar(form_data, "product_id"), 0),
+            qty=_to_int(_form_scalar(form_data, "quantity"), 0),
+            warehouse_from_id=_to_int(_form_scalar(form_data, "warehouse_from_id"), 0),
+            db=db,
+        )
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, field_ids)
+        response.context["done"] = False
+        return _rerender_template_response(response)
+
+    product_id = _to_int(form.get("product_id"), 0)
+    product = db.get(Product, product_id) if product_id else None
+    if not product:
+        return render_error("product_id", "Bitte ein Produkt auswählen.")
+    if not bool(product.active):
+        return render_error("product_id", "Archivierte Produkte können nicht ausgebucht werden.")
+
+    quantity = _to_int(form.get("quantity"), 0)
+    if quantity <= 0:
+        return render_error("quantity", "Menge muss größer 0 sein.")
+
+    warehouse_from_id = _to_int(form.get("warehouse_from_id"), 0)
+    if warehouse_from_id <= 0 or not db.get(Warehouse, warehouse_from_id):
+        return render_error("warehouse_from_id", "Bitte ein gültiges Quell-Lager auswählen.")
+
+    condition = _condition_code_from_input(form.get("condition"))
+    if not _condition_exists(db, condition, active_only=True):
+        return render_error("condition", "Bitte einen gültigen Zustand auswählen.")
+
+    reason = (form.get("reason") or "").strip()
+    note = (form.get("note") or "").strip()
+    note_parts = []
+    if reason:
+        note_parts.append(f"Grund: {reason}")
+    if note:
+        note_parts.append(note)
+    note_text = " | ".join(note_parts) if note_parts else None
+
+    tx = InventoryTransaction(
+        tx_type="issue",
+        product_id=product_id,
+        warehouse_from_id=warehouse_from_id,
+        warehouse_to_id=None,
+        bin_from_id=None,
+        bin_to_id=None,
+        owner_id=None,
+        supplier_id=None,
+        delivery_note_no=None,
+        unit_cost=None,
+        condition=condition,
+        quantity=quantity,
+        serial_number=None,
+        reference="MOB-WA",
+        note=note_text,
+    )
+    try:
+        apply_transaction(db, tx, actor_user_id=user.id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return render_error("__all__", f"Ausbuchen fehlgeschlagen: {exc}")
+
+    _flash(request, "Ausgebucht.", "info")
+    redirect_params = {
+        "done": "1",
+        "product_id": str(product_id),
+        "warehouse_from_id": str(warehouse_from_id),
+    }
+    return RedirectResponse(f"/m/ausbuchen?{urlencode(redirect_params)}", status_code=302)
+
+
+@app.get("/m/umlagerung", response_class=HTMLResponse)
+def mobile_transfer_get(
+    request: Request,
+    user=Depends(require_lager_access),
+    product_id: int = 0,
+    qty: int = 0,
+    from_warehouse_id: int = 0,
+    to_warehouse_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    done = str(request.query_params.get("done") or "").strip() == "1"
+    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc(), Product.id.asc()).all()
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc(), Warehouse.id.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+
+    selected_product_id = int(product_id or 0)
+    selected_product = db.get(Product, selected_product_id) if selected_product_id else None
+    if selected_product and not bool(selected_product.active):
+        selected_product = None
+        selected_product_id = 0
+
+    default_from_id = int(from_warehouse_id or 0) or _mobile_default_warehouse_id(db)
+    if default_from_id <= 0 and warehouses:
+        default_from_id = int(warehouses[0].id)
+    default_to_id = int(to_warehouse_id or 0)
+    if default_to_id <= 0:
+        default_to_id = _mobile_first_other_warehouse_id(warehouses, default_from_id)
+    if default_to_id == default_from_id and warehouses:
+        default_to_id = _mobile_first_other_warehouse_id(warehouses, default_from_id)
+
+    form_data = {
+        "product_id": str(selected_product_id) if selected_product_id else "",
+        "quantity": str(int(qty or 1) if int(qty or 0) > 0 else 1),
+        "from_warehouse_id": str(default_from_id or 0),
+        "to_warehouse_id": str(default_to_id or 0),
+        "condition": _default_condition_code(),
+        "note": "",
+    }
+    query_qty = _to_int(request.query_params.get("qty"), 0)
+    if query_qty > 0:
+        form_data["quantity"] = str(query_qty)
+    query_condition = str(request.query_params.get("condition") or "").strip()
+    if query_condition:
+        form_data["condition"] = _condition_code_from_input(query_condition)
+    query_note = str(request.query_params.get("note") or "").strip()
+    if query_note:
+        form_data["note"] = query_note
+
+    return templates.TemplateResponse(
+        "mobile/umlagerung.html",
+        _ctx(
+            request,
+            user=user,
+            products=products,
+            warehouses=warehouses,
+            condition_defs=condition_defs,
+            form_data=form_data,
+            form_errors={},
+            first_error_field_id="",
+            selected_product=selected_product,
+            done=done,
+        ),
+    )
+
+
+@app.post("/m/umlagerung")
+async def mobile_transfer_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    field_ids = {
+        "product_id": "m_transfer_product_id",
+        "quantity": "m_transfer_quantity",
+        "from_warehouse_id": "m_transfer_from_warehouse_id",
+        "to_warehouse_id": "m_transfer_to_warehouse_id",
+        "condition": "m_transfer_condition",
+        "note": "m_transfer_note",
+    }
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        if field_key == "__all__":
+            _flash(request, message, "error")
+        response = mobile_transfer_get(
+            request=request,
+            user=user,
+            product_id=_to_int(_form_scalar(form_data, "product_id"), 0),
+            qty=_to_int(_form_scalar(form_data, "quantity"), 0),
+            from_warehouse_id=_to_int(_form_scalar(form_data, "from_warehouse_id"), 0),
+            to_warehouse_id=_to_int(_form_scalar(form_data, "to_warehouse_id"), 0),
+            db=db,
+        )
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, field_ids)
+        response.context["done"] = False
+        return _rerender_template_response(response)
+
+    product_id = _to_int(form.get("product_id"), 0)
+    product = db.get(Product, product_id) if product_id else None
+    if not product:
+        return render_error("product_id", "Bitte ein Produkt auswählen.")
+    if not bool(product.active):
+        return render_error("product_id", "Archivierte Produkte können nicht umgelagert werden.")
+
+    quantity = _to_int(form.get("quantity"), 0)
+    if quantity <= 0:
+        return render_error("quantity", "Menge muss größer 0 sein.")
+
+    from_warehouse_id = _to_int(form.get("from_warehouse_id"), 0)
+    to_warehouse_id = _to_int(form.get("to_warehouse_id"), 0)
+    if from_warehouse_id <= 0 or not db.get(Warehouse, from_warehouse_id):
+        return render_error("from_warehouse_id", "Bitte ein gültiges Quell-Lager auswählen.")
+    if to_warehouse_id <= 0 or not db.get(Warehouse, to_warehouse_id):
+        return render_error("to_warehouse_id", "Bitte ein gültiges Ziel-Lager auswählen.")
+    if from_warehouse_id == to_warehouse_id:
+        return render_error("to_warehouse_id", "Quelle und Ziel müssen unterschiedlich sein.")
+
+    condition = _condition_code_from_input(form.get("condition"))
+    if not _condition_exists(db, condition, active_only=True):
+        return render_error("condition", "Bitte einen gültigen Zustand auswählen.")
+
+    note = (form.get("note") or "").strip() or None
+    tx = InventoryTransaction(
+        tx_type="transfer",
+        product_id=product_id,
+        warehouse_from_id=from_warehouse_id,
+        warehouse_to_id=to_warehouse_id,
+        bin_from_id=None,
+        bin_to_id=None,
+        owner_id=None,
+        supplier_id=None,
+        delivery_note_no=None,
+        unit_cost=None,
+        condition=condition,
+        quantity=quantity,
+        serial_number=None,
+        reference="MOB-UM",
+        note=note,
+    )
+    try:
+        apply_transaction(db, tx, actor_user_id=user.id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return render_error("__all__", f"Umlagerung fehlgeschlagen: {exc}")
+
+    _flash(request, "Umlagerung gebucht.", "info")
+    redirect_params = {
+        "done": "1",
+        "product_id": str(product_id),
+        "from_warehouse_id": str(from_warehouse_id),
+        "to_warehouse_id": str(to_warehouse_id),
+    }
+    return RedirectResponse(f"/m/umlagerung?{urlencode(redirect_params)}", status_code=302)
+
+
+@app.get("/m/bestellen", response_class=HTMLResponse)
+def mobile_order_create_get(
+    request: Request,
+    user=Depends(require_lager_access),
+    product_id: int = 0,
+    supplier_id: int = 0,
+    qty: int = 0,
+    unit_cost: str = "",
+    note: str = "",
+    db: Session = Depends(db_session),
+):
+    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc(), Product.id.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc(), Supplier.id.asc()).all()
+    selected_product_id = int(product_id or 0)
+    selected_product = db.get(Product, selected_product_id) if selected_product_id else None
+    if selected_product and not bool(selected_product.active):
+        selected_product = None
+        selected_product_id = 0
+
+    form_data = {
+        "product_id": str(selected_product_id) if selected_product_id else "",
+        "supplier_id": str(int(supplier_id or 0) if int(supplier_id or 0) > 0 else ""),
+        "quantity": str(int(qty or 1) if int(qty or 0) > 0 else 1),
+        "unit_cost": str(unit_cost or "").strip(),
+        "note": str(note or "").strip(),
+    }
+    done = str(request.query_params.get("done") or "").strip() == "1"
+    return templates.TemplateResponse(
+        "mobile/bestellen.html",
+        _ctx(
+            request,
+            user=user,
+            products=products,
+            suppliers=suppliers,
+            selected_product=selected_product,
+            form_data=form_data,
+            form_errors={},
+            first_error_field_id="",
+            done=done,
+        ),
+    )
+
+
+@app.post("/m/bestellen")
+async def mobile_order_create_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    field_ids = {
+        "supplier_id": "m_order_supplier_id",
+        "product_id": "m_order_product_id",
+        "quantity": "m_order_quantity",
+        "unit_cost": "m_order_unit_cost",
+        "note": "m_order_note",
+    }
+
+    def render_error(field_key: str, message: str):
+        if field_key not in form_errors:
+            form_errors[field_key] = message
+        response = mobile_order_create_get(
+            request=request,
+            user=user,
+            product_id=_to_int(_form_scalar(form_data, "product_id"), 0),
+            supplier_id=_to_int(_form_scalar(form_data, "supplier_id"), 0),
+            qty=_to_int(_form_scalar(form_data, "quantity"), 0),
+            unit_cost=_form_scalar(form_data, "unit_cost"),
+            note=_form_scalar(form_data, "note"),
+            db=db,
+        )
+        response.context["form_data"] = form_data
+        response.context["form_errors"] = form_errors
+        response.context["first_error_field_id"] = _first_error_field_id(form_errors, field_ids)
+        response.context["done"] = False
+        return _rerender_template_response(response)
+
+    supplier_id, supplier = _parse_supplier_id(db, form.get("supplier_id"), active_only=True)
+    if not supplier_id or not supplier:
+        return render_error("supplier_id", "Bitte einen gültigen Lieferanten auswählen.")
+
+    product_id = _to_int(form.get("product_id"), 0)
+    product = db.get(Product, product_id) if product_id else None
+    if not product:
+        return render_error("product_id", "Bitte ein gültiges Produkt auswählen.")
+    if not bool(product.active):
+        return render_error("product_id", "Archivierte Produkte können nicht bestellt werden.")
+
+    quantity = _to_int(form.get("quantity"), 0)
+    if quantity <= 0:
+        return render_error("quantity", "Menge muss größer 0 sein.")
+
+    try:
+        unit_cost_cents = _parse_eur_to_cents(form.get("unit_cost"), "Preis pro Stück")
+    except ValueError as exc:
+        return render_error("unit_cost", str(exc))
+
+    note = (form.get("note") or "").strip() or None
+    try:
+        order = PurchaseOrder(
+            supplier_id=int(supplier_id),
+            po_number=_next_po_number(db),
+            status="draft",
+            note=note,
+        )
+        db.add(order)
+        db.flush()
+        db.add(
+            PurchaseOrderLine(
+                purchase_order_id=int(order.id),
+                product_id=int(product_id),
+                qty=int(quantity),
+                expected_cost_cents=unit_cost_cents,
+                confirmed_cost_cents=None,
+            )
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return render_error("__all__", f"Bestellung konnte nicht gespeichert werden: {exc}")
+
+    _flash(request, f"Bestellung {order.po_number} angelegt.", "info")
+    return RedirectResponse("/m/bestellungen?done=1", status_code=302)
+
+
+@app.get("/m/bestellungen", response_class=HTMLResponse)
+def mobile_orders_list(
+    request: Request,
+    user=Depends(require_lager_access),
+    status: str = "offen",
+    db: Session = Depends(db_session),
+):
+    status_key = str(status or "offen").strip().lower()
+    if status_key not in ("offen", "erledigt", "alle"):
+        status_key = "offen"
+
+    query = db.query(PurchaseOrder)
+    if status_key == "offen":
+        query = query.filter(PurchaseOrder.status.in_(("draft", "sent", "confirmed")))
+    elif status_key == "erledigt":
+        query = query.filter(PurchaseOrder.status == "received")
+    orders = query.order_by(PurchaseOrder.id.desc()).limit(120).all()
+
+    order_ids = [int(row.id) for row in orders]
+    supplier_ids = sorted({int(row.supplier_id) for row in orders if row.supplier_id})
+    suppliers = {}
+    if supplier_ids:
+        supplier_rows = db.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()
+        suppliers = {int(row.id): row for row in supplier_rows}
+
+    lines_by_order: dict[int, list[PurchaseOrderLine]] = {}
+    product_ids: set[int] = set()
+    if order_ids:
+        line_rows = (
+            db.query(PurchaseOrderLine)
+            .filter(PurchaseOrderLine.purchase_order_id.in_(order_ids))
+            .order_by(PurchaseOrderLine.purchase_order_id.asc(), PurchaseOrderLine.id.asc())
+            .all()
+        )
+        for row in line_rows:
+            lines_by_order.setdefault(int(row.purchase_order_id), []).append(row)
+            product_ids.add(int(row.product_id))
+
+    products = {}
+    if product_ids:
+        product_rows = db.query(Product).filter(Product.id.in_(sorted(product_ids))).all()
+        products = {int(row.id): row for row in product_rows}
+
+    order_rows: list[dict[str, object]] = []
+    for order in orders:
+        supplier = suppliers.get(int(order.supplier_id or 0)) if order.supplier_id else None
+        line_rows: list[dict[str, object]] = []
+        for line in lines_by_order.get(int(order.id), []):
+            product = products.get(int(line.product_id))
+            unit_cost_cents = line.confirmed_cost_cents if line.confirmed_cost_cents is not None else line.expected_cost_cents
+            params: dict[str, str] = {
+                "product_id": str(int(line.product_id)),
+                "qty": str(int(line.qty or 0)),
+                "delivery_note_no": str(order.po_number or ""),
+            }
+            if order.supplier_id:
+                params["supplier_id"] = str(int(order.supplier_id))
+            unit_cost_param = _mobile_cost_param_from_cents(unit_cost_cents)
+            if unit_cost_param:
+                params["unit_cost"] = unit_cost_param
+            line_rows.append(
+                {
+                    "id": int(line.id),
+                    "qty": int(line.qty or 0),
+                    "product_name": _mobile_display_name(product) or f"Produkt {int(line.product_id)}",
+                    "product_material_no": str(product.material_no or "").strip() if product else "",
+                    "unit_cost_label": _format_eur(unit_cost_cents) if unit_cost_cents is not None else "-",
+                    "einbuchen_href": f"/m/einbuchen?{urlencode(params)}",
+                }
+            )
+
+        order_rows.append(
+            {
+                "id": int(order.id),
+                "po_number": str(order.po_number or f"PO-{int(order.id)}"),
+                "status_label": _purchase_status_label(order.status),
+                "supplier_name": str(supplier.name or "-") if supplier else "-",
+                "note": str(order.note or "").strip(),
+                "lines": line_rows,
+            }
+        )
+
+    done = str(request.query_params.get("done") or "").strip() == "1"
+    return templates.TemplateResponse(
+        "mobile/bestellungen.html",
+        _ctx(
+            request,
+            user=user,
+            status=status_key,
+            orders=order_rows,
+            done=done,
+        ),
+    )
+
+
+@app.get("/m/lieferschein", response_class=HTMLResponse)
+def mobile_delivery_scan_get(
+    request: Request,
+    user=Depends(require_lager_access),
+    scan_source: str = "",
+    db: Session = Depends(db_session),
+):
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc(), Warehouse.id.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc(), Supplier.id.asc()).all()
+    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+
+    requested_source_raw = str(scan_source or "").strip()
+    requested_source = _delivery_scan_normalize_source(requested_source_raw) if requested_source_raw else ""
+    scan_state_raw = request.session.get(DELIVERY_SCAN_STATE_KEY)
+    scan_state = scan_state_raw if isinstance(scan_state_raw, dict) else {}
+    state_source = _delivery_scan_normalize_source(scan_state.get("scan_source"))
+    if requested_source and scan_state and state_source != requested_source:
+        request.session.pop(DELIVERY_SCAN_STATE_KEY, None)
+        scan_state = {}
+        state_source = requested_source
+    active_source = requested_source or state_source
+    if active_source not in DELIVERY_SCAN_SOURCES:
+        active_source = DELIVERY_SCAN_SOURCE_LIEFERSCHEIN
+    if scan_state and str(scan_state.get("scan_source") or "").strip() != active_source:
+        scan_state = dict(scan_state)
+        scan_state["scan_source"] = active_source
+        request.session[DELIVERY_SCAN_STATE_KEY] = scan_state
+
+    return templates.TemplateResponse(
+        "mobile/lieferschein.html",
+        _ctx(
+            request,
+            user=user,
+            warehouses=warehouses,
+            suppliers=suppliers,
+            condition_defs=condition_defs,
+            scan_state=scan_state,
+            scan_source=active_source,
+            scan_source_label=_delivery_scan_source_label(active_source),
+            scan_return_href=_delivery_scan_page_href(active_source),
+            ocr_available=_delivery_scan_tesseract_available(),
+        ),
+    )
+
+
+@app.get("/m/produktschild", response_class=HTMLResponse)
+def mobile_product_label_scan_get(user=Depends(require_lager_access)):
+    _ = user
+    return RedirectResponse(_delivery_scan_page_href(DELIVERY_SCAN_SOURCE_PRODUKTSCHILD), status_code=302)
+
+
+@app.post("/m/lieferschein/scan")
+async def mobile_delivery_scan_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    _ = user
+    form = await request.form()
+    scan_mode = str(form.get("scan_mode") or "auto").strip().lower()
+    if scan_mode not in ("auto", "receipt", "issue", "transfer"):
+        scan_mode = "auto"
+    scan_source = _delivery_scan_normalize_source(form.get("scan_source"))
+    redirect_href = _delivery_scan_page_href(scan_source)
+    source_label = _delivery_scan_source_label(scan_source)
+
+    upload = form.get("scan_image")
+    if upload is None or not hasattr(upload, "read"):
+        _flash(request, f"Bitte ein Foto vom {source_label} auswählen.", "error")
+        return RedirectResponse(redirect_href, status_code=302)
+
+    try:
+        payload = await upload.read()
+        recognized_text = _delivery_scan_extract_text(str(upload.filename or ""), payload)
+        suggestion_data = _delivery_scan_build_suggestions(
+            db,
+            recognized_text,
+            scan_mode,
+            scan_source=scan_source,
+        )
+    except ValueError as exc:
+        _flash(request, str(exc), "error")
+        return RedirectResponse(redirect_href, status_code=302)
+    except Exception as exc:
+        _flash(request, f"{source_label} konnte nicht verarbeitet werden: {exc}", "error")
+        return RedirectResponse(redirect_href, status_code=302)
+
+    request.session[DELIVERY_SCAN_STATE_KEY] = {
+        "created_at": dt.datetime.utcnow().replace(tzinfo=None).isoformat(),
+        "filename": str(upload.filename or "").strip(),
+        "scan_source": scan_source,
+        "mode_hint": scan_mode,
+        "mode_detected": str(suggestion_data.get("mode") or "receipt"),
+        "recognized_text": str(suggestion_data.get("recognized_text") or ""),
+        "references": list(suggestion_data.get("references") or []),
+        "lines": list(suggestion_data.get("lines") or []),
+    }
+
+    lines_count = len(list(suggestion_data.get("lines") or []))
+    if lines_count <= 0:
+        _flash(request, "Foto gelesen, aber keine Produkte sicher erkannt. Bitte prüfen und ggf. besseres Foto aufnehmen.", "warn")
+    else:
+        mode_label = {
+            "receipt": "Einbuchen",
+            "issue": "Ausbuchen",
+            "transfer": "Umlagern",
+        }.get(str(suggestion_data.get("mode") or ""), "Einbuchen")
+        _flash(request, f"{lines_count} Produkt(e) erkannt. Vorschlag: {mode_label}.", "info")
+    return RedirectResponse(redirect_href, status_code=302)
+
+
+@app.post("/m/lieferschein/buchen")
+async def mobile_delivery_book_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    form = await request.form()
+    scan_state_raw = request.session.get(DELIVERY_SCAN_STATE_KEY)
+    scan_state = scan_state_raw if isinstance(scan_state_raw, dict) else {}
+    scan_source = _delivery_scan_normalize_source(scan_state.get("scan_source"))
+    scan_source_label = _delivery_scan_source_label(scan_source)
+    redirect_href = _delivery_scan_page_href(scan_source)
+    state_lines = list(scan_state.get("lines") or [])
+    if not state_lines:
+        _flash(request, "Kein Scan-Ergebnis vorhanden. Bitte zuerst ein Foto verarbeiten.", "error")
+        return RedirectResponse(redirect_href, status_code=302)
+
+    supplier_id, _supplier = _parse_supplier_id(db, form.get("global_supplier_id"), active_only=True)
+    if _to_int(form.get("global_supplier_id"), 0) > 0 and not supplier_id:
+        _flash(request, "Gewählter Lieferant ist ungültig oder inaktiv.", "error")
+        return RedirectResponse(redirect_href, status_code=302)
+    global_note = (form.get("global_note") or "").strip()
+
+    prepared_rows: list[dict[str, object]] = []
+    errors: list[str] = []
+
+    for idx, state_line in enumerate(state_lines, start=1):
+        if str(form.get(f"line_{idx}_enabled") or "") != "1":
+            continue
+
+        product_id = int(state_line.get("product_id") or 0)
+        product = db.get(Product, product_id) if product_id else None
+        if not product or not bool(product.active):
+            errors.append(f"Zeile {idx}: Produkt ist nicht mehr verfügbar.")
+            continue
+
+        tx_type = str(form.get(f"line_{idx}_tx_type") or state_line.get("tx_type") or "receipt").strip().lower()
+        if tx_type not in ("receipt", "issue", "transfer"):
+            errors.append(f"Zeile {idx}: Ungültiger Buchungstyp.")
+            continue
+
+        qty = _to_int(form.get(f"line_{idx}_qty"), 0)
+        if qty <= 0:
+            errors.append(f"Zeile {idx}: Menge muss größer 0 sein.")
+            continue
+
+        condition = _condition_code_from_input(form.get(f"line_{idx}_condition"))
+        if not _condition_exists(db, condition, active_only=True):
+            errors.append(f"Zeile {idx}: Zustand ist ungültig.")
+            continue
+
+        warehouse_from_id = _to_int(form.get(f"line_{idx}_warehouse_from_id"), 0)
+        warehouse_to_id = _to_int(form.get(f"line_{idx}_warehouse_to_id"), 0)
+        if tx_type == "receipt":
+            if warehouse_to_id <= 0 or not db.get(Warehouse, warehouse_to_id):
+                errors.append(f"Zeile {idx}: Ziel-Lager fehlt.")
+                continue
+            warehouse_from_id = 0
+        elif tx_type == "issue":
+            if warehouse_from_id <= 0 or not db.get(Warehouse, warehouse_from_id):
+                errors.append(f"Zeile {idx}: Quell-Lager fehlt.")
+                continue
+            warehouse_to_id = 0
+        else:  # transfer
+            if warehouse_from_id <= 0 or not db.get(Warehouse, warehouse_from_id):
+                errors.append(f"Zeile {idx}: Quell-Lager fehlt.")
+                continue
+            if warehouse_to_id <= 0 or not db.get(Warehouse, warehouse_to_id):
+                errors.append(f"Zeile {idx}: Ziel-Lager fehlt.")
+                continue
+            if warehouse_from_id == warehouse_to_id:
+                errors.append(f"Zeile {idx}: Quelle und Ziel müssen unterschiedlich sein.")
+                continue
+
+        line_reference = (form.get(f"line_{idx}_reference") or "").strip()
+        if not line_reference:
+            line_reference = str(state_line.get("reference") or "").strip()
+        line_note = (form.get(f"line_{idx}_note") or "").strip()
+        note_parts = [f"{scan_source_label}-Scan"]
+        if global_note:
+            note_parts.append(global_note)
+        if line_note:
+            note_parts.append(line_note)
+        note_text = " | ".join(note_parts)
+
+        prepared_rows.append(
+            {
+                "product_id": product_id,
+                "tx_type": tx_type,
+                "qty": qty,
+                "condition": condition,
+                "warehouse_from_id": warehouse_from_id or None,
+                "warehouse_to_id": warehouse_to_id or None,
+                "reference": line_reference or None,
+                "note": note_text,
+            }
+        )
+
+    if not prepared_rows and not errors:
+        errors.append("Keine Zeile für die Buchung ausgewählt.")
+    if errors:
+        for msg in errors[:6]:
+            _flash(request, msg, "error")
+        if len(errors) > 6:
+            _flash(request, f"Weitere Fehler: {len(errors) - 6}", "warn")
+        return RedirectResponse(redirect_href, status_code=302)
+
+    booked = 0
+    try:
+        for row in prepared_rows:
+            tx = InventoryTransaction(
+                tx_type=str(row["tx_type"]),
+                product_id=int(row["product_id"]),
+                warehouse_from_id=row["warehouse_from_id"],
+                warehouse_to_id=row["warehouse_to_id"],
+                bin_from_id=None,
+                bin_to_id=None,
+                owner_id=None,
+                supplier_id=(supplier_id if str(row["tx_type"]) == "receipt" else None),
+                delivery_note_no=None,
+                unit_cost=None,
+                condition=str(row["condition"]),
+                quantity=int(row["qty"]),
+                serial_number=None,
+                reference=row["reference"],
+                note=str(row["note"]),
+            )
+            apply_transaction(db, tx, actor_user_id=user.id)
+            booked += 1
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Buchung fehlgeschlagen: {exc}", "error")
+        return RedirectResponse(redirect_href, status_code=302)
+
+    request.session.pop(DELIVERY_SCAN_STATE_KEY, None)
+    _flash(request, f"{booked} Buchung(en) aus {scan_source_label} ausgeführt.", "info")
+    return RedirectResponse(redirect_href, status_code=302)
 
 
 @app.get("/mobile/quick", response_class=HTMLResponse)
@@ -2840,6 +7614,581 @@ def feature_defs_edit(
 
     _flash(request, f"Merkmal '{label_clean}' aktualisiert.", "info")
     return RedirectResponse(f"/catalog/features?kind_id={int(feature.device_kind_id or 0)}", status_code=302)
+
+
+def _feature_normalization_redirect_url(*, kind_id: int, feature_id: int) -> str:
+    params = {
+        "kind_id": str(int(kind_id or 0)),
+        "feature_id": str(int(feature_id or 0)),
+    }
+    return "/catalog/features/normalization?" + urlencode(params)
+
+
+def _feature_normalization_kind_rows(db: Session) -> tuple[list[dict[str, object]], set[int]]:
+    areas = db.query(Area).order_by(Area.name.asc(), Area.id.asc()).all()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    area_name_map = {int(a.id): str(a.name or "").strip() for a in areas}
+    rows: list[dict[str, object]] = []
+    ids: set[int] = set()
+    for kind in kinds:
+        kind_id = int(kind.id or 0)
+        area_name = area_name_map.get(int(kind.area_id or 0), "")
+        kind_name = str(kind.name or "").strip()
+        label = f"{area_name} / {kind_name}" if area_name else kind_name
+        rows.append({"id": kind_id, "label": label})
+        ids.add(kind_id)
+    return rows, ids
+
+
+def _feature_normalization_feature_rows(db: Session, *, kind_id: int) -> list[FeatureDef]:
+    if int(kind_id or 0) <= 0:
+        return []
+    all_rows = (
+        db.query(FeatureDef)
+        .filter(FeatureDef.device_kind_id == int(kind_id))
+        .order_by(FeatureDef.label_de.asc(), FeatureDef.id.asc())
+        .all()
+    )
+    return [row for row in all_rows if _is_text_like_feature(row.data_type)]
+
+
+@app.get("/catalog/features/normalization", response_class=HTMLResponse)
+def feature_normalization_get(
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = 0,
+    feature_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    kind_option_rows, valid_kind_ids = _feature_normalization_kind_rows(db)
+    selected_kind_id = int(kind_id or 0)
+    if selected_kind_id and selected_kind_id not in valid_kind_ids:
+        selected_kind_id = 0
+
+    feature_rows = _feature_normalization_feature_rows(db, kind_id=selected_kind_id)
+    feature_ids = {int(row.id) for row in feature_rows}
+    selected_feature_id = int(feature_id or 0)
+    if selected_feature_id not in feature_ids:
+        selected_feature_id = int(feature_rows[0].id) if feature_rows else 0
+    selected_feature = next((row for row in feature_rows if int(row.id) == selected_feature_id), None)
+
+    option_rows: list[FeatureOption] = []
+    if selected_feature_id > 0:
+        option_rows = (
+            db.query(FeatureOption)
+            .filter(FeatureOption.feature_def_id == int(selected_feature_id))
+            .order_by(
+                FeatureOption.sort_order.asc(),
+                func.lower(func.trim(func.coalesce(FeatureOption.label_de, FeatureOption.canonical_key))).asc(),
+                FeatureOption.id.asc(),
+            )
+            .all()
+        )
+
+    alias_rows: list[dict[str, object]] = []
+    if selected_feature_id > 0:
+        rows = (
+            db.query(
+                FeatureOptionAlias,
+                FeatureOption.label_de,
+                FeatureOption.canonical_key,
+                Manufacturer.name,
+            )
+            .join(FeatureOption, FeatureOption.id == FeatureOptionAlias.option_id)
+            .outerjoin(Manufacturer, Manufacturer.id == FeatureOptionAlias.manufacturer_id)
+            .filter(FeatureOption.feature_def_id == int(selected_feature_id))
+            .order_by(
+                case((FeatureOptionAlias.manufacturer_id.is_(None), 0), else_=1),
+                FeatureOptionAlias.priority.asc(),
+                func.lower(func.trim(FeatureOptionAlias.alias_text)).asc(),
+                FeatureOptionAlias.id.asc(),
+            )
+            .all()
+        )
+        for alias_row, option_label, option_key, manufacturer_name in rows:
+            alias_rows.append(
+                {
+                    "alias": alias_row,
+                    "option_label": str(option_label or "").strip() or str(option_key or "").strip(),
+                    "manufacturer_label": str(manufacturer_name or "").strip() or "Global",
+                }
+            )
+
+    manufacturers = db.query(Manufacturer).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
+
+    unknown_rows: list[dict[str, object]] = []
+    unknown_total = 0
+    if selected_feature_id > 0 and selected_feature:
+        raw_expr = func.trim(FeatureValue.raw_text)
+        manufacturer_label_expr = func.coalesce(Manufacturer.name, Product.manufacturer_name, Product.manufacturer, "-")
+        base_unknown_q = (
+            db.query(FeatureValue.id)
+            .join(Product, Product.id == FeatureValue.product_id)
+            .filter(
+                Product.device_kind_id == int(selected_feature.device_kind_id or 0),
+                FeatureValue.feature_def_id == int(selected_feature_id),
+                FeatureValue.option_id.is_(None),
+                FeatureValue.raw_text.isnot(None),
+                func.length(func.trim(FeatureValue.raw_text)) > 0,
+            )
+        )
+        unknown_total = int(base_unknown_q.count())
+        grouped_unknown_rows = (
+            db.query(
+                raw_expr.label("raw_text"),
+                Product.manufacturer_id,
+                manufacturer_label_expr.label("manufacturer_label"),
+                func.count(FeatureValue.id).label("value_count"),
+            )
+            .join(Product, Product.id == FeatureValue.product_id)
+            .outerjoin(Manufacturer, Manufacturer.id == Product.manufacturer_id)
+            .filter(
+                Product.device_kind_id == int(selected_feature.device_kind_id or 0),
+                FeatureValue.feature_def_id == int(selected_feature_id),
+                FeatureValue.option_id.is_(None),
+                FeatureValue.raw_text.isnot(None),
+                func.length(func.trim(FeatureValue.raw_text)) > 0,
+            )
+            .group_by(raw_expr, Product.manufacturer_id, manufacturer_label_expr)
+            .order_by(func.lower(raw_expr).asc(), func.lower(manufacturer_label_expr).asc())
+            .limit(FEATURE_NORMALIZATION_UNKNOWN_LIMIT)
+            .all()
+        )
+        for raw_text, manufacturer_id_row, manufacturer_label, value_count in grouped_unknown_rows:
+            unknown_rows.append(
+                {
+                    "raw_text": str(raw_text or "").strip(),
+                    "manufacturer_id": int(manufacturer_id_row or 0),
+                    "manufacturer_label": str(manufacturer_label or "").strip() or "-",
+                    "count": int(value_count or 0),
+                }
+            )
+
+    return templates.TemplateResponse(
+        "catalog/feature_normalization.html",
+        _ctx(
+            request,
+            user=user,
+            kind_option_rows=kind_option_rows,
+            selected_kind_id=selected_kind_id,
+            feature_rows=feature_rows,
+            selected_feature_id=selected_feature_id,
+            selected_feature=selected_feature,
+            option_rows=option_rows,
+            alias_rows=alias_rows,
+            unknown_rows=unknown_rows,
+            unknown_total=unknown_total,
+            unknown_preview_limit=FEATURE_NORMALIZATION_UNKNOWN_LIMIT,
+            manufacturers=manufacturers,
+        ),
+    )
+
+
+@app.post("/catalog/features/normalization/options/add")
+def feature_normalization_option_add(
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = Form(0),
+    feature_id: int = Form(0),
+    canonical_key: str = Form(""),
+    label_de: str = Form(""),
+    sort_order: int = Form(0),
+    active: Optional[str] = Form(None),
+    db: Session = Depends(db_session),
+):
+    _ = user
+    feature = db.get(FeatureDef, int(feature_id or 0))
+    if not feature:
+        _flash(request, "Merkmal für Option nicht gefunden.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(kind_id or 0), feature_id=int(feature_id or 0)), status_code=302)
+    if not _is_text_like_feature(feature.data_type):
+        _flash(request, "Optionen können nur für Text/Enum-Merkmale gepflegt werden.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)), status_code=302)
+
+    canonical_key_raw = str(canonical_key or "").strip() or str(label_de or "").strip()
+    canonical_key_clean = _sanitize_feature_canonical_key(canonical_key_raw)
+    label_clean = str(label_de or "").strip() or canonical_key_clean
+
+    try:
+        option = _ensure_feature_option(
+            db,
+            feature_def_id=int(feature.id),
+            canonical_key=canonical_key_clean,
+            label_de=label_clean,
+            sort_order=int(sort_order or 0),
+            active=bool(active == "on"),
+        )
+        if active != "on":
+            option.active = False
+            db.add(option)
+        db.commit()
+        _flash(request, f"Option '{label_clean}' gespeichert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+
+    return RedirectResponse(
+        _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)),
+        status_code=302,
+    )
+
+
+@app.post("/catalog/features/normalization/options/{option_id}/edit")
+def feature_normalization_option_edit(
+    option_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = Form(0),
+    feature_id: int = Form(0),
+    canonical_key: str = Form(""),
+    label_de: str = Form(""),
+    sort_order: int = Form(0),
+    active: Optional[str] = Form(None),
+    db: Session = Depends(db_session),
+):
+    _ = user
+    option = db.get(FeatureOption, int(option_id))
+    if not option:
+        _flash(request, "Option nicht gefunden.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(kind_id or 0), feature_id=int(feature_id or 0)), status_code=302)
+    feature = db.get(FeatureDef, int(option.feature_def_id or 0))
+    if not feature:
+        _flash(request, "Merkmal der Option nicht gefunden.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(kind_id or 0), feature_id=int(feature_id or 0)), status_code=302)
+
+    canonical_key_raw = str(canonical_key or "").strip() or str(option.canonical_key or "")
+    canonical_key_clean = _sanitize_feature_canonical_key(canonical_key_raw)
+    label_clean = str(label_de or "").strip() or canonical_key_clean
+
+    option.canonical_key = canonical_key_clean
+    option.label_de = label_clean
+    option.sort_order = int(sort_order or 0)
+    option.active = bool(active == "on")
+    db.add(option)
+    try:
+        db.commit()
+        _flash(request, f"Option '{label_clean}' aktualisiert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+
+    return RedirectResponse(
+        _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)),
+        status_code=302,
+    )
+
+
+def _find_feature_alias_by_norm(
+    db: Session,
+    *,
+    feature_id: int,
+    alias_norm: str,
+    manufacturer_id: int | None,
+    exclude_alias_id: int = 0,
+) -> FeatureOptionAlias | None:
+    query = (
+        db.query(FeatureOptionAlias)
+        .join(FeatureOption, FeatureOption.id == FeatureOptionAlias.option_id)
+        .filter(
+            FeatureOption.feature_def_id == int(feature_id),
+            FeatureOptionAlias.alias_norm == str(alias_norm or ""),
+        )
+    )
+    if manufacturer_id is None:
+        query = query.filter(FeatureOptionAlias.manufacturer_id.is_(None))
+    else:
+        query = query.filter(FeatureOptionAlias.manufacturer_id == int(manufacturer_id))
+    if int(exclude_alias_id or 0) > 0:
+        query = query.filter(FeatureOptionAlias.id != int(exclude_alias_id))
+    return query.order_by(FeatureOptionAlias.priority.asc(), FeatureOptionAlias.id.asc()).first()
+
+
+@app.post("/catalog/features/normalization/aliases/add")
+def feature_normalization_alias_add(
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = Form(0),
+    feature_id: int = Form(0),
+    option_id: int = Form(0),
+    alias_text: str = Form(""),
+    manufacturer_id: int = Form(0),
+    priority: int = Form(100),
+    apply_existing: Optional[str] = Form("on"),
+    db: Session = Depends(db_session),
+):
+    _ = user
+    option = db.get(FeatureOption, int(option_id or 0))
+    if not option:
+        _flash(request, "Option für Alias nicht gefunden.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(kind_id or 0), feature_id=int(feature_id or 0)), status_code=302)
+    feature = db.get(FeatureDef, int(option.feature_def_id or 0))
+    if not feature or int(feature.id) != int(feature_id or 0):
+        _flash(request, "Alias passt nicht zum gewählten Merkmal.", "error")
+        return RedirectResponse(
+            _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id if feature else kind_id), feature_id=int(feature.id if feature else feature_id)),
+            status_code=302,
+        )
+
+    alias_text_clean = str(alias_text or "").strip()
+    alias_norm = _normalize_feature_alias_text(alias_text_clean)
+    if not alias_norm:
+        _flash(request, "Alias darf nicht leer sein.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)), status_code=302)
+
+    manufacturer_id_int = int(manufacturer_id or 0)
+    if manufacturer_id_int > 0 and not db.get(Manufacturer, manufacturer_id_int):
+        manufacturer_id_int = 0
+    manufacturer_fk = manufacturer_id_int if manufacturer_id_int > 0 else None
+
+    existing_alias = _find_feature_alias_by_norm(
+        db,
+        feature_id=int(feature.id),
+        alias_norm=alias_norm,
+        manufacturer_id=manufacturer_fk,
+    )
+    if existing_alias:
+        if int(existing_alias.option_id or 0) == int(option.id):
+            _flash(request, "Alias existiert bereits für diese Option/Hersteller-Kombination.", "warn")
+        else:
+            _flash(request, "Alias ist bereits einer anderen Option zugeordnet. Bitte bestehenden Alias bearbeiten.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)), status_code=302)
+
+    db.add(
+        FeatureOptionAlias(
+            option_id=int(option.id),
+            alias_text=alias_text_clean,
+            alias_norm=alias_norm,
+            manufacturer_id=manufacturer_fk,
+            priority=int(priority or 100),
+        )
+    )
+
+    updated_count = 0
+    if apply_existing == "on":
+        updated_count = _apply_alias_to_existing_feature_values(
+            db,
+            feature_def=feature,
+            option=option,
+            alias_norm=alias_norm,
+            manufacturer_id=manufacturer_fk,
+            only_unmapped=True,
+        )
+
+    try:
+        db.commit()
+        if updated_count > 0:
+            _flash(request, f"Alias gespeichert, {updated_count} bestehende Werte wurden zugeordnet.", "info")
+        else:
+            _flash(request, "Alias gespeichert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+
+    return RedirectResponse(
+        _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)),
+        status_code=302,
+    )
+
+
+@app.post("/catalog/features/normalization/aliases/{alias_id}/edit")
+def feature_normalization_alias_edit(
+    alias_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = Form(0),
+    feature_id: int = Form(0),
+    option_id: int = Form(0),
+    alias_text: str = Form(""),
+    manufacturer_id: int = Form(0),
+    priority: int = Form(100),
+    apply_existing: Optional[str] = Form("on"),
+    db: Session = Depends(db_session),
+):
+    _ = user
+    alias_row = db.get(FeatureOptionAlias, int(alias_id))
+    if not alias_row:
+        _flash(request, "Alias nicht gefunden.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(kind_id or 0), feature_id=int(feature_id or 0)), status_code=302)
+
+    option = db.get(FeatureOption, int(option_id or 0))
+    if not option:
+        _flash(request, "Option für Alias nicht gefunden.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(kind_id or 0), feature_id=int(feature_id or 0)), status_code=302)
+
+    feature = db.get(FeatureDef, int(option.feature_def_id or 0))
+    if not feature or int(feature.id) != int(feature_id or 0):
+        _flash(request, "Alias passt nicht zum gewählten Merkmal.", "error")
+        return RedirectResponse(
+            _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id if feature else kind_id), feature_id=int(feature.id if feature else feature_id)),
+            status_code=302,
+        )
+
+    alias_text_clean = str(alias_text or "").strip()
+    alias_norm = _normalize_feature_alias_text(alias_text_clean)
+    if not alias_norm:
+        _flash(request, "Alias darf nicht leer sein.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)), status_code=302)
+
+    manufacturer_id_int = int(manufacturer_id or 0)
+    if manufacturer_id_int > 0 and not db.get(Manufacturer, manufacturer_id_int):
+        manufacturer_id_int = 0
+    manufacturer_fk = manufacturer_id_int if manufacturer_id_int > 0 else None
+
+    existing_alias = _find_feature_alias_by_norm(
+        db,
+        feature_id=int(feature.id),
+        alias_norm=alias_norm,
+        manufacturer_id=manufacturer_fk,
+        exclude_alias_id=int(alias_row.id),
+    )
+    if existing_alias:
+        if int(existing_alias.option_id or 0) == int(option.id):
+            _flash(request, "Alias existiert bereits für diese Option/Hersteller-Kombination.", "warn")
+        else:
+            _flash(request, "Alias ist bereits einer anderen Option zugeordnet. Bitte bestehenden Alias bearbeiten.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)), status_code=302)
+
+    alias_row.option_id = int(option.id)
+    alias_row.alias_text = alias_text_clean
+    alias_row.alias_norm = alias_norm
+    alias_row.manufacturer_id = manufacturer_fk
+    alias_row.priority = int(priority or 100)
+    db.add(alias_row)
+
+    updated_count = 0
+    if apply_existing == "on":
+        updated_count = _apply_alias_to_existing_feature_values(
+            db,
+            feature_def=feature,
+            option=option,
+            alias_norm=alias_norm,
+            manufacturer_id=manufacturer_fk,
+            only_unmapped=True,
+        )
+
+    try:
+        db.commit()
+        if updated_count > 0:
+            _flash(request, f"Alias aktualisiert, {updated_count} bestehende Werte wurden zugeordnet.", "info")
+        else:
+            _flash(request, "Alias aktualisiert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+
+    return RedirectResponse(
+        _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)),
+        status_code=302,
+    )
+
+
+@app.post("/catalog/features/normalization/aliases/{alias_id}/delete")
+def feature_normalization_alias_delete(
+    alias_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = Form(0),
+    feature_id: int = Form(0),
+    db: Session = Depends(db_session),
+):
+    _ = user
+    alias_row = db.get(FeatureOptionAlias, int(alias_id))
+    if not alias_row:
+        _flash(request, "Alias nicht gefunden.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(kind_id or 0), feature_id=int(feature_id or 0)), status_code=302)
+    option = db.get(FeatureOption, int(alias_row.option_id or 0))
+    feature = db.get(FeatureDef, int(option.feature_def_id or 0)) if option else None
+    db.delete(alias_row)
+    db.commit()
+    _flash(request, "Alias gelöscht.", "info")
+    return RedirectResponse(
+        _feature_normalization_redirect_url(
+            kind_id=int(feature.device_kind_id if feature else kind_id),
+            feature_id=int(feature.id if feature else feature_id),
+        ),
+        status_code=302,
+    )
+
+
+@app.post("/catalog/features/normalization/unknown/map")
+def feature_normalization_map_unknown(
+    request: Request,
+    user=Depends(require_admin),
+    kind_id: int = Form(0),
+    feature_id: int = Form(0),
+    option_id: int = Form(0),
+    raw_text: str = Form(""),
+    manufacturer_id: int = Form(0),
+    scope: str = Form("global"),
+    priority: int = Form(90),
+    db: Session = Depends(db_session),
+):
+    _ = user
+    feature = db.get(FeatureDef, int(feature_id or 0))
+    option = db.get(FeatureOption, int(option_id or 0))
+    if not feature or not option or int(option.feature_def_id or 0) != int(feature.id):
+        _flash(request, "Zuordnung ungültig: Merkmal/Option passt nicht.", "error")
+        return RedirectResponse(_feature_normalization_redirect_url(kind_id=int(kind_id or 0), feature_id=int(feature_id or 0)), status_code=302)
+
+    raw_text_clean = str(raw_text or "").strip()
+    alias_norm = _normalize_feature_alias_text(raw_text_clean)
+    if not alias_norm:
+        _flash(request, "Rohwert ist leer.", "error")
+        return RedirectResponse(
+            _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)),
+            status_code=302,
+        )
+
+    manufacturer_id_int = int(manufacturer_id or 0)
+    if manufacturer_id_int > 0 and not db.get(Manufacturer, manufacturer_id_int):
+        manufacturer_id_int = 0
+    use_manufacturer_scope = str(scope or "global").strip().lower() == "manufacturer" and manufacturer_id_int > 0
+    manufacturer_fk = manufacturer_id_int if use_manufacturer_scope else None
+
+    existing_alias = _find_feature_alias_by_norm(
+        db,
+        feature_id=int(feature.id),
+        alias_norm=alias_norm,
+        manufacturer_id=manufacturer_fk,
+    )
+    if existing_alias and int(existing_alias.option_id or 0) != int(option.id):
+        _flash(request, "Alias ist bereits einer anderen Option zugeordnet. Bitte bestehenden Alias bearbeiten.", "error")
+        return RedirectResponse(
+            _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)),
+            status_code=302,
+        )
+    if not existing_alias:
+        db.add(
+            FeatureOptionAlias(
+                option_id=int(option.id),
+                alias_text=raw_text_clean,
+                alias_norm=alias_norm,
+                manufacturer_id=manufacturer_fk,
+                priority=int(priority or 90),
+            )
+        )
+
+    mapped_count = _apply_alias_to_existing_feature_values(
+        db,
+        feature_def=feature,
+        option=option,
+        alias_norm=alias_norm,
+        manufacturer_id=manufacturer_fk,
+        only_unmapped=True,
+    )
+
+    try:
+        db.commit()
+        scope_text = "herstellerbezogen" if manufacturer_fk else "global"
+        _flash(request, f"Rohwert zugeordnet ({scope_text}), {mapped_count} Werte aktualisiert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+
+    return RedirectResponse(
+        _feature_normalization_redirect_url(kind_id=int(feature.device_kind_id or 0), feature_id=int(feature.id)),
+        status_code=302,
+    )
 
 
 # ---------------------------
@@ -3604,7 +8953,7 @@ def _csv_import_back_url(item_type: str = "", area_id: int = 0, kind_id: int = 0
     _ = item_type
     _ = area_id
     _ = kind_id
-    return "/catalog/products/import"
+    return "/catalog/import"
 
 
 def _profile_map_dict(rows: list[ImportProfileMap]) -> dict[tuple[str, str], ImportProfileMap]:
@@ -3697,6 +9046,7 @@ def _save_import_profile_maps(
     profile: ImportProfile,
     product_field_map: dict[str, str],
     feature_maps: list[dict[str, str]],
+    accessory_map: dict[str, str] | None = None,
 ) -> None:
     db.query(ImportProfileMap).filter(ImportProfileMap.profile_id == int(profile.id)).delete(synchronize_session=False)
     for target_key, source_column in product_field_map.items():
@@ -3726,7 +9076,869 @@ def _save_import_profile_maps(
                 data_type=data_type if data_type in ALLOWED_FEATURE_DATA_TYPES else "text",
             )
         )
+    accessory_map = accessory_map or {}
+    accessory_source = str(accessory_map.get("source_column") or "").strip()
+    accessory_separator = str(accessory_map.get("separator_mode") or "auto").strip().lower()
+    if accessory_separator not in ACCESSORY_SEPARATOR_MODES:
+        accessory_separator = "auto"
+    if accessory_source:
+        db.add(
+            ImportProfileMap(
+                profile_id=int(profile.id),
+                map_type="accessory",
+                target_key="accessory_list",
+                source_column=accessory_source,
+                data_type=accessory_separator,
+            )
+        )
 
+
+def _utcnow_naive() -> dt.datetime:
+    return dt.datetime.utcnow().replace(tzinfo=None)
+
+
+def _json_load_dict(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _json_dump(data) -> str:
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _import_product_field_keys() -> list[str]:
+    keys = [
+        "sales_name",
+        "material_no",
+        "manufacturer_name",
+        "product_title_1",
+        "product_title_2",
+        "description",
+        "sale_price",
+        "ean",
+        "image_url",
+    ]
+    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+        keys.append(f"image_url_{idx}")
+    return keys
+
+
+def _import_guess_product_field_map(columns: list[str]) -> dict[str, str]:
+    out = {
+        "sales_name": _guess_column(columns, ("verkaufsbezeichnung", "sales_name", "name", "produktname")),
+        "material_no": _guess_column(columns, ("materialnummer", "material_no", "matnr", "mat_nr")),
+        "manufacturer_name": _guess_column(
+            columns,
+            ("herstellerbezeichnung", "manufacturer_name", "brand_name", "modellbezeichnung"),
+        ),
+        "product_title_1": _guess_column(columns, ("produkttitel1", "produkttitel_1", "product_title_1", "title1", "titel1")),
+        "product_title_2": _guess_column(columns, ("produkttitel2", "produkttitel_2", "product_title_2", "title2", "titel2")),
+        "description": _guess_column(columns, ("beschreibung", "description")),
+        "sale_price": _guess_column(
+            columns,
+            ("verkaufspreis", "verkaufspreis_brutto", "sale_price", "sale_price_gross", "vk", "preis"),
+        ),
+        "ean": _guess_column(columns, ("ean", "gtin", "gtin13", "barcode")),
+        "image_url": _guess_column(
+            columns,
+            (
+                "bild",
+                "bild1",
+                "bild_1",
+                "bild_url",
+                "bildurl",
+                "image",
+                "image_url",
+                "imageurl",
+                "img",
+                "img_url",
+                "bildlink",
+            ),
+        ),
+    }
+    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+        key = f"image_url_{idx}"
+        out[key] = _guess_column(
+            columns,
+            (
+                f"bild{idx}",
+                f"bild_{idx}",
+                f"bildurl{idx}",
+                f"bild_url_{idx}",
+                f"image{idx}",
+                f"image_{idx}",
+                f"imageurl{idx}",
+                f"image_url_{idx}",
+                f"img{idx}",
+                f"img_{idx}",
+                f"url_bild_{idx}",
+            ),
+        )
+    return out
+
+
+def _import_guess_accessory_source_column(columns: list[str]) -> str:
+    return _guess_column(
+        columns,
+        (
+            "zubehoer",
+            "zubehör",
+            "zubehoerliste",
+            "zubehörliste",
+            "accessories",
+            "accessory_list",
+        ),
+    )
+
+
+def _import_mapping_from_profile(
+    db: Session,
+    *,
+    profile_id: int,
+    feature_defs_by_key: dict[str, FeatureDef],
+) -> dict:
+    profile = _pick_import_profile(db, profile_id)
+    if not profile:
+        return {}
+    profile_maps = db.query(ImportProfileMap).filter(ImportProfileMap.profile_id == int(profile.id)).all()
+    product_field_map: dict[str, str] = {}
+    feature_maps: list[dict[str, str]] = []
+    accessory_map = {"source_column": "", "separator_mode": "auto"}
+    for map_row in profile_maps:
+        map_type = str(map_row.map_type or "").strip()
+        target_key = str(map_row.target_key or "").strip()
+        source_column = str(map_row.source_column or "").strip()
+        if not source_column:
+            continue
+        if map_type == "product_field":
+            product_field_map[target_key] = source_column
+            continue
+        if map_type == "feature":
+            fdef = feature_defs_by_key.get(target_key)
+            feature_maps.append(
+                {
+                    "source_column": source_column,
+                    "feature_key": target_key,
+                    "feature_label": str(fdef.label_de if fdef else target_key),
+                    "label_de": str(fdef.label_de if fdef else target_key),
+                    "data_type": str(map_row.data_type or (fdef.data_type if fdef else "text")),
+                    "is_existing": "1" if fdef else "0",
+                    "existing_key": target_key if fdef else "__neu__",
+                    "new_label": "" if fdef else str(target_key),
+                }
+            )
+            continue
+        if map_type == "accessory" and target_key == "accessory_list":
+            separator_mode = str(map_row.data_type or "auto").strip().lower()
+            if separator_mode not in ACCESSORY_SEPARATOR_MODES:
+                separator_mode = "auto"
+            accessory_map = {
+                "source_column": source_column,
+                "separator_mode": separator_mode,
+            }
+    return {
+        "profile_id": int(profile.id),
+        "profile_name": str(profile.name or ""),
+        "product_field_map": product_field_map,
+        "feature_maps": feature_maps,
+        "accessory_map": accessory_map,
+        "ean_column": str(profile.ean_column or ""),
+    }
+
+
+def _import_default_mapping_data(
+    db: Session,
+    *,
+    columns: list[str],
+    feature_defs_by_key: dict[str, FeatureDef],
+    profile_id: int = 0,
+    profile_name_default: str = "",
+) -> dict:
+    product_field_map = _import_guess_product_field_map(columns)
+    base = {
+        "profile_id": int(profile_id or 0),
+        "profile_name": profile_name_default,
+        "update_profile": True,
+        "ean_column": str(product_field_map.get("ean") or ""),
+        "product_field_map": product_field_map,
+        "feature_maps": [],
+        "accessory_map": {
+            "source_column": _import_guess_accessory_source_column(columns),
+            "separator_mode": "auto",
+        },
+    }
+    if int(profile_id or 0) > 0:
+        from_profile = _import_mapping_from_profile(db, profile_id=int(profile_id), feature_defs_by_key=feature_defs_by_key)
+        if from_profile:
+            base["profile_id"] = int(from_profile.get("profile_id") or profile_id)
+            if str(from_profile.get("profile_name") or "").strip():
+                base["profile_name"] = str(from_profile.get("profile_name") or "").strip()
+            base["ean_column"] = str(from_profile.get("ean_column") or base["ean_column"] or "").strip()
+            for key in _import_product_field_keys():
+                mapped = str((from_profile.get("product_field_map") or {}).get(key) or "").strip()
+                if mapped:
+                    base["product_field_map"][key] = mapped
+            profile_feature_maps = from_profile.get("feature_maps")
+            if isinstance(profile_feature_maps, list):
+                base["feature_maps"] = [row for row in profile_feature_maps if isinstance(row, dict)]
+            accessory_map = from_profile.get("accessory_map")
+            if isinstance(accessory_map, dict):
+                base["accessory_map"] = {
+                    "source_column": str(accessory_map.get("source_column") or "").strip(),
+                    "separator_mode": str(accessory_map.get("separator_mode") or "auto").strip().lower(),
+                }
+    return base
+
+
+def _import_normalize_mapping_data(
+    mapping_data: dict,
+    *,
+    columns: list[str],
+    profile_name_default: str,
+) -> dict:
+    product_field_map_raw = mapping_data.get("product_field_map")
+    if not isinstance(product_field_map_raw, dict):
+        product_field_map_raw = {}
+    product_field_map: dict[str, str] = {}
+    for key in _import_product_field_keys():
+        value = str(product_field_map_raw.get(key) or "").strip()
+        product_field_map[key] = value if value in columns else ""
+    ean_column = str(mapping_data.get("ean_column") or product_field_map.get("ean") or "").strip()
+    if ean_column and ean_column not in columns:
+        ean_column = ""
+    product_field_map["ean"] = ean_column
+
+    feature_maps: list[dict[str, str]] = []
+    raw_feature_maps = mapping_data.get("feature_maps")
+    if isinstance(raw_feature_maps, list):
+        for row in raw_feature_maps:
+            if not isinstance(row, dict):
+                continue
+            source_column = str(row.get("source_column") or "").strip()
+            if not source_column or source_column not in columns:
+                continue
+            feature_maps.append(
+                {
+                    "source_column": source_column,
+                    "feature_key": str(row.get("feature_key") or "").strip(),
+                    "feature_label": str(row.get("feature_label") or row.get("label_de") or "").strip(),
+                    "label_de": str(row.get("label_de") or row.get("feature_label") or "").strip(),
+                    "data_type": str(row.get("data_type") or "text").strip().lower(),
+                    "is_existing": "1" if str(row.get("is_existing") or "") == "1" else "0",
+                    "existing_key": str(row.get("existing_key") or "").strip(),
+                    "new_label": str(row.get("new_label") or "").strip(),
+                    "row_name": str(row.get("row_name") or "").strip(),
+                }
+            )
+
+    accessory_raw = mapping_data.get("accessory_map")
+    if not isinstance(accessory_raw, dict):
+        accessory_raw = {}
+    accessory_source = str(accessory_raw.get("source_column") or "").strip()
+    if accessory_source and accessory_source not in columns:
+        accessory_source = ""
+    separator_mode = str(accessory_raw.get("separator_mode") or "auto").strip().lower()
+    if separator_mode not in ACCESSORY_SEPARATOR_MODES:
+        separator_mode = "auto"
+    accessory_map = {
+        "source_column": accessory_source,
+        "separator_mode": separator_mode,
+    }
+
+    profile_name = str(mapping_data.get("profile_name") or profile_name_default or "").strip()
+    return {
+        "profile_id": _to_int(mapping_data.get("profile_id"), 0),
+        "profile_name": profile_name,
+        "update_profile": bool(mapping_data.get("update_profile", True)),
+        "ean_column": ean_column,
+        "product_field_map": product_field_map,
+        "feature_maps": feature_maps,
+        "accessory_map": accessory_map,
+    }
+
+
+def _import_parse_mapping_form(form, *, columns: list[str], feature_defs_by_key: dict[str, FeatureDef], profile_name_default: str) -> dict:
+    product_field_map = {}
+    for key in _import_product_field_keys():
+        field_name = "ean_column" if key == "ean" else f"map_{key}"
+        value = str(form.get(field_name) or "").strip()
+        product_field_map[key] = value if value in columns else ""
+
+    feature_maps: list[dict[str, str]] = []
+    for idx, column in enumerate(columns):
+        if form.get(f"feature_use_{idx}") != "on":
+            continue
+        existing_key = str(form.get(f"feature_existing_key_{idx}") or "").strip()
+        new_label = str(form.get(f"feature_new_label_{idx}") or "").strip()
+        data_type = str(form.get(f"feature_data_type_{idx}") or "text").strip().lower()
+        if data_type not in ALLOWED_FEATURE_DATA_TYPES:
+            data_type = "text"
+        fdef = feature_defs_by_key.get(existing_key)
+        feature_maps.append(
+            {
+                "source_column": column,
+                "existing_key": existing_key,
+                "new_label": new_label,
+                "feature_key": _sanitize_feature_key(existing_key) if existing_key and existing_key != "__neu__" else "",
+                "feature_label": str(fdef.label_de if fdef else "").strip(),
+                "label_de": str(fdef.label_de if fdef else "").strip(),
+                "data_type": data_type,
+                "is_existing": "1" if (existing_key and existing_key != "__neu__" and fdef is not None) else "0",
+                "row_name": f"feature_row_{idx}",
+            }
+        )
+
+    separator_mode = str(form.get("accessory_separator_mode") or "auto").strip().lower()
+    if separator_mode not in ACCESSORY_SEPARATOR_MODES:
+        separator_mode = "auto"
+
+    return _import_normalize_mapping_data(
+        {
+            "profile_id": _to_int(form.get("profile_id"), 0),
+            "profile_name": str(form.get("profile_name") or "").strip() or profile_name_default,
+            "update_profile": form.get("update_profile") == "on",
+            "ean_column": product_field_map.get("ean", ""),
+            "product_field_map": product_field_map,
+            "feature_maps": feature_maps,
+            "accessory_map": {
+                "source_column": str(form.get("map_accessory_list") or "").strip(),
+                "separator_mode": separator_mode,
+            },
+        },
+        columns=columns,
+        profile_name_default=profile_name_default,
+    )
+
+
+def _import_ensure_feature_row_names(mapping_data: dict, columns: list[str]) -> None:
+    idx_by_column = {col: idx for idx, col in enumerate(columns)}
+    for row in mapping_data.get("feature_maps", []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("row_name") or "").strip():
+            continue
+        col = str(row.get("source_column") or "").strip()
+        idx = idx_by_column.get(col)
+        if idx is None:
+            continue
+        row["row_name"] = f"feature_row_{idx}"
+
+
+def _import_validate_mapping(
+    mapping_data: dict,
+    *,
+    columns: list[str],
+    feature_defs_by_key: dict[str, FeatureDef],
+) -> tuple[dict, dict]:
+    errors = {
+        "global_errors": [],
+        "field_errors": {},
+    }
+    normalized = _import_normalize_mapping_data(mapping_data, columns=columns, profile_name_default=str(mapping_data.get("profile_name") or ""))
+    _import_ensure_feature_row_names(normalized, columns)
+
+    ean_column = str(normalized.get("ean_column") or "").strip()
+    if not ean_column:
+        errors["field_errors"]["ean_column"] = "Bitte eine gültige EAN-Spalte wählen."
+        errors["global_errors"].append("Die EAN-Spalte ist Pflicht.")
+
+    product_field_map = normalized.get("product_field_map") or {}
+    for key in _import_product_field_keys():
+        if key == "ean":
+            continue
+        source_column = str(product_field_map.get(key) or "").strip()
+        if source_column and source_column not in columns:
+            errors["field_errors"][f"map_{key}"] = f"Ungültige Spaltenzuordnung für '{key}'."
+            errors["global_errors"].append(f"Ungültige Spaltenzuordnung für '{key}'.")
+
+    seen_feature_keys: dict[str, str] = {}
+    validated_feature_maps: list[dict[str, str]] = []
+    for row in normalized.get("feature_maps", []):
+        if not isinstance(row, dict):
+            continue
+        source_column = str(row.get("source_column") or "").strip()
+        row_name = str(row.get("row_name") or "").strip() or f"feature_row_{len(validated_feature_maps)}"
+        existing_key = str(row.get("existing_key") or "").strip()
+        new_label = str(row.get("new_label") or "").strip()
+        data_type = str(row.get("data_type") or "text").strip().lower()
+        if data_type not in ALLOWED_FEATURE_DATA_TYPES:
+            data_type = "text"
+
+        feature_key = ""
+        feature_label = ""
+        is_existing = "0"
+        if existing_key and existing_key != "__neu__":
+            feature_key = _sanitize_feature_key(existing_key)
+            existing_def = feature_defs_by_key.get(feature_key)
+            if existing_def:
+                feature_label = str(existing_def.label_de or feature_key).strip()
+                data_type = str(existing_def.data_type or data_type)
+                is_existing = "1"
+            else:
+                errors["field_errors"][row_name] = "Das gewählte Merkmal existiert nicht mehr."
+        else:
+            if not new_label:
+                errors["field_errors"][row_name] = f"Merkmalname fehlt für Spalte '{source_column}'."
+            else:
+                feature_key = _sanitize_feature_key(new_label)
+                feature_label = new_label
+                is_existing = "0"
+
+        if feature_key:
+            first_row_name = seen_feature_keys.get(feature_key)
+            if first_row_name:
+                errors["field_errors"][first_row_name] = f"Merkmal '{feature_label or feature_key}' wurde mehrfach zugeordnet."
+                errors["field_errors"][row_name] = f"Merkmal '{feature_label or feature_key}' wurde mehrfach zugeordnet."
+                errors["global_errors"].append(f"Merkmal '{feature_label or feature_key}' wurde mehrfach zugeordnet.")
+            else:
+                seen_feature_keys[feature_key] = row_name
+
+        validated_feature_maps.append(
+            {
+                "source_column": source_column,
+                "feature_key": feature_key,
+                "feature_label": feature_label or feature_key,
+                "label_de": feature_label or feature_key,
+                "data_type": data_type,
+                "is_existing": is_existing,
+                "existing_key": existing_key,
+                "new_label": new_label,
+                "row_name": row_name,
+            }
+        )
+
+    accessory_map = normalized.get("accessory_map") or {}
+    accessory_source = str(accessory_map.get("source_column") or "").strip()
+    if accessory_source and accessory_source not in columns:
+        errors["field_errors"]["map_accessory_list"] = "Ungültige Zubehör-Spalte."
+        errors["global_errors"].append("Die Zubehör-Spalte ist ungültig.")
+        accessory_source = ""
+    separator_mode = str(accessory_map.get("separator_mode") or "auto").strip().lower()
+    if separator_mode not in ACCESSORY_SEPARATOR_MODES:
+        separator_mode = "auto"
+
+    validated = {
+        "profile_id": _to_int(normalized.get("profile_id"), 0),
+        "profile_name": str(normalized.get("profile_name") or "").strip(),
+        "update_profile": bool(normalized.get("update_profile", True)),
+        "ean_column": ean_column,
+        "product_field_map": product_field_map,
+        "feature_maps": validated_feature_maps,
+        "accessory_map": {
+            "source_column": accessory_source,
+            "separator_mode": separator_mode,
+        },
+    }
+    return validated, errors
+
+
+def _import_feature_prefill_by_column(mapping_data: dict, feature_defs_by_key: dict[str, FeatureDef]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    for row in mapping_data.get("feature_maps", []):
+        if not isinstance(row, dict):
+            continue
+        source_column = str(row.get("source_column") or "").strip()
+        if not source_column:
+            continue
+        feature_key = str(row.get("feature_key") or "").strip()
+        if not feature_key:
+            continue
+        fdef = feature_defs_by_key.get(feature_key)
+        is_existing = str(row.get("is_existing") or "")
+        if is_existing not in ("0", "1"):
+            is_existing = "1" if fdef else "0"
+        out[source_column] = {
+            "feature_key": feature_key,
+            "feature_label": str(row.get("feature_label") or row.get("label_de") or (fdef.label_de if fdef else feature_key)),
+            "data_type": str(row.get("data_type") or (fdef.data_type if fdef else "text")),
+            "is_existing": is_existing,
+            "existing_key": str(row.get("existing_key") or (feature_key if is_existing == "1" else "__neu__")),
+            "new_label": str(row.get("new_label") or ""),
+            "row_name": str(row.get("row_name") or ""),
+        }
+    return out
+
+
+def _import_parse_accessory_tokens(raw_value: str, separator_mode: str) -> list[str]:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return []
+    mode = str(separator_mode or "auto").strip().lower()
+    if mode not in ACCESSORY_SEPARATOR_MODES:
+        mode = "auto"
+    if mode == "semicolon":
+        tokens = raw.split(";")
+    elif mode == "comma":
+        tokens = raw.split(",")
+    else:
+        tokens = re.split(r"[;,]+", raw)
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        clean = str(token or "").strip()
+        if not clean:
+            continue
+        key = clean.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+    return out
+
+
+def _import_match_accessory_candidates(
+    db: Session,
+    *,
+    token: str,
+    product_id: int,
+    manufacturer_id: int | None,
+    device_kind_id: int | None,
+) -> list[Product]:
+    token_clean = str(token or "").strip()
+    if not token_clean:
+        return []
+    token_lower = token_clean.casefold()
+    token_norm = _normalize_search_text(token_clean)
+    token_digits = re.sub(r"\D+", "", token_clean)
+
+    def _prefer_context(rows: list[Product]) -> list[Product]:
+        if len(rows) <= 1:
+            return rows
+        if manufacturer_id:
+            rows_mfg = [row for row in rows if int(row.manufacturer_id or 0) == int(manufacturer_id)]
+            if len(rows_mfg) == 1:
+                return rows_mfg
+            if rows_mfg:
+                rows = rows_mfg
+        if device_kind_id:
+            rows_kind = [row for row in rows if int(row.device_kind_id or 0) == int(device_kind_id)]
+            if len(rows_kind) == 1:
+                return rows_kind
+            if rows_kind:
+                rows = rows_kind
+        return rows
+
+    candidates = (
+        db.query(Product)
+        .filter(
+            Product.id != int(product_id),
+            Product.active == True,
+            Product.material_no.isnot(None),
+            func.lower(func.trim(Product.material_no)) == token_lower,
+        )
+        .order_by(Product.id.asc())
+        .all()
+    )
+    if candidates:
+        return _prefer_context(candidates)
+
+    if token_digits:
+        candidates = (
+            db.query(Product)
+            .filter(
+                Product.id != int(product_id),
+                Product.active == True,
+                Product.ean == token_digits,
+            )
+            .order_by(Product.id.asc())
+            .all()
+        )
+        if candidates:
+            return _prefer_context(candidates)
+
+    candidates = (
+        db.query(Product)
+        .filter(
+            Product.id != int(product_id),
+            Product.active == True,
+            Product.sales_name.isnot(None),
+            func.lower(func.trim(Product.sales_name)) == token_lower,
+        )
+        .order_by(Product.id.asc())
+        .all()
+    )
+    if candidates:
+        return _prefer_context(candidates)
+
+    candidates = (
+        db.query(Product)
+        .filter(
+            Product.id != int(product_id),
+            Product.active == True,
+            Product.name.isnot(None),
+            func.lower(func.trim(Product.name)) == token_lower,
+        )
+        .order_by(Product.id.asc())
+        .all()
+    )
+    if candidates:
+        return _prefer_context(candidates)
+
+    if token_norm:
+        candidates = (
+            db.query(Product)
+            .filter(
+                Product.id != int(product_id),
+                Product.active == True,
+                Product.search_blob.isnot(None),
+                func.instr(func.lower(Product.search_blob), token_norm.casefold()) > 0,
+            )
+            .order_by(Product.id.asc())
+            .limit(5)
+            .all()
+        )
+        if candidates:
+            return _prefer_context(candidates)
+    return []
+
+
+def _import_ensure_accessory_link(
+    db: Session,
+    *,
+    product_id: int,
+    accessory_product_id: int,
+    source: str,
+    import_run_id: int | None,
+) -> bool:
+    exists_row = (
+        db.query(ProductAccessoryLink.id)
+        .filter(
+            ProductAccessoryLink.product_id == int(product_id),
+            ProductAccessoryLink.accessory_product_id == int(accessory_product_id),
+        )
+        .first()
+    )
+    if exists_row:
+        return False
+    db.add(
+        ProductAccessoryLink(
+            product_id=int(product_id),
+            accessory_product_id=int(accessory_product_id),
+            source=str(source or "csv"),
+            import_run_id=int(import_run_id) if int(import_run_id or 0) > 0 else None,
+            created_at=_utcnow_naive(),
+        )
+    )
+    return True
+
+
+def _import_resolve_open_accessory_references(db: Session) -> int:
+    refs = (
+        db.query(ProductAccessoryReference)
+        .filter(ProductAccessoryReference.status.in_(("pending", "not_found", "ambiguous")))
+        .order_by(ProductAccessoryReference.id.asc())
+        .limit(2000)
+        .all()
+    )
+    resolved_count = 0
+    for ref in refs:
+        candidates = _import_match_accessory_candidates(
+            db,
+            token=str(ref.raw_value or ""),
+            product_id=int(ref.product_id),
+            manufacturer_id=int(ref.manufacturer_id) if ref.manufacturer_id else None,
+            device_kind_id=int(ref.device_kind_id) if ref.device_kind_id else None,
+        )
+        if len(candidates) != 1:
+            continue
+        matched = candidates[0]
+        _import_ensure_accessory_link(
+            db,
+            product_id=int(ref.product_id),
+            accessory_product_id=int(matched.id),
+            source="csv",
+            import_run_id=int(ref.import_run_id) if ref.import_run_id else None,
+        )
+        ref.status = "linked"
+        ref.matched_product_id = int(matched.id)
+        db.add(ref)
+        resolved_count += 1
+    return resolved_count
+
+
+def _import_profile_unmapped_columns(
+    db: Session,
+    *,
+    profile_id: int,
+    columns: list[str],
+) -> list[str]:
+    profile = _pick_import_profile(db, int(profile_id))
+    if not profile:
+        return []
+    map_rows = db.query(ImportProfileMap).filter(ImportProfileMap.profile_id == int(profile.id)).all()
+    mapped_columns = {str(row.source_column or "").strip() for row in map_rows if str(row.source_column or "").strip()}
+    mapped_columns.add(str(profile.ean_column or "").strip())
+    return [column for column in columns if column not in mapped_columns]
+
+
+def _import_draft_open_url(draft: ImportDraft) -> str:
+    step = str(draft.current_step or "").strip()
+    if step == "run":
+        return f"/catalog/import/{int(draft.id)}/run"
+    return f"/catalog/import/{int(draft.id)}/map"
+
+
+def _import_read_draft_csv(draft: ImportDraft) -> tuple[list[str], list[dict[str, str]], str]:
+    file_path = Path(str(draft.file_path_tmp or "")).resolve()
+    if not file_path.exists():
+        return [], [], "Importdatei nicht mehr vorhanden."
+    dirs = ensure_dirs()
+    allowed_root = (dirs["tmp"] / "imports").resolve()
+    try:
+        file_path.relative_to(allowed_root)
+    except Exception:
+        return [], [], "Importdatei liegt außerhalb des erlaubten Importordners."
+    delimiter = str(draft.delimiter or ";").strip() or ";"
+    if delimiter not in (";", ","):
+        delimiter = ";"
+    encoding = str(draft.encoding or "utf-8").strip() or "utf-8"
+    has_header = bool(draft.has_header)
+    try:
+        columns, rows = _read_csv_rows(file_path, delimiter=delimiter, has_header=has_header, encoding=encoding)
+    except Exception as exc:
+        return [], [], f"CSV konnte nicht gelesen werden: {exc}"
+    if not columns:
+        return [], [], "Keine Spalten erkannt. Bitte Trennzeichen prüfen."
+    return columns, rows, ""
+
+
+def _import_upload_page_ctx(
+    request: Request,
+    *,
+    db: Session,
+    user,
+    form_data: dict | None = None,
+    global_errors: list[str] | None = None,
+) -> dict:
+    form_data = form_data or {}
+    selected_manufacturer_id = _to_int(form_data.get("manufacturer_id"), _to_int(request.query_params.get("manufacturer_id"), 0))
+    selected_kind_id = _to_int(form_data.get("kind_id"), _to_int(request.query_params.get("kind_id"), 0))
+    selected_profile_id = _to_int(form_data.get("profile_id"), 0)
+    manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    available_profiles: list[ImportProfile] = []
+    if selected_manufacturer_id and selected_kind_id:
+        available_profiles = (
+            db.query(ImportProfile)
+            .filter(
+                ImportProfile.manufacturer_id == int(selected_manufacturer_id),
+                ImportProfile.device_kind_id == int(selected_kind_id),
+            )
+            .order_by(ImportProfile.last_used_at.desc(), ImportProfile.id.desc())
+            .all()
+        )
+    recent_drafts = db.query(ImportDraft).order_by(ImportDraft.updated_at.desc(), ImportDraft.id.desc()).limit(5).all()
+    manufacturer_ids = {int(d.manufacturer_id) for d in recent_drafts if d.manufacturer_id}
+    kind_ids = {int(d.device_kind_id) for d in recent_drafts if d.device_kind_id}
+    manufacturer_map = {}
+    if manufacturer_ids:
+        for row in db.query(Manufacturer).filter(Manufacturer.id.in_(manufacturer_ids)).all():
+            manufacturer_map[int(row.id)] = str(row.name or "")
+    kind_map = {}
+    if kind_ids:
+        for row in db.query(DeviceKind).filter(DeviceKind.id.in_(kind_ids)).all():
+            kind_map[int(row.id)] = str(row.name or "")
+
+    return _ctx(
+        request,
+        user=user,
+        manufacturers=manufacturers,
+        kinds=kinds,
+        selected_manufacturer_id=selected_manufacturer_id,
+        selected_kind_id=selected_kind_id,
+        selected_profile_id=selected_profile_id,
+        available_profiles=available_profiles,
+        recent_drafts=recent_drafts,
+        manufacturer_map=manufacturer_map,
+        kind_map=kind_map,
+        upload_form_data={
+            "delimiter": str(form_data.get("delimiter") or ";"),
+            "encoding": str(form_data.get("encoding") or "utf-8"),
+            "has_header": bool(form_data.get("has_header", True)),
+        },
+        global_errors=global_errors or [],
+        draft_open_url=_import_draft_open_url,
+    )
+
+
+def _import_map_page_response(
+    request: Request,
+    *,
+    db: Session,
+    user,
+    draft: ImportDraft,
+    columns: list[str],
+    rows: list[dict[str, str]],
+    mapping_data: dict,
+    errors: dict | None = None,
+):
+    manufacturer = db.get(Manufacturer, int(draft.manufacturer_id or 0)) if draft.manufacturer_id else None
+    selected_kind = db.get(DeviceKind, int(draft.device_kind_id or 0)) if draft.device_kind_id else None
+    if not manufacturer or not selected_kind:
+        raise HTTPException(status_code=404)
+
+    feature_defs = _feature_defs_for_kind(db, int(selected_kind.id))
+    feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
+    profile_name_default = f"{manufacturer.name} {selected_kind.name}"
+    normalized_mapping = _import_normalize_mapping_data(mapping_data, columns=columns, profile_name_default=profile_name_default)
+    _import_ensure_feature_row_names(normalized_mapping, columns)
+
+    matched_profiles = _detect_matching_profiles(
+        db,
+        manufacturer_id=int(manufacturer.id),
+        device_kind_id=int(selected_kind.id),
+        columns=columns,
+    )
+    profile_id = _to_int(normalized_mapping.get("profile_id"), _to_int(draft.import_profile_id, 0))
+    active_profile = _pick_import_profile(db, profile_id)
+    unmapped_columns = _import_profile_unmapped_columns(db, profile_id=profile_id, columns=columns) if active_profile else []
+
+    product_field_map = normalized_mapping.get("product_field_map") or {}
+    feature_prefill_by_column = _import_feature_prefill_by_column(normalized_mapping, feature_defs_by_key)
+    accessory_map = normalized_mapping.get("accessory_map") or {}
+    validation_errors = errors if isinstance(errors, dict) else _json_load_dict(draft.validation_errors_json)
+    if "global_errors" not in validation_errors or not isinstance(validation_errors.get("global_errors"), list):
+        validation_errors["global_errors"] = []
+    if "field_errors" not in validation_errors or not isinstance(validation_errors.get("field_errors"), dict):
+        validation_errors["field_errors"] = {}
+
+    return templates.TemplateResponse(
+        "catalog/import_map.html",
+        _ctx(
+            request,
+            user=user,
+            draft=draft,
+            columns=columns,
+            preview_rows=rows[:10],
+            total_rows=len(rows),
+            delimiter=draft.delimiter,
+            encoding=draft.encoding,
+            has_header=bool(draft.has_header),
+            manufacturer=manufacturer,
+            selected_kind=selected_kind,
+            matched_profiles=matched_profiles,
+            auto_profile_id=int(active_profile.id) if active_profile else 0,
+            active_profile=active_profile,
+            profile_name_default=profile_name_default,
+            profile_update_default=bool(normalized_mapping.get("update_profile", True)),
+            product_field_map=product_field_map,
+            image_field_indices=list(range(1, PRODUCT_IMAGE_URL_MAX + 1)),
+            ean_column=str(normalized_mapping.get("ean_column") or ""),
+            feature_defs=feature_defs,
+            feature_prefill_by_column=feature_prefill_by_column,
+            selected_profile_id=profile_id,
+            profile_name_value=str(normalized_mapping.get("profile_name") or profile_name_default),
+            accessory_source_column=str(accessory_map.get("source_column") or ""),
+            accessory_separator_mode=str(accessory_map.get("separator_mode") or "auto"),
+            validation_errors=validation_errors,
+            unmapped_columns=unmapped_columns,
+        ),
+    )
 
 def _guess_attribute_column(columns: list[str], attr: AttributeDef) -> str:
     candidates: list[str] = []
@@ -4081,13 +10293,116 @@ def _format_feature_number_option(value: float | int | None) -> str:
     return f"{num:.12f}".rstrip("0").rstrip(".")
 
 
+_DIMENSION_FEATURE_HINTS = (
+    "hoehe",
+    "höhe",
+    "breite",
+    "tiefe",
+    "laenge",
+    "länge",
+    "durchmesser",
+    "nische",
+)
+
+
+def _normalize_feature_number_value(value: float) -> float:
+    normalized = round(float(value), 6)
+    if abs(normalized - round(normalized)) < 1e-6:
+        return float(int(round(normalized)))
+    return normalized
+
+
+def _feature_key_is_dimension(feature_key: str | None) -> bool:
+    key_norm = _normalize_search_text(feature_key)
+    if not key_norm:
+        return False
+    return any(hint in key_norm for hint in _DIMENSION_FEATURE_HINTS)
+
+
+def _parse_feature_number_value(raw_value: str, feature_key: str | None = None) -> float:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        raise ValueError("Leerer Zahlenwert.")
+    text = raw.replace("\u00a0", " ").replace("−", "-").strip().lower()
+
+    # Normalize ranges like "815-875" / "815 bis 875" to the first numeric token.
+    token_match = re.search(r"[-+]?\d[\d.,]*", text)
+    if not token_match:
+        raise ValueError(f"Ungültige Zahl: {raw}")
+    token = str(token_match.group(0) or "").strip()
+    if not token:
+        raise ValueError(f"Ungültige Zahl: {raw}")
+
+    if "," in token and "." in token:
+        if token.rfind(",") > token.rfind("."):
+            token = token.replace(".", "").replace(",", ".")
+        else:
+            token = token.replace(",", "")
+    elif "," in token:
+        token = token.replace(".", "").replace(",", ".")
+    elif token.count(".") > 1:
+        token = token.replace(".", "")
+
+    value_num = float(token)
+
+    # Unit normalization for dimension-like features:
+    # cm -> mm, m -> mm, mm stays unchanged.
+    if _feature_key_is_dimension(feature_key):
+        has_mm = bool(re.search(r"(?:\bmm\b|millimeter)", text))
+        has_cm = bool(re.search(r"(?:\bcm\b|zentimeter)", text))
+        has_meter = bool(re.search(r"(?:\bm\b|meter)", text))
+        if has_cm and not has_mm:
+            value_num *= 10.0
+        elif has_meter and not has_mm and not has_cm:
+            value_num *= 1000.0
+
+    return _normalize_feature_number_value(value_num)
+
+
 def _feature_filter_text_options(
     db: Session,
     *,
     device_kind_id: int,
     feature_def_id: int,
     limit: int = FEATURE_FILTER_OPTION_LIMIT,
-) -> tuple[list[str], bool]:
+) -> tuple[list[dict[str, object]], bool, str]:
+    option_rows = (
+        db.query(
+            FeatureOption.id,
+            FeatureOption.label_de,
+            FeatureOption.canonical_key,
+        )
+        .filter(
+            FeatureOption.feature_def_id == int(feature_def_id),
+            FeatureOption.active == True,
+        )
+        .order_by(
+            FeatureOption.sort_order.asc(),
+            func.lower(func.trim(func.coalesce(FeatureOption.label_de, FeatureOption.canonical_key))).asc(),
+            FeatureOption.id.asc(),
+        )
+        .limit(int(limit) + 1)
+        .all()
+    )
+    if option_rows:
+        out: list[dict[str, object]] = []
+        for option_id, label_de, canonical_key in option_rows:
+            option_label = str(label_de or "").strip() or str(canonical_key or "").strip() or f"Option {int(option_id or 0)}"
+            out.append(
+                {
+                    "option_id": int(option_id or 0),
+                    "value": str(int(option_id or 0)),
+                    "label": option_label,
+                    "disabled": False,
+                }
+            )
+        has_more = len(option_rows) > int(limit)
+        if len(out) > int(limit):
+            out = out[: int(limit)]
+            has_more = True
+        return out, has_more, "canonical"
+
+    # Fallback for features without canonical options yet.
     rows = (
         db.query(FeatureValue.value_text)
         .join(Product, Product.id == FeatureValue.product_id)
@@ -4103,7 +10418,7 @@ def _feature_filter_text_options(
         .limit(int(limit) + 1)
         .all()
     )
-    out: list[str] = []
+    out = []
     seen: set[str] = set()
     for value_text, in rows:
         value = str(value_text or "").strip()
@@ -4113,12 +10428,48 @@ def _feature_filter_text_options(
         if key in seen:
             continue
         seen.add(key)
-        out.append(value)
+        out.append(
+            {
+                "option_id": 0,
+                "value": value,
+                "label": value,
+                "disabled": False,
+            }
+        )
     has_more = len(rows) > int(limit)
     if len(out) > int(limit):
         out = out[: int(limit)]
         has_more = True
-    return out, has_more
+    return out, has_more, "legacy_text"
+
+
+def _feature_text_option_filter_exists(feature_def_id: int, option_id: int):
+    selected_option_id = int(option_id or 0)
+    selected_feature_id = int(feature_def_id or 0)
+    alias_match = exists().where(
+        and_(
+            FeatureOptionAlias.option_id == selected_option_id,
+            FeatureOptionAlias.alias_norm == FeatureValue.value_norm,
+            or_(
+                FeatureOptionAlias.manufacturer_id.is_(None),
+                FeatureOptionAlias.manufacturer_id == Product.manufacturer_id,
+            ),
+        )
+    )
+    return exists().where(
+        and_(
+            FeatureValue.product_id == Product.id,
+            FeatureValue.feature_def_id == selected_feature_id,
+            or_(
+                FeatureValue.option_id == selected_option_id,
+                and_(
+                    FeatureValue.option_id.is_(None),
+                    FeatureValue.value_norm.isnot(None),
+                    alias_match,
+                ),
+            ),
+        )
+    )
 
 
 def _feature_filter_number_options(
@@ -4148,7 +10499,7 @@ def _feature_filter_number_options(
         if value_num is None:
             continue
         try:
-            numeric = float(value_num)
+            numeric = _normalize_feature_number_value(float(value_num))
         except Exception:
             continue
         if numeric in seen:
@@ -4202,16 +10553,20 @@ def _resolve_number_filter_selection(raw_value: str | None, available_values: li
     return None
 
 
-def _parse_feature_raw_value(data_type: str, raw_value: str) -> tuple[str | None, float | None, bool | None, str]:
+def _parse_feature_raw_value(
+    data_type: str,
+    raw_value: str,
+    feature_key: str | None = None,
+) -> tuple[str | None, float | None, bool | None, str]:
     raw = str(raw_value or "").strip()
     if not raw:
         return None, None, None, ""
-    if data_type == "number":
-        normalized = raw.replace(",", ".")
-        value_num = float(normalized)
+    dtype = str(data_type or "text").strip().lower()
+    if dtype == "number":
+        value_num = _parse_feature_number_value(raw, feature_key=feature_key)
         display = str(int(value_num)) if value_num.is_integer() else str(value_num)
         return None, value_num, None, _normalize_search_text(display)
-    if data_type == "bool":
+    if dtype == "bool":
         lowered = raw.lower()
         if lowered in ("ja", "j", "true", "1", "x", "yes"):
             return None, None, True, "ja true 1"
@@ -4226,6 +10581,293 @@ def _sanitize_feature_key(label: str) -> str:
     base = slugify(label or "")
     cleaned = re.sub(r"[^a-z0-9_-]+", "", base.replace(" ", "-").lower()).strip("-_")
     return cleaned or "merkmal"
+
+
+def _sanitize_feature_canonical_key(value: str) -> str:
+    base = slugify(value or "")
+    cleaned = re.sub(r"[^a-z0-9_-]+", "", base.replace(" ", "-").lower()).strip("-_")
+    return cleaned or "option"
+
+
+def _normalize_feature_alias_text(value: str | None) -> str:
+    return _normalize_search_text(value)
+
+
+def _is_text_like_feature(data_type: str | None) -> bool:
+    dtype = str(data_type or "text").strip().lower()
+    return dtype not in ("number", "bool")
+
+
+def _ensure_feature_option(
+    db: Session,
+    *,
+    feature_def_id: int,
+    canonical_key: str,
+    label_de: str,
+    sort_order: int = 0,
+    active: bool = True,
+) -> FeatureOption:
+    key_clean = _sanitize_feature_canonical_key(canonical_key)
+    row = (
+        db.query(FeatureOption)
+        .filter(
+            FeatureOption.feature_def_id == int(feature_def_id),
+            func.lower(FeatureOption.canonical_key) == key_clean.lower(),
+        )
+        .one_or_none()
+    )
+    if row:
+        row.label_de = str(label_de or row.label_de or key_clean).strip() or key_clean
+        row.sort_order = int(sort_order or 0)
+        if active:
+            row.active = True
+        db.add(row)
+        db.flush()
+        return row
+
+    row = FeatureOption(
+        feature_def_id=int(feature_def_id),
+        canonical_key=key_clean,
+        label_de=str(label_de or key_clean).strip() or key_clean,
+        active=bool(active),
+        sort_order=int(sort_order or 0),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _resolve_feature_option_for_raw(
+    db: Session,
+    *,
+    feature_def: FeatureDef,
+    raw_value: str,
+    manufacturer_id: int | None = None,
+) -> FeatureOption | None:
+    raw_norm = _normalize_feature_alias_text(raw_value)
+    if not raw_norm:
+        return None
+    fdef_id = int(feature_def.id or 0)
+    if fdef_id <= 0:
+        return None
+    manufacturer_id_int = int(manufacturer_id or 0)
+
+    alias_q = (
+        db.query(FeatureOptionAlias, FeatureOption)
+        .join(FeatureOption, FeatureOption.id == FeatureOptionAlias.option_id)
+        .filter(
+            FeatureOption.feature_def_id == fdef_id,
+            FeatureOption.active == True,
+            FeatureOptionAlias.alias_norm == raw_norm,
+        )
+    )
+    if manufacturer_id_int > 0:
+        alias_q = alias_q.filter(
+            or_(
+                FeatureOptionAlias.manufacturer_id == manufacturer_id_int,
+                FeatureOptionAlias.manufacturer_id.is_(None),
+            )
+        ).order_by(
+            case((FeatureOptionAlias.manufacturer_id == manufacturer_id_int, 0), else_=1),
+            FeatureOptionAlias.priority.asc(),
+            FeatureOption.sort_order.asc(),
+            FeatureOption.id.asc(),
+            FeatureOptionAlias.id.asc(),
+        )
+    else:
+        alias_q = alias_q.filter(FeatureOptionAlias.manufacturer_id.is_(None)).order_by(
+            FeatureOptionAlias.priority.asc(),
+            FeatureOption.sort_order.asc(),
+            FeatureOption.id.asc(),
+            FeatureOptionAlias.id.asc(),
+        )
+
+    alias_match = alias_q.first()
+    if alias_match:
+        return alias_match[1]
+
+    option_rows = (
+        db.query(FeatureOption)
+        .filter(FeatureOption.feature_def_id == fdef_id, FeatureOption.active == True)
+        .order_by(FeatureOption.sort_order.asc(), FeatureOption.id.asc())
+        .all()
+    )
+    for option in option_rows:
+        if _normalize_feature_alias_text(option.label_de) == raw_norm:
+            return option
+        if _normalize_feature_alias_text(option.canonical_key) == raw_norm:
+            return option
+    return None
+
+
+def _feature_value_row_has_payload(row: FeatureValue | None, data_type: str | None) -> bool:
+    if not row:
+        return False
+    dtype = str(data_type or "text").strip().lower()
+    if dtype == "number":
+        return row.value_num is not None
+    if dtype == "bool":
+        return row.value_bool is not None
+    if row.option_id:
+        return True
+    return bool(str(row.value_text or "").strip())
+
+
+def _set_feature_row_option_value(
+    row: FeatureValue,
+    *,
+    option: FeatureOption,
+    raw_text: str | None = None,
+) -> None:
+    if raw_text is not None:
+        row.raw_text = str(raw_text or "").strip() or None
+    label = str(option.label_de or option.canonical_key or "").strip() or str(option.canonical_key or "").strip()
+    row.option_id = int(option.id)
+    row.value_text = label or None
+    row.value_num = None
+    row.value_bool = None
+    row.value_norm = _normalize_search_text(label)
+
+
+def _set_feature_row_bool_value(row: FeatureValue, *, value_bool: bool, raw_text: str | None = None) -> None:
+    if raw_text is not None:
+        row.raw_text = str(raw_text or "").strip() or None
+    row.option_id = None
+    row.value_text = None
+    row.value_num = None
+    row.value_bool = bool(value_bool)
+    row.value_norm = "ja true 1" if bool(value_bool) else "nein false 0"
+
+
+def _find_feature_def_by_key(db: Session, *, device_kind_id: int, key: str) -> FeatureDef | None:
+    key_clean = _sanitize_feature_key(key)
+    return (
+        db.query(FeatureDef)
+        .filter(
+            FeatureDef.device_kind_id == int(device_kind_id),
+            func.lower(FeatureDef.key) == key_clean.lower(),
+        )
+        .one_or_none()
+    )
+
+
+def _set_composite_feature_rules(
+    db: Session,
+    *,
+    product_id: int,
+    source_feature_def: FeatureDef,
+    raw_value: str,
+) -> None:
+    raw_clean = str(raw_value or "").strip()
+    raw_norm = _normalize_feature_alias_text(raw_clean)
+    if not raw_norm:
+        return
+    device_kind_id = int(source_feature_def.device_kind_id or 0)
+    if device_kind_id <= 0:
+        return
+
+    has_unterbau = "unterbau" in raw_norm
+    has_freistehend = ("freisteh" in raw_norm) or ("stand" in raw_norm)
+
+    if has_unterbau:
+        underbau_def = _find_feature_def_by_key(db, device_kind_id=device_kind_id, key="unterbaufaehig")
+        if not underbau_def:
+            underbau_def = _upsert_feature_def(
+                db,
+                device_kind_id=device_kind_id,
+                key="unterbaufaehig",
+                label_de="Unterbaufähig",
+                data_type="bool",
+                filterable=True,
+            )
+        if str(underbau_def.data_type or "").strip().lower() == "bool":
+            current = (
+                db.query(FeatureValue)
+                .filter(
+                    FeatureValue.product_id == int(product_id),
+                    FeatureValue.feature_def_id == int(underbau_def.id),
+                )
+                .one_or_none()
+            )
+            if int(underbau_def.id) == int(source_feature_def.id) or not _feature_value_row_has_payload(
+                current, underbau_def.data_type
+            ):
+                target_row = current or FeatureValue(product_id=int(product_id), feature_def_id=int(underbau_def.id))
+                _set_feature_row_bool_value(target_row, value_bool=True, raw_text=raw_clean)
+                db.add(target_row)
+
+    if has_freistehend:
+        aufstellart_def = _find_feature_def_by_key(db, device_kind_id=device_kind_id, key="aufstellart")
+        if not aufstellart_def:
+            aufstellart_def = _upsert_feature_def(
+                db,
+                device_kind_id=device_kind_id,
+                key="aufstellart",
+                label_de="Aufstellart",
+                data_type="text",
+                filterable=True,
+            )
+        if _is_text_like_feature(aufstellart_def.data_type):
+            freistehend_option = _ensure_feature_option(
+                db,
+                feature_def_id=int(aufstellart_def.id),
+                canonical_key="freistehend",
+                label_de="freistehend",
+                sort_order=10,
+                active=True,
+            )
+            current = (
+                db.query(FeatureValue)
+                .filter(
+                    FeatureValue.product_id == int(product_id),
+                    FeatureValue.feature_def_id == int(aufstellart_def.id),
+                )
+                .one_or_none()
+            )
+            if int(aufstellart_def.id) == int(source_feature_def.id) or not _feature_value_row_has_payload(
+                current, aufstellart_def.data_type
+            ):
+                target_row = current or FeatureValue(product_id=int(product_id), feature_def_id=int(aufstellart_def.id))
+                _set_feature_row_option_value(target_row, option=freistehend_option, raw_text=raw_clean)
+                db.add(target_row)
+
+
+def _apply_alias_to_existing_feature_values(
+    db: Session,
+    *,
+    feature_def: FeatureDef,
+    option: FeatureOption,
+    alias_norm: str,
+    manufacturer_id: int | None = None,
+    only_unmapped: bool = True,
+) -> int:
+    normalized_alias = _normalize_feature_alias_text(alias_norm)
+    if not normalized_alias:
+        return 0
+    query = (
+        db.query(FeatureValue)
+        .join(Product, Product.id == FeatureValue.product_id)
+        .filter(
+            Product.device_kind_id == int(feature_def.device_kind_id or 0),
+            FeatureValue.feature_def_id == int(feature_def.id),
+            FeatureValue.raw_text.isnot(None),
+            func.length(func.trim(FeatureValue.raw_text)) > 0,
+        )
+    )
+    if only_unmapped:
+        query = query.filter(FeatureValue.option_id.is_(None))
+    manufacturer_id_int = int(manufacturer_id or 0)
+    if manufacturer_id_int > 0:
+        query = query.filter(Product.manufacturer_id == manufacturer_id_int)
+
+    updated = 0
+    for row in query.all():
+        if _normalize_feature_alias_text(row.raw_text) != normalized_alias:
+            continue
+        _set_feature_row_option_value(row, option=option)
+        db.add(row)
+        updated += 1
+    return updated
 
 
 def _upsert_feature_def(
@@ -4263,14 +10905,28 @@ def _upsert_feature_def(
     return row
 
 
-def _set_feature_value(db: Session, *, product_id: int, feature_def: FeatureDef, raw_value: str) -> None:
+def _set_feature_value(
+    db: Session,
+    *,
+    product_id: int,
+    feature_def: FeatureDef,
+    raw_value: str,
+    manufacturer_id: int | None = None,
+    apply_rules: bool = True,
+) -> None:
     existing = (
         db.query(FeatureValue)
         .filter(FeatureValue.product_id == int(product_id), FeatureValue.feature_def_id == int(feature_def.id))
         .one_or_none()
     )
+    data_type = str(feature_def.data_type or "text").strip().lower()
+    raw_clean = str(raw_value or "").strip()
     try:
-        value_text, value_num, value_bool, value_norm = _parse_feature_raw_value(str(feature_def.data_type or "text"), raw_value)
+        value_text, value_num, value_bool, value_norm = _parse_feature_raw_value(
+            data_type,
+            raw_clean,
+            feature_key=str(feature_def.key or ""),
+        )
     except ValueError:
         if existing:
             db.delete(existing)
@@ -4283,11 +10939,37 @@ def _set_feature_value(db: Session, *, product_id: int, feature_def: FeatureDef,
         return
 
     row = existing or FeatureValue(product_id=int(product_id), feature_def_id=int(feature_def.id))
-    row.value_text = value_text
-    row.value_num = value_num
-    row.value_bool = value_bool
-    row.value_norm = value_norm
+    row.raw_text = raw_clean or None
+
+    if _is_text_like_feature(data_type):
+        option = _resolve_feature_option_for_raw(
+            db,
+            feature_def=feature_def,
+            raw_value=raw_clean,
+            manufacturer_id=manufacturer_id,
+        )
+        if option:
+            _set_feature_row_option_value(row, option=option, raw_text=raw_clean)
+        else:
+            row.option_id = None
+            row.value_text = value_text
+            row.value_num = None
+            row.value_bool = None
+            row.value_norm = value_norm
+    else:
+        row.option_id = None
+        row.value_text = value_text
+        row.value_num = value_num
+        row.value_bool = value_bool
+        row.value_norm = value_norm
     db.add(row)
+    if apply_rules and raw_clean and _is_text_like_feature(data_type):
+        _set_composite_feature_rules(
+            db,
+            product_id=int(product_id),
+            source_feature_def=feature_def,
+            raw_value=raw_clean,
+        )
 
 
 def _refresh_product_search_blob(db: Session, product: Product) -> None:
@@ -4311,8 +10993,14 @@ def _refresh_product_search_blob(db: Session, product: Product) -> None:
     ]
 
     feature_rows = (
-        db.query(FeatureDef.data_type, FeatureValue.value_text, FeatureValue.value_num, FeatureValue.value_bool)
+        db.query(
+            FeatureDef.data_type,
+            func.coalesce(FeatureOption.label_de, FeatureValue.value_text),
+            FeatureValue.value_num,
+            FeatureValue.value_bool,
+        )
         .join(FeatureValue, FeatureValue.feature_def_id == FeatureDef.id)
+        .outerjoin(FeatureOption, FeatureOption.id == FeatureValue.option_id)
         .filter(FeatureValue.product_id == int(product.id))
         .all()
     )
@@ -4921,6 +11609,7 @@ def products_list(
             "id": fid,
             "label": str(feature_def.label_de or feature_def.key or f"Merkmal {fid}"),
             "data_type": data_type,
+            "text_mode": "canonical",
             "value": "",
             "min": "",
             "max": "",
@@ -5023,32 +11712,70 @@ def products_list(
                     )
                 )
         else:
-            text_values, has_more = _feature_filter_text_options(
+            text_options, has_more, text_mode = _feature_filter_text_options(
                 db,
                 device_kind_id=int(kind_id),
                 feature_def_id=fid,
                 limit=FEATURE_FILTER_OPTION_LIMIT,
             )
-            text_options = [{"value": value, "label": value, "disabled": False} for value in text_values]
+            filter_row["text_mode"] = text_mode
+            options_for_ui = list(text_options)
             if has_more:
-                text_options.append({"value": "", "label": "(weitere Werte vorhanden ...)", "disabled": True})
-            filter_row["options"] = text_options
+                options_for_ui.append({"value": "", "label": "(weitere Werte vorhanden ...)", "disabled": True, "option_id": 0})
+            filter_row["options"] = options_for_ui
 
-            raw_text = (request.query_params.get(f"f_{fid}") or "").strip()
-            if raw_text:
-                selected_value = next((value for value in text_values if value.casefold() == raw_text.casefold()), "")
-                if selected_value:
-                    filter_row["value"] = selected_value
-                    query = query.filter(
-                        exists().where(
-                            and_(
-                                FeatureValue.product_id == Product.id,
-                                FeatureValue.feature_def_id == fid,
-                                FeatureValue.value_text.isnot(None),
-                                func.lower(func.trim(FeatureValue.value_text)) == selected_value.casefold(),
+            raw_filter_value = str(request.query_params.get(f"f_{fid}") or "").strip()
+            if text_mode == "legacy_text":
+                if raw_filter_value:
+                    selected_opt = next(
+                        (
+                            row
+                            for row in text_options
+                            if str(row.get("value") or "").strip().casefold() == raw_filter_value.casefold()
+                        ),
+                        None,
+                    )
+                    if selected_opt and not bool(selected_opt.get("disabled")):
+                        selected_value = str(selected_opt.get("value") or "")
+                        filter_row["value"] = selected_value
+                        query = query.filter(
+                            exists().where(
+                                and_(
+                                    FeatureValue.product_id == Product.id,
+                                    FeatureValue.feature_def_id == fid,
+                                    FeatureValue.value_text.isnot(None),
+                                    func.lower(func.trim(FeatureValue.value_text)) == selected_value.casefold(),
+                                )
                             )
                         )
+            else:
+                selected_option_id = _to_int(raw_filter_value, 0)
+                if selected_option_id > 0:
+                    selected_opt = next(
+                        (row for row in text_options if int(row.get("option_id") or 0) == int(selected_option_id)),
+                        None,
                     )
+                    if not selected_opt:
+                        selected_row = (
+                            db.query(FeatureOption.id, FeatureOption.label_de, FeatureOption.canonical_key, FeatureOption.active)
+                            .filter(
+                                FeatureOption.id == int(selected_option_id),
+                                FeatureOption.feature_def_id == fid,
+                            )
+                            .one_or_none()
+                        )
+                        if selected_row and bool(selected_row[3]):
+                            selected_label = str(selected_row[1] or "").strip() or str(selected_row[2] or "").strip()
+                            selected_opt = {
+                                "value": str(int(selected_row[0])),
+                                "label": selected_label,
+                                "disabled": False,
+                                "option_id": int(selected_row[0]),
+                            }
+                            filter_row["options"] = [selected_opt] + options_for_ui
+                    if selected_opt and not bool(selected_opt.get("disabled")):
+                        filter_row["value"] = str(int(selected_option_id))
+                        query = query.filter(_feature_text_option_filter_exists(fid, int(selected_option_id)))
         feature_filters.append(filter_row)
 
     products = query.order_by(Product.id.desc()).limit(300).all()
@@ -5077,11 +11804,12 @@ def products_list(
                 FeatureDef.label_de,
                 FeatureDef.key,
                 FeatureDef.data_type,
-                FeatureValue.value_text,
+                func.coalesce(FeatureOption.label_de, FeatureValue.value_text),
                 FeatureValue.value_num,
                 FeatureValue.value_bool,
             )
             .join(FeatureDef, FeatureDef.id == FeatureValue.feature_def_id)
+            .outerjoin(FeatureOption, FeatureOption.id == FeatureValue.option_id)
             .filter(FeatureValue.product_id.in_(product_ids))
             .order_by(FeatureDef.label_de.asc(), FeatureDef.id.asc())
             .all()
@@ -5110,74 +11838,121 @@ def products_list(
     )
 
 
-@app.get("/catalog/products/import", response_class=HTMLResponse)
-def products_import_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
-    state = request.session.get(CSV_IMPORT_STATE_KEY) or {}
-    selected_manufacturer_id = _to_int(request.query_params.get("manufacturer_id"), _to_int(state.get("manufacturer_id"), 0))
-    selected_kind_id = _to_int(request.query_params.get("kind_id"), _to_int(state.get("kind_id"), 0))
-    manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
-    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
-
+@app.get("/catalog/import", response_class=HTMLResponse)
+def catalog_import_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     return templates.TemplateResponse(
         "catalog/import_upload.html",
-        _ctx(
-            request,
-            user=user,
-            manufacturers=manufacturers,
-            kinds=kinds,
-            selected_manufacturer_id=selected_manufacturer_id,
-            selected_kind_id=selected_kind_id,
-        ),
+        _import_upload_page_ctx(request, db=db, user=user),
     )
 
 
-@app.post("/catalog/products/import/preview")
-async def products_import_preview(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+@app.post("/catalog/import/upload", response_class=HTMLResponse)
+async def catalog_import_upload_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     form = await request.form()
     manufacturer_id = _to_int(form.get("manufacturer_id"), 0)
     selected_kind_id = _to_int(form.get("kind_id"), 0)
-    back_url = _csv_import_back_url("", 0, selected_kind_id)
+    selected_profile_id = _to_int(form.get("profile_id"), 0)
+    delimiter = str(form.get("delimiter") or ";").strip()
+    if delimiter not in (";", ","):
+        delimiter = ";"
+    encoding = str(form.get("encoding") or "utf-8").strip() or "utf-8"
+    has_header = form.get("has_header") == "on"
+
+    upload_form_data = {
+        "manufacturer_id": manufacturer_id,
+        "kind_id": selected_kind_id,
+        "profile_id": selected_profile_id,
+        "delimiter": delimiter,
+        "encoding": encoding,
+        "has_header": has_header,
+    }
+    global_errors: list[str] = []
 
     manufacturer = db.get(Manufacturer, manufacturer_id) if manufacturer_id else None
     if not manufacturer:
-        _flash(request, "Bitte einen gültigen Hersteller wählen.", "error")
-        return RedirectResponse(back_url, status_code=302)
-
+        global_errors.append("Bitte einen gültigen Hersteller wählen.")
     selected_kind = db.get(DeviceKind, selected_kind_id) if selected_kind_id else None
     if not selected_kind:
-        _flash(request, "Bitte eine gültige Geräteart wählen.", "error")
-        return RedirectResponse(back_url, status_code=302)
-
-    delimiter = (form.get("delimiter") or ";").strip()
-    if delimiter not in (";", ","):
-        delimiter = ";"
-    encoding = (form.get("encoding") or "utf-8").strip() or "utf-8"
-    has_header = form.get("has_header") == "on"
-
+        global_errors.append("Bitte eine gültige Geräteart wählen.")
+    selected_profile = _pick_import_profile(db, selected_profile_id) if selected_profile_id else None
+    if selected_profile and (
+        int(selected_profile.manufacturer_id or 0) != int(manufacturer_id)
+        or int(selected_profile.device_kind_id or 0) != int(selected_kind_id)
+    ):
+        global_errors.append("Das gewählte Profil passt nicht zu Hersteller und Geräteart.")
+        selected_profile = None
+        selected_profile_id = 0
     upload: UploadFile = form.get("csv_file")  # type: ignore
     if not upload or not getattr(upload, "filename", ""):
-        _flash(request, "Bitte eine CSV-Datei auswählen.", "error")
-        return RedirectResponse(back_url, status_code=302)
+        global_errors.append("Bitte eine CSV-Datei auswählen.")
+    raw = await upload.read() if upload else b""
+    if upload and not raw:
+        global_errors.append("Die CSV-Datei ist leer.")
 
-    raw = await upload.read()
-    if not raw:
-        _flash(request, "Die CSV-Datei ist leer.", "error")
-        return RedirectResponse(back_url, status_code=302)
+    if global_errors:
+        return templates.TemplateResponse(
+            "catalog/import_upload.html",
+            _import_upload_page_ctx(
+                request,
+                db=db,
+                user=user,
+                form_data=upload_form_data,
+                global_errors=global_errors,
+            ),
+        )
 
-    dirs = ensure_dirs()
-    tmp_name = f"products_import_{dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}.csv"
-    tmp_path = dirs["tmp"] / tmp_name
-    tmp_path.write_bytes(raw)
+    draft = ImportDraft(
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+        status=IMPORT_DRAFT_STATUS_UPLOADED,
+        filename_original=str(upload.filename or "").strip(),
+        file_path_tmp="",
+        delimiter=delimiter,
+        encoding=encoding,
+        has_header=bool(has_header),
+        manufacturer_id=int(manufacturer.id),
+        device_kind_id=int(selected_kind.id),
+        import_profile_id=int(selected_profile.id) if selected_profile else None,
+        current_step="map",
+        mapping_json=None,
+        validation_errors_json=None,
+        last_preview_json=None,
+        created_by_user_id=int(getattr(user, "id", 0) or 0) or None,
+    )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
 
-    try:
-        columns, rows = _read_csv_rows(tmp_path, delimiter=delimiter, has_header=has_header, encoding=encoding)
-    except Exception as e:
-        _flash(request, f"CSV konnte nicht gelesen werden: {e}", "error")
-        return RedirectResponse(back_url, status_code=302)
+    tmp_root = (ensure_dirs()["tmp"] / "imports" / str(int(draft.id))).resolve()
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    csv_path = tmp_root / "source.csv"
+    csv_path.write_bytes(raw)
+    draft.file_path_tmp = str(csv_path)
+    draft.updated_at = _utcnow_naive()
+    db.add(draft)
+    db.commit()
 
-    if not columns:
-        _flash(request, "Keine Spalten erkannt. Bitte Trennzeichen prüfen.", "error")
-        return RedirectResponse(back_url, status_code=302)
+    columns, rows, csv_error = _import_read_draft_csv(draft)
+    if csv_error:
+        errors = {
+            "global_errors": [csv_error],
+            "field_errors": {},
+        }
+        draft.status = IMPORT_DRAFT_STATUS_FAILED
+        draft.validation_errors_json = _json_dump(errors)
+        draft.updated_at = _utcnow_naive()
+        db.add(draft)
+        db.commit()
+        return templates.TemplateResponse(
+            "catalog/import_upload.html",
+            _import_upload_page_ctx(
+                request,
+                db=db,
+                user=user,
+                form_data=upload_form_data,
+                global_errors=[csv_error],
+            ),
+        )
 
     matched_profiles = _detect_matching_profiles(
         db,
@@ -5186,247 +11961,517 @@ async def products_import_preview(request: Request, user=Depends(require_admin),
         columns=columns,
     )
     auto_profile_id = int(getattr(matched_profiles[0]["profile"], "id", 0)) if len(matched_profiles) == 1 else 0
-
-    product_field_map = {
-        "sales_name": _guess_column(columns, ("verkaufsbezeichnung", "sales_name", "name", "produktname")),
-        "material_no": _guess_column(columns, ("materialnummer", "material_no", "matnr", "mat_nr")),
-        "manufacturer_name": _guess_column(
-            columns,
-            ("herstellerbezeichnung", "manufacturer_name", "brand_name", "modellbezeichnung"),
-        ),
-        "product_title_1": _guess_column(columns, ("produkttitel1", "produkttitel_1", "product_title_1", "title1", "titel1")),
-        "product_title_2": _guess_column(columns, ("produkttitel2", "produkttitel_2", "product_title_2", "title2", "titel2")),
-        "description": _guess_column(columns, ("beschreibung", "description")),
-        "sale_price": _guess_column(
-            columns,
-            ("verkaufspreis", "verkaufspreis_brutto", "sale_price", "sale_price_gross", "vk", "preis"),
-        ),
-    }
-    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
-        key = f"image_url_{idx}"
-        product_field_map[key] = _guess_column(
-            columns,
-            (
-                f"bild{idx}",
-                f"bild_{idx}",
-                f"bildurl{idx}",
-                f"bild_url_{idx}",
-                f"image{idx}",
-                f"image_{idx}",
-                f"imageurl{idx}",
-                f"image_url_{idx}",
-                f"img{idx}",
-                f"img_{idx}",
-                f"url_bild_{idx}",
-            ),
-        )
-    ean_column = _guess_column(columns, ("ean", "gtin", "gtin13", "barcode"))
-    feature_prefill_by_column: dict[str, dict[str, str]] = {}
-
+    chosen_profile_id = selected_profile_id or auto_profile_id
     feature_defs = _feature_defs_for_kind(db, int(selected_kind.id))
     feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
-    if auto_profile_id:
-        profile = _pick_import_profile(db, auto_profile_id)
-        if profile:
-            ean_column = str(profile.ean_column or ean_column or "").strip()
-            profile_maps = db.query(ImportProfileMap).filter(ImportProfileMap.profile_id == int(profile.id)).all()
-            for map_row in profile_maps:
-                if map_row.map_type == "product_field" and str(map_row.target_key) in product_field_map:
-                    product_field_map[str(map_row.target_key)] = str(map_row.source_column or "").strip()
-                elif map_row.map_type == "feature":
-                    feature_key = str(map_row.target_key or "").strip()
-                    fdef = feature_defs_by_key.get(feature_key)
-                    feature_prefill_by_column[str(map_row.source_column or "").strip()] = {
-                        "feature_key": feature_key,
-                        "feature_label": str(fdef.label_de if fdef else feature_key),
-                        "data_type": str(map_row.data_type or (fdef.data_type if fdef else "text")),
-                        "is_existing": "1" if fdef else "0",
-                    }
+    profile_name_default = f"{manufacturer.name} {selected_kind.name}"
+    mapping_data = _import_default_mapping_data(
+        db,
+        columns=columns,
+        feature_defs_by_key=feature_defs_by_key,
+        profile_id=chosen_profile_id,
+        profile_name_default=profile_name_default,
+    )
+    if int(chosen_profile_id or 0) > 0:
+        mapping_data["profile_id"] = int(chosen_profile_id)
 
-    request.session[CSV_IMPORT_STATE_KEY] = {
-        "path": str(tmp_path),
-        "delimiter": delimiter,
-        "encoding": encoding,
-        "has_header": has_header,
-        "manufacturer_id": int(manufacturer.id),
-        "kind_id": int(selected_kind.id),
-        "filename": str(upload.filename or ""),
-    }
+    draft.import_profile_id = int(chosen_profile_id) if int(chosen_profile_id or 0) > 0 else None
+    draft.mapping_json = _json_dump(mapping_data)
+    draft.validation_errors_json = None
+    draft.last_preview_json = _json_dump(
+        {
+            "columns": columns,
+            "rows": rows[:10],
+            "total_rows": len(rows),
+        }
+    )
+    draft.status = IMPORT_DRAFT_STATUS_MAPPING
+    draft.current_step = "map"
+    draft.updated_at = _utcnow_naive()
+    db.add(draft)
+    db.commit()
+
+    return RedirectResponse(f"/catalog/import/{int(draft.id)}/map", status_code=302)
+
+
+@app.get("/catalog/import/profiles", response_class=HTMLResponse)
+def import_profiles_get(
+    request: Request,
+    user=Depends(require_admin),
+    manufacturer_id: int = 0,
+    device_kind_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    manufacturer_id = int(manufacturer_id or 0)
+    device_kind_id = int(device_kind_id or 0)
+    manufacturers = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
+    kinds = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+
+    query = db.query(ImportProfile)
+    if manufacturer_id > 0:
+        query = query.filter(ImportProfile.manufacturer_id == int(manufacturer_id))
+    if device_kind_id > 0:
+        query = query.filter(ImportProfile.device_kind_id == int(device_kind_id))
+    rows = query.order_by(ImportProfile.updated_at.desc(), ImportProfile.id.desc()).all()
+    profile_ids = [int(row.id) for row in rows]
+    map_count: dict[int, int] = {}
+    if profile_ids:
+        count_rows = (
+            db.query(ImportProfileMap.profile_id, func.count(ImportProfileMap.id))
+            .filter(ImportProfileMap.profile_id.in_(profile_ids))
+            .group_by(ImportProfileMap.profile_id)
+            .all()
+        )
+        map_count = {int(profile_id): int(count or 0) for profile_id, count in count_rows}
+
+    manufacturer_map = {}
+    if rows:
+        ids = {int(row.manufacturer_id) for row in rows if row.manufacturer_id}
+        for m in db.query(Manufacturer).filter(Manufacturer.id.in_(ids)).all():
+            manufacturer_map[int(m.id)] = str(m.name or "")
+    kind_map = {}
+    if rows:
+        ids = {int(row.device_kind_id) for row in rows if row.device_kind_id}
+        for k in db.query(DeviceKind).filter(DeviceKind.id.in_(ids)).all():
+            kind_map[int(k.id)] = str(k.name or "")
 
     return templates.TemplateResponse(
-        "catalog/import_map.html",
+        "catalog/import_profiles.html",
         _ctx(
             request,
             user=user,
-            columns=columns,
-            preview_rows=rows[:10],
-            total_rows=len(rows),
-            delimiter=delimiter,
-            encoding=encoding,
-            has_header=has_header,
-            manufacturer=manufacturer,
-            selected_kind=selected_kind,
-            matched_profiles=matched_profiles,
-            auto_profile_id=auto_profile_id,
-            profile_name_default=f"{manufacturer.name} {selected_kind.name}",
-            product_field_map=product_field_map,
-            image_field_indices=list(range(1, PRODUCT_IMAGE_URL_MAX + 1)),
-            ean_column=ean_column,
-            feature_defs=feature_defs,
-            feature_prefill_by_column=feature_prefill_by_column,
+            rows=rows,
+            map_count=map_count,
+            manufacturer_map=manufacturer_map,
+            kind_map=kind_map,
+            manufacturers=manufacturers,
+            kinds=kinds,
+            selected_manufacturer_id=manufacturer_id,
+            selected_kind_id=device_kind_id,
         ),
     )
 
 
-@app.post("/catalog/products/import/run", response_class=HTMLResponse)
-async def products_import_run(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
-    state = request.session.get(CSV_IMPORT_STATE_KEY) or {}
-    if not state:
-        _flash(request, "Keine Import-Vorschau gefunden. Bitte erneut hochladen.", "error")
-        return RedirectResponse("/catalog/products/import", status_code=302)
+@app.get("/catalog/import/profiles/{profile_id}/edit", response_class=HTMLResponse)
+def import_profile_edit_get(profile_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    profile = _pick_import_profile(db, profile_id)
+    if not profile:
+        raise HTTPException(status_code=404)
+    maps = (
+        db.query(ImportProfileMap)
+        .filter(ImportProfileMap.profile_id == int(profile.id))
+        .order_by(ImportProfileMap.map_type.asc(), ImportProfileMap.target_key.asc(), ImportProfileMap.id.asc())
+        .all()
+    )
+    manufacturer = db.get(Manufacturer, int(profile.manufacturer_id or 0)) if profile.manufacturer_id else None
+    kind = db.get(DeviceKind, int(profile.device_kind_id or 0)) if profile.device_kind_id else None
+    return templates.TemplateResponse(
+        "catalog/import_profile_edit.html",
+        _ctx(
+            request,
+            user=user,
+            profile=profile,
+            maps=maps,
+            manufacturer_name=str(manufacturer.name or "") if manufacturer else "-",
+            kind_name=str(kind.name or "") if kind else "-",
+        ),
+    )
 
-    manufacturer_id = _to_int(state.get("manufacturer_id"), 0)
-    selected_kind_id = _to_int(state.get("kind_id"), 0)
-    back_url = _csv_import_back_url("", 0, selected_kind_id)
-    if not manufacturer_id or not selected_kind_id:
-        _flash(request, "Import-Kontext fehlt. Bitte Hersteller und Geräteart neu wählen.", "error")
-        request.session.pop(CSV_IMPORT_STATE_KEY, None)
-        return RedirectResponse("/catalog/products/import", status_code=302)
 
-    manufacturer_row = db.get(Manufacturer, manufacturer_id)
-    selected_kind_row = db.get(DeviceKind, selected_kind_id)
-    if (not manufacturer_row) or (not selected_kind_row):
-        _flash(request, "Import-Kontext ist ungültig. Bitte Auswahl neu starten.", "error")
-        request.session.pop(CSV_IMPORT_STATE_KEY, None)
-        return RedirectResponse("/catalog/products/import", status_code=302)
-
-    dirs = ensure_dirs()
-    tmp_dir = dirs["tmp"].resolve()
-    csv_path = Path(state.get("path") or "").resolve()
-    if not str(csv_path).startswith(str(tmp_dir)) or not csv_path.exists():
-        _flash(request, "Importdatei nicht mehr vorhanden. Bitte erneut hochladen.", "error")
-        request.session.pop(CSV_IMPORT_STATE_KEY, None)
-        return RedirectResponse(back_url, status_code=302)
-
-    delimiter = state.get("delimiter") or ";"
-    encoding = state.get("encoding") or "utf-8"
-    has_header = bool(state.get("has_header"))
-
-    try:
-        columns, rows = _read_csv_rows(csv_path, delimiter=delimiter, has_header=has_header, encoding=encoding)
-    except Exception as e:
-        _flash(request, f"CSV konnte nicht gelesen werden: {e}", "error")
-        request.session.pop(CSV_IMPORT_STATE_KEY, None)
-        return RedirectResponse(back_url, status_code=302)
-
+@app.post("/catalog/import/profiles/{profile_id}/edit")
+async def import_profile_edit_post(profile_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    profile = _pick_import_profile(db, profile_id)
+    if not profile:
+        raise HTTPException(status_code=404)
     form = await request.form()
-    ean_column = (form.get("ean_column") or "").strip()
-    if not ean_column or ean_column not in columns:
-        _flash(request, "Bitte eine gültige EAN-Spalte wählen.", "error")
-        return RedirectResponse(back_url, status_code=302)
+    profile_name = str(form.get("name") or "").strip()
+    delimiter = str(form.get("delimiter") or ";").strip()
+    if delimiter not in (";", ","):
+        delimiter = ";"
+    encoding = str(form.get("encoding") or "utf-8").strip() or "utf-8"
+    has_header = form.get("has_header") == "on"
+    ean_column = str(form.get("ean_column") or "").strip()
 
-    product_field_map = {
-        "sales_name": (form.get("map_sales_name") or "").strip(),
-        "material_no": (form.get("map_material_no") or "").strip(),
-        "manufacturer_name": (form.get("map_manufacturer_name") or "").strip(),
-        "product_title_1": (form.get("map_product_title_1") or "").strip(),
-        "product_title_2": (form.get("map_product_title_2") or "").strip(),
-        "description": (form.get("map_description") or "").strip(),
-        "sale_price": (form.get("map_sale_price") or "").strip(),
-        "ean": ean_column,
-    }
-    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
-        key = f"image_url_{idx}"
-        product_field_map[key] = (form.get(f"map_{key}") or "").strip()
-    for key, value in list(product_field_map.items()):
-        if not value:
+    if not profile_name:
+        _flash(request, "Profilname fehlt.", "error")
+        return RedirectResponse(f"/catalog/import/profiles/{int(profile.id)}/edit", status_code=302)
+    if not ean_column:
+        _flash(request, "EAN-Spalte fehlt.", "error")
+        return RedirectResponse(f"/catalog/import/profiles/{int(profile.id)}/edit", status_code=302)
+
+    profile.name = profile_name
+    profile.delimiter = delimiter
+    profile.encoding = encoding
+    profile.has_header = bool(has_header)
+    profile.ean_column = ean_column
+    profile.updated_at = _utcnow_naive()
+    db.add(profile)
+
+    maps = db.query(ImportProfileMap).filter(ImportProfileMap.profile_id == int(profile.id)).all()
+    map_by_id = {int(row.id): row for row in maps}
+    for map_id, map_row in map_by_id.items():
+        if form.get(f"delete_map_{map_id}") == "on":
+            db.delete(map_row)
             continue
-        if value not in columns:
-            _flash(request, f"Ungültige Spaltenzuordnung für '{key}'.", "error")
-            return RedirectResponse(back_url, status_code=302)
-
-    feature_defs = _feature_defs_for_kind(db, int(selected_kind_row.id))
-    feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
-    feature_maps: list[dict[str, str]] = []
-    seen_feature_keys: set[str] = set()
-    for idx, column in enumerate(columns):
-        if form.get(f"feature_use_{idx}") != "on":
-            continue
-        existing_key = (form.get(f"feature_existing_key_{idx}") or "").strip()
-        new_label = (form.get(f"feature_new_label_{idx}") or "").strip()
-        data_type = (form.get(f"feature_data_type_{idx}") or "text").strip().lower()
-        if data_type not in ALLOWED_FEATURE_DATA_TYPES:
-            data_type = "text"
-
-        feature_key = ""
-        feature_label = ""
-        if existing_key and existing_key != "__neu__":
-            feature_key = _sanitize_feature_key(existing_key)
-            existing_def = feature_defs_by_key.get(feature_key)
-            feature_label = str(existing_def.label_de if existing_def else existing_key).strip()
-            if existing_def:
-                data_type = str(existing_def.data_type or data_type)
+        source_column = str(form.get(f"source_column_{map_id}") or "").strip()
+        if source_column:
+            map_row.source_column = source_column
+        data_type = str(form.get(f"data_type_{map_id}") or "").strip().lower()
+        if str(map_row.map_type or "") == "feature":
+            map_row.data_type = data_type if data_type in ALLOWED_FEATURE_DATA_TYPES else "text"
+        elif str(map_row.map_type or "") == "accessory":
+            map_row.data_type = data_type if data_type in ACCESSORY_SEPARATOR_MODES else "auto"
         else:
-            if not new_label:
-                _flash(request, f"Merkmalname fehlt für Spalte '{column}'.", "error")
-                return RedirectResponse(back_url, status_code=302)
-            feature_key = _sanitize_feature_key(new_label)
-            feature_label = new_label
-        if feature_key in seen_feature_keys:
-            _flash(request, f"Merkmal '{feature_key}' wurde mehrfach zugeordnet.", "error")
-            return RedirectResponse(back_url, status_code=302)
-        seen_feature_keys.add(feature_key)
-        feature_maps.append(
-            {
-                "source_column": column,
-                "feature_key": feature_key,
-                "label_de": feature_label,
-                "data_type": data_type,
-            }
+            map_row.data_type = None
+        db.add(map_row)
+
+    new_map_type = str(form.get("new_map_type") or "").strip()
+    new_target_key = str(form.get("new_target_key") or "").strip()
+    new_source_column = str(form.get("new_source_column") or "").strip()
+    new_data_type = str(form.get("new_data_type") or "").strip().lower()
+    if new_map_type and new_source_column:
+        if new_map_type not in ("product_field", "feature", "accessory"):
+            _flash(request, "Ungültiger Mapping-Typ für neue Zuordnung.", "error")
+            return RedirectResponse(f"/catalog/import/profiles/{int(profile.id)}/edit", status_code=302)
+        if new_map_type == "accessory":
+            new_target_key = "accessory_list"
+            if new_data_type not in ACCESSORY_SEPARATOR_MODES:
+                new_data_type = "auto"
+        elif new_map_type == "feature":
+            new_target_key = _sanitize_feature_key(new_target_key)
+            if not new_target_key:
+                _flash(request, "Merkmal-Schlüssel für neue Zuordnung fehlt.", "error")
+                return RedirectResponse(f"/catalog/import/profiles/{int(profile.id)}/edit", status_code=302)
+            if new_data_type not in ALLOWED_FEATURE_DATA_TYPES:
+                new_data_type = "text"
+        else:
+            if not new_target_key:
+                _flash(request, "Zielfeld für neue Zuordnung fehlt.", "error")
+                return RedirectResponse(f"/catalog/import/profiles/{int(profile.id)}/edit", status_code=302)
+            new_data_type = ""
+
+        db.add(
+            ImportProfileMap(
+                profile_id=int(profile.id),
+                map_type=new_map_type,
+                target_key=new_target_key,
+                source_column=new_source_column,
+                data_type=new_data_type or None,
+            )
         )
 
-    profile_id = _to_int(form.get("profile_id"), 0)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Profil konnte nicht gespeichert werden: {exc}", "error")
+        return RedirectResponse(f"/catalog/import/profiles/{int(profile.id)}/edit", status_code=302)
+
+    _flash(request, "Importprofil gespeichert.", "info")
+    return RedirectResponse("/catalog/import/profiles", status_code=302)
+
+
+@app.get("/catalog/import/{draft_id}/map", response_class=HTMLResponse)
+def catalog_import_map_get(draft_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    draft = db.get(ImportDraft, int(draft_id))
+    if not draft:
+        raise HTTPException(status_code=404)
+    columns, rows, csv_error = _import_read_draft_csv(draft)
+    if csv_error:
+        _flash(request, csv_error, "error")
+        return RedirectResponse("/catalog/import", status_code=302)
+    manufacturer = db.get(Manufacturer, int(draft.manufacturer_id or 0)) if draft.manufacturer_id else None
+    selected_kind = db.get(DeviceKind, int(draft.device_kind_id or 0)) if draft.device_kind_id else None
+    if not manufacturer or not selected_kind:
+        _flash(request, "Import-Kontext fehlt. Bitte erneut starten.", "error")
+        return RedirectResponse("/catalog/import", status_code=302)
+
+    feature_defs = _feature_defs_for_kind(db, int(selected_kind.id))
+    feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
+    profile_name_default = f"{manufacturer.name} {selected_kind.name}"
+    mapping_data = _json_load_dict(draft.mapping_json)
+    if not mapping_data:
+        mapping_data = _import_default_mapping_data(
+            db,
+            columns=columns,
+            feature_defs_by_key=feature_defs_by_key,
+            profile_id=_to_int(draft.import_profile_id, 0),
+            profile_name_default=profile_name_default,
+        )
+
+    return _import_map_page_response(
+        request,
+        db=db,
+        user=user,
+        draft=draft,
+        columns=columns,
+        rows=rows,
+        mapping_data=mapping_data,
+    )
+
+
+@app.post("/catalog/import/{draft_id}/map", response_class=HTMLResponse)
+async def catalog_import_map_post(draft_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    draft = db.get(ImportDraft, int(draft_id))
+    if not draft:
+        raise HTTPException(status_code=404)
+    columns, rows, csv_error = _import_read_draft_csv(draft)
+    if csv_error:
+        _flash(request, csv_error, "error")
+        return RedirectResponse("/catalog/import", status_code=302)
+
+    manufacturer = db.get(Manufacturer, int(draft.manufacturer_id or 0)) if draft.manufacturer_id else None
+    selected_kind = db.get(DeviceKind, int(draft.device_kind_id or 0)) if draft.device_kind_id else None
+    if not manufacturer or not selected_kind:
+        _flash(request, "Import-Kontext fehlt. Bitte erneut starten.", "error")
+        return RedirectResponse("/catalog/import", status_code=302)
+
+    feature_defs = _feature_defs_for_kind(db, int(selected_kind.id))
+    feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
+    profile_name_default = f"{manufacturer.name} {selected_kind.name}"
+    form = await request.form()
+    mapping_from_form = _import_parse_mapping_form(
+        form,
+        columns=columns,
+        feature_defs_by_key=feature_defs_by_key,
+        profile_name_default=profile_name_default,
+    )
+
+    draft.mapping_json = _json_dump(mapping_from_form)
+    draft.import_profile_id = int(mapping_from_form.get("profile_id") or 0) or None
+    draft.current_step = "map"
+    draft.status = IMPORT_DRAFT_STATUS_MAPPING
+    draft.updated_at = _utcnow_naive()
+    db.add(draft)
+    db.commit()
+
+    validated_mapping, errors = _import_validate_mapping(mapping_from_form, columns=columns, feature_defs_by_key=feature_defs_by_key)
+    if errors["global_errors"] or errors["field_errors"]:
+        draft.mapping_json = _json_dump(validated_mapping)
+        draft.validation_errors_json = _json_dump(errors)
+        draft.status = IMPORT_DRAFT_STATUS_FAILED
+        draft.current_step = "map"
+        draft.updated_at = _utcnow_naive()
+        db.add(draft)
+        db.commit()
+        return _import_map_page_response(
+            request,
+            db=db,
+            user=user,
+            draft=draft,
+            columns=columns,
+            rows=rows,
+            mapping_data=validated_mapping,
+            errors=errors,
+        )
+
+    draft.mapping_json = _json_dump(validated_mapping)
+    draft.validation_errors_json = None
+    draft.status = IMPORT_DRAFT_STATUS_VALIDATED
+    draft.current_step = "run"
+    draft.updated_at = _utcnow_naive()
+    draft.import_profile_id = int(validated_mapping.get("profile_id") or 0) or None
+    db.add(draft)
+    db.commit()
+    return RedirectResponse(f"/catalog/import/{int(draft.id)}/run", status_code=302)
+
+
+@app.get("/catalog/import/{draft_id}/run", response_class=HTMLResponse)
+def catalog_import_run_get(draft_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    draft = db.get(ImportDraft, int(draft_id))
+    if not draft:
+        raise HTTPException(status_code=404)
+    columns, rows, csv_error = _import_read_draft_csv(draft)
+    if csv_error:
+        _flash(request, csv_error, "error")
+        return RedirectResponse("/catalog/import", status_code=302)
+
+    manufacturer = db.get(Manufacturer, int(draft.manufacturer_id or 0)) if draft.manufacturer_id else None
+    selected_kind = db.get(DeviceKind, int(draft.device_kind_id or 0)) if draft.device_kind_id else None
+    if not manufacturer or not selected_kind:
+        _flash(request, "Import-Kontext fehlt. Bitte erneut starten.", "error")
+        return RedirectResponse("/catalog/import", status_code=302)
+
+    feature_defs = _feature_defs_for_kind(db, int(selected_kind.id))
+    feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
+    profile_name_default = f"{manufacturer.name} {selected_kind.name}"
+    mapping_data = _json_load_dict(draft.mapping_json)
+    validated_mapping, errors = _import_validate_mapping(mapping_data, columns=columns, feature_defs_by_key=feature_defs_by_key)
+    if errors["global_errors"] or errors["field_errors"]:
+        draft.validation_errors_json = _json_dump(errors)
+        draft.status = IMPORT_DRAFT_STATUS_FAILED
+        draft.current_step = "map"
+        draft.updated_at = _utcnow_naive()
+        db.add(draft)
+        db.commit()
+        return _import_map_page_response(
+            request,
+            db=db,
+            user=user,
+            draft=draft,
+            columns=columns,
+            rows=rows,
+            mapping_data=validated_mapping,
+            errors=errors,
+        )
+
+    draft.mapping_json = _json_dump(validated_mapping)
+    draft.validation_errors_json = None
+    draft.status = IMPORT_DRAFT_STATUS_VALIDATED
+    draft.current_step = "run"
+    draft.updated_at = _utcnow_naive()
+    db.add(draft)
+    db.commit()
+
+    profile_id = _to_int(validated_mapping.get("profile_id"), _to_int(draft.import_profile_id, 0))
+    active_profile = _pick_import_profile(db, profile_id)
+    unmapped_columns = _import_profile_unmapped_columns(db, profile_id=profile_id, columns=columns) if active_profile else []
+    product_labels = {
+        "sales_name": "Verkaufsbezeichnung",
+        "material_no": "Materialnummer",
+        "manufacturer_name": "Herstellerbezeichnung",
+        "product_title_1": "Produkttitel 1",
+        "product_title_2": "Produkttitel 2",
+        "description": "Beschreibung",
+        "sale_price": "Verkaufspreis",
+        "image_url": "Bild 1 (direkt)",
+    }
+    for idx in range(1, PRODUCT_IMAGE_URL_MAX + 1):
+        product_labels[f"image_url_{idx}"] = f"Bild {idx}"
+    mapped_product_fields = []
+    product_field_map = validated_mapping.get("product_field_map") or {}
+    for key, label in product_labels.items():
+        src = str(product_field_map.get(key) or "").strip()
+        if src:
+            mapped_product_fields.append({"target": label, "source": src})
+    mapped_product_fields.insert(0, {"target": "EAN", "source": str(validated_mapping.get("ean_column") or "")})
+    accessory_map = validated_mapping.get("accessory_map") or {}
+
+    return templates.TemplateResponse(
+        "catalog/import_run.html",
+        _ctx(
+            request,
+            user=user,
+            draft=draft,
+            manufacturer=manufacturer,
+            selected_kind=selected_kind,
+            active_profile=active_profile,
+            profile_name_value=str(validated_mapping.get("profile_name") or profile_name_default),
+            update_profile=bool(validated_mapping.get("update_profile", True)),
+            mapped_product_fields=mapped_product_fields,
+            mapped_feature_fields=[row for row in validated_mapping.get("feature_maps", []) if str(row.get("feature_key") or "").strip()],
+            accessory_source_column=str(accessory_map.get("source_column") or ""),
+            accessory_separator_mode=str(accessory_map.get("separator_mode") or "auto"),
+            total_rows=len(rows),
+            unmapped_columns=unmapped_columns,
+        ),
+    )
+
+
+@app.post("/catalog/import/{draft_id}/run", response_class=HTMLResponse)
+async def catalog_import_run_post(draft_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    draft = db.get(ImportDraft, int(draft_id))
+    if not draft:
+        raise HTTPException(status_code=404)
+    columns, rows, csv_error = _import_read_draft_csv(draft)
+    if csv_error:
+        _flash(request, csv_error, "error")
+        return RedirectResponse("/catalog/import", status_code=302)
+
+    manufacturer = db.get(Manufacturer, int(draft.manufacturer_id or 0)) if draft.manufacturer_id else None
+    selected_kind = db.get(DeviceKind, int(draft.device_kind_id or 0)) if draft.device_kind_id else None
+    if not manufacturer or not selected_kind:
+        _flash(request, "Import-Kontext fehlt. Bitte erneut starten.", "error")
+        return RedirectResponse("/catalog/import", status_code=302)
+
+    feature_defs = _feature_defs_for_kind(db, int(selected_kind.id))
+    feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
+    mapping_data = _json_load_dict(draft.mapping_json)
+    validated_mapping, errors = _import_validate_mapping(mapping_data, columns=columns, feature_defs_by_key=feature_defs_by_key)
+    if errors["global_errors"] or errors["field_errors"]:
+        draft.validation_errors_json = _json_dump(errors)
+        draft.status = IMPORT_DRAFT_STATUS_FAILED
+        draft.current_step = "map"
+        draft.updated_at = _utcnow_naive()
+        db.add(draft)
+        db.commit()
+        return _import_map_page_response(
+            request,
+            db=db,
+            user=user,
+            draft=draft,
+            columns=columns,
+            rows=rows,
+            mapping_data=validated_mapping,
+            errors=errors,
+        )
+
+    draft.mapping_json = _json_dump(validated_mapping)
+    draft.validation_errors_json = None
+    draft.status = IMPORT_DRAFT_STATUS_VALIDATED
+    draft.current_step = "run"
+    draft.updated_at = _utcnow_naive()
+    draft.import_profile_id = int(validated_mapping.get("profile_id") or 0) or None
+    db.add(draft)
+    db.commit()
+
+    profile_id = _to_int(validated_mapping.get("profile_id"), 0)
     profile = _pick_import_profile(db, profile_id)
     if profile and (
-        int(profile.manufacturer_id or 0) != int(manufacturer_row.id)
-        or int(profile.device_kind_id or 0) != int(selected_kind_row.id)
+        int(profile.manufacturer_id or 0) != int(manufacturer.id)
+        or int(profile.device_kind_id or 0) != int(selected_kind.id)
     ):
-        _flash(request, "Gewähltes Profil passt nicht zum Import-Kontext.", "error")
-        return RedirectResponse(back_url, status_code=302)
+        errors = {
+            "global_errors": ["Gewähltes Profil passt nicht zum Import-Kontext."],
+            "field_errors": {"profile_id": "Profil passt nicht zum Kontext."},
+        }
+        draft.validation_errors_json = _json_dump(errors)
+        draft.status = IMPORT_DRAFT_STATUS_FAILED
+        draft.current_step = "map"
+        draft.updated_at = _utcnow_naive()
+        db.add(draft)
+        db.commit()
+        return _import_map_page_response(
+            request,
+            db=db,
+            user=user,
+            draft=draft,
+            columns=columns,
+            rows=rows,
+            mapping_data=validated_mapping,
+            errors=errors,
+        )
+
+    profile_created = False
+    profile_name_default = f"{manufacturer.name} {selected_kind.name}"
+    profile_name = str(validated_mapping.get("profile_name") or "").strip() or profile_name_default
     if not profile:
-        profile_name = (form.get("profile_name") or "").strip() or f"{manufacturer_row.name} {selected_kind_row.name}"
         profile = (
             db.query(ImportProfile)
             .filter(
-                ImportProfile.manufacturer_id == int(manufacturer_row.id),
-                ImportProfile.device_kind_id == int(selected_kind_row.id),
+                ImportProfile.manufacturer_id == int(manufacturer.id),
+                ImportProfile.device_kind_id == int(selected_kind.id),
                 func.lower(ImportProfile.name) == profile_name.lower(),
             )
             .one_or_none()
         )
-        if not profile:
-            profile = ImportProfile(
-                manufacturer_id=int(manufacturer_row.id),
-                device_kind_id=int(selected_kind_row.id),
-                name=profile_name,
-                delimiter=delimiter,
-                encoding=str(encoding or "utf-8"),
-                has_header=bool(has_header),
-                ean_column=ean_column,
-            )
-            db.add(profile)
-            db.flush()
+    if not profile:
+        profile = ImportProfile(
+            manufacturer_id=int(manufacturer.id),
+            device_kind_id=int(selected_kind.id),
+            name=profile_name,
+            delimiter=str(draft.delimiter or ";"),
+            encoding=str(draft.encoding or "utf-8"),
+            has_header=bool(draft.has_header),
+            ean_column=str(validated_mapping.get("ean_column") or ""),
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+        db.add(profile)
+        db.flush()
+        profile_created = True
 
-    profile.delimiter = delimiter
-    profile.encoding = str(encoding or "utf-8")
-    profile.has_header = bool(has_header)
-    profile.ean_column = ean_column
-    _touch_import_profile(db, profile)
-    _save_import_profile_maps(db, profile=profile, product_field_map=product_field_map, feature_maps=feature_maps)
-    db.commit()
-
-    feature_defs_by_key = {str(row.key or "").strip(): row for row in _feature_defs_for_kind(db, int(selected_kind_row.id))}
-    for row in feature_maps:
+    for row in validated_mapping.get("feature_maps", []):
         feature_key = str(row.get("feature_key") or "").strip()
         if not feature_key:
             continue
@@ -5434,36 +12479,47 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
         if not fdef:
             fdef = _upsert_feature_def(
                 db,
-                device_kind_id=int(selected_kind_row.id),
+                device_kind_id=int(selected_kind.id),
                 key=feature_key,
-                label_de=str(row.get("label_de") or feature_key),
+                label_de=str(row.get("label_de") or row.get("feature_label") or feature_key),
                 data_type=str(row.get("data_type") or "text"),
             )
             feature_defs_by_key[feature_key] = fdef
-        row["feature_key"] = feature_key
     db.commit()
+
+    import_run = ImportRun(
+        profile_id=int(profile.id) if profile else None,
+        filename=str(draft.filename_original or Path(str(draft.file_path_tmp or "")).name),
+        started_at=_utcnow_naive(),
+    )
+    db.add(import_run)
+    db.commit()
+    db.refresh(import_run)
+
+    product_field_map = validated_mapping.get("product_field_map") or {}
+    ean_column = str(validated_mapping.get("ean_column") or "")
+    accessory_map = validated_mapping.get("accessory_map") or {}
+    accessory_source_column = str(accessory_map.get("source_column") or "").strip()
+    accessory_separator_mode = str(accessory_map.get("separator_mode") or "auto").strip().lower()
+    if accessory_separator_mode not in ACCESSORY_SEPARATOR_MODES:
+        accessory_separator_mode = "auto"
 
     created = 0
     updated = 0
     skipped = 0
-    errors: list[str] = []
-    run_log: list[str] = []
+    errors_list: list[str] = []
+    warnings_list: list[str] = []
+    open_accessory_preview: list[dict[str, str]] = []
+    accessory_linked_count = 0
+    accessory_open_count = 0
 
-    import_run = ImportRun(
-        profile_id=int(profile.id),
-        filename=str(state.get("filename") or csv_path.name),
-        started_at=dt.datetime.utcnow().replace(tzinfo=None),
-    )
-    db.add(import_run)
-    db.commit()
-
-    start_line = 2 if has_header else 1
+    start_line = 2 if bool(draft.has_header) else 1
     for i, row in enumerate(rows, start=start_line):
         try:
-            ean_digits = re.sub(r"\\D+", "", _csv_value(row, ean_column))
+            ean_digits = re.sub(r"\D+", "", _csv_value(row, ean_column))
             if not ean_digits:
                 skipped += 1
-                errors.append(f"Zeile {i}: EAN fehlt.")
+                errors_list.append(f"Zeile {i}: EAN fehlt.")
                 continue
 
             product = db.query(Product).filter(Product.ean == ean_digits).one_or_none()
@@ -5495,33 +12551,38 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
             product.name = sales_name or product_title_1 or product_title_2 or product.name or f"Produkt {ean_digits}"
             product.item_type = "appliance"
             product.track_mode = "quantity"
-            product.manufacturer_id = int(manufacturer_row.id)
-            product.manufacturer = str(manufacturer_row.name or "").strip() or product.manufacturer
+            product.manufacturer_id = int(manufacturer.id)
+            product.manufacturer = str(manufacturer.name or "").strip() or product.manufacturer
             if not product.manufacturer_name:
-                product.manufacturer_name = str(manufacturer_row.name or "").strip() or None
-            product.device_kind_id = int(selected_kind_row.id)
+                product.manufacturer_name = str(manufacturer.name or "").strip() or None
+            product.device_kind_id = int(selected_kind.id)
             product.device_type_id = None
             product.area_id = None
             product.active = True
+            direct_image_raw = _csv_value(row, product_field_map.get("image_url"))
+            if direct_image_raw:
+                direct_image_url = _normalize_product_image_url(direct_image_raw)
+                if direct_image_url:
+                    product.image_url = direct_image_url
+                else:
+                    warnings_list.append(f"Zeile {i}: Ungültige Bild-URL in Feld 'image_url': {direct_image_raw}")
             for image_key in _product_image_url_keys():
                 image_raw = _csv_value(row, product_field_map.get(image_key))
                 if not image_raw:
                     continue
-                image_url = _normalize_absolute_url(image_raw)
+                image_url = _normalize_product_image_url(image_raw)
                 if not image_url:
-                    errors.append(f"Zeile {i}: Ungültige Bild-URL in Feld '{image_key}': {image_raw}")
+                    warnings_list.append(f"Zeile {i}: Ungültige Bild-URL in Feld '{image_key}': {image_raw}")
                     continue
                 setattr(product, image_key, image_url)
 
             db.add(product)
             db.flush()
 
-            for map_row in feature_maps:
+            for map_row in validated_mapping.get("feature_maps", []):
                 feature_key = str(map_row.get("feature_key") or "").strip()
-                if not feature_key:
-                    continue
                 source_column = str(map_row.get("source_column") or "").strip()
-                if not source_column:
+                if not feature_key or not source_column:
                     continue
                 fdef = feature_defs_by_key.get(feature_key)
                 if not fdef:
@@ -5531,38 +12592,183 @@ async def products_import_run(request: Request, user=Depends(require_admin), db:
                     product_id=int(product.id),
                     feature_def=fdef,
                     raw_value=_csv_value(row, source_column),
+                    manufacturer_id=int(manufacturer.id),
                 )
+
+            if accessory_source_column:
+                accessory_tokens = _import_parse_accessory_tokens(
+                    _csv_value(row, accessory_source_column),
+                    accessory_separator_mode,
+                )
+                for token in accessory_tokens:
+                    candidates = _import_match_accessory_candidates(
+                        db,
+                        token=token,
+                        product_id=int(product.id),
+                        manufacturer_id=int(manufacturer.id),
+                        device_kind_id=int(selected_kind.id),
+                    )
+                    normalized_value = _normalize_search_text(token) or _compact_search_text(token)
+                    ref_status = "not_found"
+                    matched_product_id = None
+                    if len(candidates) == 1:
+                        matched = candidates[0]
+                        matched_product_id = int(matched.id)
+                        link_added = _import_ensure_accessory_link(
+                            db,
+                            product_id=int(product.id),
+                            accessory_product_id=int(matched.id),
+                            source="csv",
+                            import_run_id=int(import_run.id),
+                        )
+                        if link_added:
+                            accessory_linked_count += 1
+                        ref_status = "linked"
+                    elif len(candidates) > 1:
+                        ref_status = "ambiguous"
+                        accessory_open_count += 1
+                        if len(open_accessory_preview) < 50:
+                            open_accessory_preview.append(
+                                {
+                                    "product_id": str(product.id),
+                                    "token": token,
+                                    "status": "mehrdeutig",
+                                }
+                            )
+                    else:
+                        ref_status = "not_found"
+                        accessory_open_count += 1
+                        if len(open_accessory_preview) < 50:
+                            open_accessory_preview.append(
+                                {
+                                    "product_id": str(product.id),
+                                    "token": token,
+                                    "status": "offen",
+                                }
+                            )
+                    db.add(
+                        ProductAccessoryReference(
+                            product_id=int(product.id),
+                            raw_value=token,
+                            normalized_value=normalized_value[:260],
+                            manufacturer_id=int(manufacturer.id),
+                            device_kind_id=int(selected_kind.id),
+                            status=ref_status,
+                            matched_product_id=matched_product_id,
+                            import_run_id=int(import_run.id),
+                            created_at=_utcnow_naive(),
+                        )
+                    )
 
             _refresh_product_search_blob(db, product)
             db.commit()
-            run_log.append(f"Zeile {i}: OK")
-        except Exception as e:
+        except Exception as exc:
             db.rollback()
             skipped += 1
-            errors.append(f"Zeile {i}: {e}")
+            errors_list.append(f"Zeile {i}: {exc}")
 
-    import_run.finished_at = dt.datetime.utcnow().replace(tzinfo=None)
+    resolved_accessory_count = 0
+    try:
+        resolved_accessory_count = _import_resolve_open_accessory_references(db)
+        if resolved_accessory_count:
+            db.commit()
+    except Exception:
+        db.rollback()
+        resolved_accessory_count = 0
+
+    should_update_profile = bool(validated_mapping.get("update_profile", True)) or profile_created
+    profile_updated = False
+    new_profile_columns: list[str] = []
+    if profile:
+        existing_map_rows = db.query(ImportProfileMap).filter(ImportProfileMap.profile_id == int(profile.id)).all()
+        existing_cols = {str(profile.ean_column or "").strip()}
+        for row in existing_map_rows:
+            src = str(row.source_column or "").strip()
+            if src:
+                existing_cols.add(src)
+        selected_cols = {str(validated_mapping.get("ean_column") or "").strip()}
+        for src in (validated_mapping.get("product_field_map") or {}).values():
+            src_clean = str(src or "").strip()
+            if src_clean:
+                selected_cols.add(src_clean)
+        for map_row in validated_mapping.get("feature_maps", []):
+            src_clean = str(map_row.get("source_column") or "").strip()
+            if src_clean:
+                selected_cols.add(src_clean)
+        accessory_src_clean = str((validated_mapping.get("accessory_map") or {}).get("source_column") or "").strip()
+        if accessory_src_clean:
+            selected_cols.add(accessory_src_clean)
+        new_profile_columns = sorted([col for col in selected_cols if col and col not in existing_cols])
+
+        if should_update_profile:
+            profile.delimiter = str(draft.delimiter or ";")
+            profile.encoding = str(draft.encoding or "utf-8")
+            profile.has_header = bool(draft.has_header)
+            profile.ean_column = str(validated_mapping.get("ean_column") or profile.ean_column or "")
+            _touch_import_profile(db, profile)
+            _save_import_profile_maps(
+                db,
+                profile=profile,
+                product_field_map=validated_mapping.get("product_field_map") or {},
+                feature_maps=validated_mapping.get("feature_maps") or [],
+                accessory_map=validated_mapping.get("accessory_map") or {},
+            )
+            db.commit()
+            profile_updated = True
+
+    import_run.finished_at = _utcnow_naive()
     import_run.inserted_count = int(created)
     import_run.updated_count = int(updated)
-    import_run.error_count = int(len(errors))
-    import_run.log_text = "\\n".join((errors + run_log)[:400])
+    import_run.error_count = int(len(errors_list))
+    import_run.log_text = _json_dump(
+        {
+            "errors": errors_list[:120],
+            "warnings": warnings_list[:120],
+            "skipped_count": skipped,
+            "accessory_linked_count": accessory_linked_count,
+            "accessory_open_count": accessory_open_count,
+            "resolved_accessory_count": resolved_accessory_count,
+        }
+    )
     db.add(import_run)
     db.commit()
-    request.session.pop(CSV_IMPORT_STATE_KEY, None)
 
+    has_warnings = bool(warnings_list) or accessory_open_count > 0
+    if len(errors_list) == 0 and not has_warnings:
+        draft.status = IMPORT_DRAFT_STATUS_IMPORTED
+    elif len(errors_list) == 0:
+        draft.status = IMPORT_DRAFT_STATUS_WARNINGS
+    else:
+        draft.status = IMPORT_DRAFT_STATUS_FAILED
+    draft.current_step = "run"
+    draft.mapping_json = _json_dump(validated_mapping)
+    draft.validation_errors_json = _json_dump({"global_errors": errors_list[:50], "field_errors": {}}) if errors_list else None
+    draft.import_profile_id = int(profile.id) if profile else None
+    draft.updated_at = _utcnow_naive()
+    db.add(draft)
+    db.commit()
+
+    reopen_url = f"/catalog/import/{int(draft.id)}/map" if draft.status == IMPORT_DRAFT_STATUS_FAILED else _import_draft_open_url(draft)
     return templates.TemplateResponse(
         "catalog/import_result.html",
         _ctx(
             request,
             user=user,
+            draft=draft,
             created_count=created,
             updated_count=updated,
             skipped_count=skipped,
-            error_count=len(errors),
-            errors_preview=errors[:50],
-            datasheet_saved_count=0,
-            datasheet_error_count=0,
-            datasheet_errors_preview=[],
+            error_count=len(errors_list),
+            errors_preview=errors_list[:50],
+            warning_count=len(warnings_list),
+            warnings_preview=warnings_list[:50],
+            accessory_linked_count=accessory_linked_count,
+            accessory_open_count=accessory_open_count,
+            resolved_accessory_count=resolved_accessory_count,
+            open_accessory_preview=open_accessory_preview[:50],
+            profile_updated=profile_updated,
+            new_profile_columns=new_profile_columns,
+            reopen_url=reopen_url,
         ),
     )
 
@@ -6285,11 +13491,12 @@ def product_detail_get(
             FeatureDef.label_de,
             FeatureDef.key,
             FeatureDef.data_type,
-            FeatureValue.value_text,
+            func.coalesce(FeatureOption.label_de, FeatureValue.value_text),
             FeatureValue.value_num,
             FeatureValue.value_bool,
         )
         .join(FeatureValue, FeatureValue.feature_def_id == FeatureDef.id)
+        .outerjoin(FeatureOption, FeatureOption.id == FeatureValue.option_id)
         .filter(FeatureValue.product_id == int(product_id))
         .order_by(FeatureDef.label_de.asc(), FeatureDef.id.asc())
         .all()
@@ -6327,7 +13534,7 @@ def product_detail_get(
     datasheet_source_url = _build_product_datasheet_url(manufacturer_row, product)
     datasheet_local_attachment = _latest_product_datasheet(db, int(product_id))
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
-    order_draft_key = f"draft:/purchase/orders/from_product:{int(product_id)}"
+    order_draft_key = f"draft:/einkauf/bestellungen/aus-produkt:{int(product_id)}"
     order_form_data: dict[str, str | list[str]] = {}
     if not request.query_params:
         loaded = _draft_get(request, order_draft_key)
@@ -6372,6 +13579,31 @@ def product_detail_get(
         if search_filter is not None:
             candidates_q = candidates_q.filter(search_filter)
         candidate_products = candidates_q.order_by(Product.name.asc()).limit(250).all()
+
+    accessory_links = (
+        db.query(ProductAccessoryLink)
+        .filter(ProductAccessoryLink.product_id == int(product_id))
+        .order_by(ProductAccessoryLink.id.desc())
+        .limit(120)
+        .all()
+    )
+    accessory_product_ids = [int(row.accessory_product_id) for row in accessory_links]
+    accessory_products: dict[int, Product] = {}
+    if accessory_product_ids:
+        accessory_products = {
+            int(row.id): row
+            for row in db.query(Product).filter(Product.id.in_(accessory_product_ids)).all()
+        }
+    accessory_open_refs = (
+        db.query(ProductAccessoryReference)
+        .filter(
+            ProductAccessoryReference.product_id == int(product_id),
+            ProductAccessoryReference.status.in_(("pending", "not_found", "ambiguous")),
+        )
+        .order_by(ProductAccessoryReference.id.desc())
+        .limit(120)
+        .all()
+    )
     loadbee = _loadbee_settings(db, include_secret=True)
     loadbee_api_key = str(loadbee.get("api_key") or "")
     loadbee_enabled = bool(loadbee.get("enabled")) and bool(loadbee_api_key)
@@ -6392,6 +13624,16 @@ def product_detail_get(
     can_show_costs = _can_view_costs(user) and not customer_view
     recommended_sale_cents = _compute_recommended_sale_cents(product.last_cost_cents, rule) if can_show_costs else None
     last_cost_gross_cents = _gross_cents_from_net(product.last_cost_cents) if can_show_costs else None
+    purchase_summary = get_product_purchase_summary(db, int(product_id))
+    purchase_price_rows = list(purchase_summary.get("recent_prices") or [])
+    purchase_supplier_ids = [int(row.supplier_id) for row in purchase_price_rows if int(row.supplier_id or 0) > 0]
+    purchase_price_supplier_map = {int(row.id): row for row in db.query(Supplier).filter(Supplier.id.in_(purchase_supplier_ids)).all()} if purchase_supplier_ids else {}
+    outsmart_settings = _outsmart_settings(db, include_secret=False)
+    outsmart_material_link = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "outsmart", ExternalLink.object_type == "product", ExternalLink.object_id == int(product_id))
+        .one_or_none()
+    )
     margin_cents = None
     if can_show_costs and product.sale_price_cents is not None and last_cost_gross_cents is not None:
         margin_cents = int(product.sale_price_cents) - int(last_cost_gross_cents)
@@ -6444,6 +13686,9 @@ def product_detail_get(
             linked_products=linked_products,
             set_rows=set_rows,
             candidate_products=candidate_products,
+            accessory_links=accessory_links,
+            accessory_products=accessory_products,
+            accessory_open_refs=accessory_open_refs,
             sets_enabled=sets_enabled,
             q=q,
             item_type_labels=ITEM_TYPE_LABELS,
@@ -6457,6 +13702,10 @@ def product_detail_get(
             suppliers=suppliers,
             order_form_data=order_form_data,
             order_draft_key=order_draft_key,
+            purchase_summary=purchase_summary,
+            purchase_price_supplier_map=purchase_price_supplier_map,
+            outsmart_enabled=bool(outsmart_settings.get("enabled")),
+            outsmart_material_link=outsmart_material_link,
             price_rule=rule,
             recommended_sale_cents=recommended_sale_cents,
             can_show_costs=can_show_costs,
@@ -6906,6 +14155,11 @@ def stammdaten_merkmale_redirect(user=Depends(require_admin)):
     return RedirectResponse("/catalog/features", status_code=302)
 
 
+@app.get("/stammdaten/normalisierung")
+def stammdaten_normalisierung_redirect(user=Depends(require_admin)):
+    return RedirectResponse("/catalog/features/normalization", status_code=302)
+
+
 def _manufacturer_datasheet_fields_from_form(form) -> dict[str, str | None]:
     return {
         "datasheet_var_1": (form.get("datasheet_var_1") or "").strip() or None,
@@ -7127,30 +14381,15 @@ def owner_delete(owner_id: int, request: Request, user=Depends(require_admin), d
     row = db.get(Owner, owner_id)
     if not row:
         raise HTTPException(status_code=404)
-
-    usage_tx = db.query(InventoryTransaction).filter(InventoryTransaction.owner_id == owner_id).count()
-    usage_balances = db.query(StockBalance).filter(StockBalance.owner_id == owner_id).count()
-    if usage_tx or usage_balances:
-        usage_parts: list[str] = []
-        if usage_tx:
-            usage_parts.append(f"{usage_tx} Buchung(en)")
-        if usage_balances:
-            usage_parts.append(f"{usage_balances} Bestandszeile(n)")
-        _flash(
-            request,
-            f"Inhaber kann nicht gelöscht werden: noch verwendet in {', '.join(usage_parts)}.",
-            "error",
-        )
-        return RedirectResponse("/stammdaten/inhaber", status_code=302)
-
-    db.delete(row)
+    row.active = False
+    db.add(row)
     try:
         db.commit()
     except Exception as exc:
         db.rollback()
         _flash(request, _friendly_db_write_error(exc), "error")
         return RedirectResponse("/stammdaten/inhaber", status_code=302)
-    _flash(request, "Inhaber gelöscht.", "info")
+    _flash(request, "Inhaber wurde deaktiviert (kein hartes Löschen).", "info")
     return RedirectResponse("/stammdaten/inhaber", status_code=302)
 
 
@@ -7378,6 +14617,13 @@ def supplier_detail(supplier_id: int, request: Request, user=Depends(require_adm
         ),
         reverse=True,
     )
+    condition_summary = get_supplier_condition_summary(db, int(supplier_id))
+    outsmart_settings = _outsmart_settings(db, include_secret=False)
+    outsmart_relation_link = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "outsmart", ExternalLink.object_type == "supplier", ExternalLink.object_id == int(supplier_id))
+        .one_or_none()
+    )
     return templates.TemplateResponse(
         "stammdaten/lieferant_detail.html",
         _ctx(
@@ -7389,6 +14635,10 @@ def supplier_detail(supplier_id: int, request: Request, user=Depends(require_adm
             total_qty=total_qty,
             total_value_known=total_value_known,
             total_value_cents=total_value_cents,
+            condition_summary=condition_summary,
+            price_overview=get_supplier_price_overview(db, int(supplier_id), limit=20),
+            outsmart_enabled=bool(outsmart_settings.get("enabled")),
+            outsmart_relation_link=outsmart_relation_link,
         ),
     )
 
@@ -7831,62 +15081,3458 @@ async def listenansicht_post(request: Request, user=Depends(require_admin), db: 
 
 
 # ---------------------------
+# CRM
+# ---------------------------
+
+CRM_PARTY_TYPE_CHOICES = ("company", "person", "public_entity", "other")
+CRM_CUSTOMER_STATUS_CHOICES = ("active", "inactive", "prospect")
+CRM_CASE_STATUS_CHOICES = ("open", "planned", "in_progress", "completed", "closed", "cancelled")
+CRM_CASE_PRIORITY_CHOICES = ("low", "normal", "high", "urgent")
+CRM_ROLE_ORDERING_PARTY = "ordering_party"
+CRM_ROLE_SERVICE_LOCATION = "service_location"
+CRM_ROLE_INVOICE_RECIPIENT = "invoice_recipient"
+CRM_ROLE_TYPES = (
+    CRM_ROLE_ORDERING_PARTY,
+    CRM_ROLE_SERVICE_LOCATION,
+    CRM_ROLE_INVOICE_RECIPIENT,
+    "onsite_contact",
+    "owner",
+    "tenant",
+    "manager",
+)
+CRM_EXTERNAL_SYSTEM_CHOICES = ("outsmart", "sevdesk", "paperless", "other")
+CRM_MERGE_REJECTIONS_SETTING = "crm_merge_rejections"
+
+
+def _crm_party_type_label(value: str | None) -> str:
+    mapping = {
+        "company": "Unternehmen",
+        "person": "Person",
+        "public_entity": "Öffentliche Stelle",
+        "other": "Sonstiges",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_customer_status_label(value: str | None) -> str:
+    mapping = {
+        "active": "Aktiv",
+        "inactive": "Inaktiv",
+        "prospect": "Interessent",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_case_status_label(value: str | None) -> str:
+    mapping = {
+        "open": "Offen",
+        "planned": "Geplant",
+        "in_progress": "In Arbeit",
+        "completed": "Erledigt",
+        "closed": "Geschlossen",
+        "cancelled": "Abgebrochen",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_case_priority_label(value: str | None) -> str:
+    mapping = {
+        "low": "Niedrig",
+        "normal": "Normal",
+        "high": "Hoch",
+        "urgent": "Dringend",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_role_label(value: str | None) -> str:
+    mapping = {
+        CRM_ROLE_ORDERING_PARTY: "Auftraggeber",
+        CRM_ROLE_SERVICE_LOCATION: "Leistungsort",
+        CRM_ROLE_INVOICE_RECIPIENT: "Rechnungsempfänger",
+        "onsite_contact": "Kontakt vor Ort",
+        "owner": "Eigentümer",
+        "tenant": "Mieter",
+        "manager": "Verwalter",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_external_system_label(value: str | None) -> str:
+    mapping = {
+        "outsmart": "OutSmart",
+        "sevdesk": "sevDesk",
+        "paperless": "Paperless",
+        "other": "Sonstiges",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_external_type_label(value: str | None) -> str:
+    mapping = {
+        "relation": "Relation",
+        "debtor": "Debitor",
+        "contact": "Kontakt",
+        "customernumber": "Kundennummer",
+        "project": "Projekt",
+        "invoice_customer": "Rechnungskunde",
+        "invoicecustomer": "Rechnungskunde",
+        "other": "Sonstiges",
+    }
+    key = _crm_normalize_key(value).replace("_", "")
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_clean_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _crm_normalize_key(value: str | None) -> str:
+    return _crm_clean_text(value).casefold()
+
+
+def _crm_normalize_email(value: str | None) -> str:
+    return _crm_normalize_key(value)
+
+
+def _crm_normalize_phone(value: str | None) -> str:
+    raw = re.sub(r"[^0-9+]", "", str(value or "").strip())
+    if raw.startswith("00"):
+        raw = f"+{raw[2:]}"
+    if raw.startswith("+"):
+        return f"+{re.sub(r'[^0-9]', '', raw)}"
+    return re.sub(r"[^0-9]", "", raw)
+
+
+def _crm_party_display_name(display_name: str | None, first_name: str | None, last_name: str | None) -> str:
+    cleaned = _crm_clean_text(display_name)
+    if cleaned:
+        return cleaned
+    joined = _crm_clean_text(f"{str(first_name or '').strip()} {str(last_name or '').strip()}")
+    return joined
+
+
+def _crm_pick_default_address(address_rows: list[CrmAddress]) -> CrmAddress | None:
+    active_rows = [row for row in address_rows if bool(row.active)]
+    rows = active_rows or address_rows
+    for row in rows:
+        if bool(row.is_default):
+            return row
+    return rows[0] if rows else None
+
+
+def _crm_party_address_maps(db: Session, party_ids: list[int]) -> tuple[dict[int, list[CrmAddress]], dict[int, CrmAddress | None]]:
+    by_party: dict[int, list[CrmAddress]] = {}
+    default_map: dict[int, CrmAddress | None] = {}
+    if not party_ids:
+        return by_party, default_map
+    rows = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id.in_(party_ids))
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.active.desc(), CrmAddress.id.asc())
+        .all()
+    )
+    for row in rows:
+        by_party.setdefault(int(row.party_id), []).append(row)
+    for party_id in party_ids:
+        default_map[int(party_id)] = _crm_pick_default_address(by_party.get(int(party_id), []))
+    return by_party, default_map
+
+
+def _crm_address_summary(address: CrmAddress | None) -> str:
+    if not address:
+        return ""
+    parts = []
+    street = _crm_clean_text(f"{str(address.street or '').strip()} {str(address.house_no or '').strip()}")
+    city = _crm_clean_text(f"{str(address.zip_code or '').strip()} {str(address.city or '').strip()}")
+    if street:
+        parts.append(street)
+    if city:
+        parts.append(city)
+    return " | ".join(parts)
+
+
+def _crm_customer_label(customer: MasterCustomer | None, party: Party | None, address: CrmAddress | None = None) -> str:
+    if not customer or not party:
+        return "-"
+    city = _crm_clean_text(f"{str(address.zip_code or '').strip()} {str(address.city or '').strip()}") if address else ""
+    bits = [str(customer.customer_no_internal or "").strip(), str(party.display_name or "").strip()]
+    if city:
+        bits.append(city)
+    return " | ".join([bit for bit in bits if bit])
+
+
+def _crm_location_label(location: ServiceLocation | None, address: CrmAddress | None = None, customer_label: str = "") -> str:
+    if not location:
+        return "-"
+    bits = [str(location.location_label or "").strip()]
+    if customer_label:
+        bits.append(customer_label)
+    address_text = _crm_address_summary(address)
+    if address_text:
+        bits.append(address_text)
+    return " | ".join([bit for bit in bits if bit])
+
+
+def _crm_parse_address_payload(form, prefix: str = "") -> dict[str, str | bool | None]:
+    return {
+        "label": _crm_clean_text(form.get(f"{prefix}label") or "") or None,
+        "street": _crm_clean_text(form.get(f"{prefix}street") or "") or None,
+        "house_no": _crm_clean_text(form.get(f"{prefix}house_no") or "") or None,
+        "zip_code": _crm_clean_text(form.get(f"{prefix}zip_code") or "") or None,
+        "city": _crm_clean_text(form.get(f"{prefix}city") or "") or None,
+        "country_code": _crm_clean_text(form.get(f"{prefix}country_code") or "") or None,
+        "email": _crm_clean_text(form.get(f"{prefix}email") or "") or None,
+        "phone": _crm_clean_text(form.get(f"{prefix}phone") or "") or None,
+    }
+
+
+def _crm_address_payload_has_content(payload: dict[str, str | bool | None]) -> bool:
+    for key in ("label", "street", "house_no", "zip_code", "city", "country_code", "email", "phone"):
+        if str(payload.get(key) or "").strip():
+            return True
+    return False
+
+
+def _crm_apply_address_payload(address: CrmAddress, payload: dict[str, str | bool | None]) -> None:
+    address.label = str(payload.get("label") or "").strip() or None
+    address.street = str(payload.get("street") or "").strip() or None
+    address.house_no = str(payload.get("house_no") or "").strip() or None
+    address.zip_code = str(payload.get("zip_code") or "").strip() or None
+    address.city = str(payload.get("city") or "").strip() or None
+    address.country_code = str(payload.get("country_code") or "").strip() or None
+    address.email = str(payload.get("email") or "").strip() or None
+    address.phone = str(payload.get("phone") or "").strip() or None
+
+
+def _crm_clear_default_addresses(db: Session, party_id: int, keep_address_id: int = 0) -> None:
+    rows = db.query(CrmAddress).filter(CrmAddress.party_id == int(party_id)).all()
+    for row in rows:
+        row.is_default = int(row.id) == int(keep_address_id)
+        db.add(row)
+
+
+def _crm_next_customer_no(db: Session) -> str:
+    prefix = "KD-"
+    rows = (
+        db.query(MasterCustomer.customer_no_internal)
+        .filter(MasterCustomer.customer_no_internal.like(f"{prefix}%"))
+        .order_by(MasterCustomer.customer_no_internal.desc())
+        .limit(1)
+        .all()
+    )
+    seq = 1
+    if rows and rows[0][0]:
+        tail = str(rows[0][0]).replace(prefix, "", 1)
+        try:
+            seq = int(tail) + 1
+        except Exception:
+            seq = 1
+    return f"{prefix}{seq:06d}"
+
+
+def _crm_next_case_no(db: Session) -> str:
+    year = dt.datetime.utcnow().year
+    prefix = f"VG-{year}-"
+    rows = (
+        db.query(CrmCase.case_no)
+        .filter(CrmCase.case_no.like(f"{prefix}%"))
+        .order_by(CrmCase.case_no.desc())
+        .limit(1)
+        .all()
+    )
+    seq = 1
+    if rows and rows[0][0]:
+        tail = str(rows[0][0]).replace(prefix, "", 1)
+        try:
+            seq = int(tail) + 1
+        except Exception:
+            seq = 1
+    return f"{prefix}{seq:04d}"
+
+
+def _crm_customer_options(db: Session) -> list[dict[str, object]]:
+    rows = db.query(MasterCustomer).order_by(MasterCustomer.customer_no_internal.asc()).all()
+    party_ids = [int(row.party_id) for row in rows]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    _, default_map = _crm_party_address_maps(db, party_ids)
+    options = []
+    for row in rows:
+        party = parties.get(int(row.party_id))
+        options.append({
+            "id": int(row.id),
+            "label": _crm_customer_label(row, party, default_map.get(int(row.party_id))),
+        })
+    return options
+
+
+def _crm_location_options(db: Session) -> list[dict[str, object]]:
+    rows = db.query(ServiceLocation).order_by(ServiceLocation.location_label.asc(), ServiceLocation.id.asc()).all()
+    customer_ids = [int(row.master_customer_id) for row in rows if int(row.master_customer_id or 0) > 0]
+    customers = {int(row.id): row for row in db.query(MasterCustomer).filter(MasterCustomer.id.in_(customer_ids)).all()} if customer_ids else {}
+    party_ids = [int(row.party_id) for row in customers.values()]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    _, default_map = _crm_party_address_maps(db, party_ids)
+    address_ids = [int(row.address_id) for row in rows if int(row.address_id or 0) > 0]
+    addresses = {int(row.id): row for row in db.query(CrmAddress).filter(CrmAddress.id.in_(address_ids)).all()} if address_ids else {}
+    options = []
+    for row in rows:
+        customer = customers.get(int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None
+        party = parties.get(int(customer.party_id or 0)) if customer else None
+        customer_label = _crm_customer_label(customer, party, default_map.get(int(customer.party_id))) if customer and party else ""
+        options.append(
+            {
+                "id": int(row.id),
+                "label": _crm_location_label(row, addresses.get(int(row.address_id or 0)), customer_label),
+            }
+        )
+    return options
+
+
+def _crm_case_role_map(db: Session, case_ids: list[int]) -> dict[int, dict[str, RoleAssignment]]:
+    out: dict[int, dict[str, RoleAssignment]] = {}
+    if not case_ids:
+        return out
+    rows = db.query(RoleAssignment).filter(RoleAssignment.case_id.in_(case_ids)).all()
+    for row in rows:
+        out.setdefault(int(row.case_id), {})[str(row.role_type or "")] = row
+    return out
+
+
+def _crm_recent_case_rows(db: Session, customer_id: int, limit: int = 10) -> list[dict[str, object]]:
+    assignment_rows = (
+        db.query(RoleAssignment)
+        .filter(RoleAssignment.master_customer_id == int(customer_id), RoleAssignment.role_type.in_((CRM_ROLE_ORDERING_PARTY, CRM_ROLE_INVOICE_RECIPIENT)))
+        .order_by(RoleAssignment.id.desc())
+        .limit(max(20, limit * 2))
+        .all()
+    )
+    case_ids = []
+    role_labels: dict[int, str] = {}
+    for row in assignment_rows:
+        case_id = int(row.case_id or 0)
+        if case_id <= 0 or case_id in case_ids:
+            continue
+        case_ids.append(case_id)
+        role_labels[case_id] = _crm_role_label(row.role_type)
+    if not case_ids:
+        return []
+    cases = (
+        db.query(CrmCase)
+        .filter(CrmCase.id.in_(case_ids))
+        .order_by(CrmCase.updated_at.desc(), CrmCase.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [{"row": row, "role_label": role_labels.get(int(row.id), "Kunde")} for row in cases]
+
+
+def _crm_merge_pair_key(a: int, b: int) -> str:
+    left, right = sorted((int(a), int(b)))
+    return f"{left}:{right}"
+
+
+def _crm_merge_rejections(db: Session) -> set[str]:
+    row = db.get(SystemSetting, CRM_MERGE_REJECTIONS_SETTING)
+    if not row or not row.value:
+        return set()
+    try:
+        payload = json.loads(row.value)
+    except Exception:
+        return set()
+    if not isinstance(payload, list):
+        return set()
+    out = set()
+    for item in payload:
+        text = _crm_clean_text(item)
+        if text:
+            out.add(text)
+    return out
+
+
+def _crm_save_merge_rejections(db: Session, values: set[str]) -> None:
+    row = db.get(SystemSetting, CRM_MERGE_REJECTIONS_SETTING)
+    if row is None:
+        row = SystemSetting(key=CRM_MERGE_REJECTIONS_SETTING)
+    row.value = json.dumps(sorted(values), ensure_ascii=False)
+    db.add(row)
+
+
+def _crm_merge_signal_rows(db: Session) -> list[dict[str, object]]:
+    customers = db.query(MasterCustomer).order_by(MasterCustomer.id.asc()).all()
+    if not customers:
+        return []
+    customer_ids = [int(row.id) for row in customers]
+    party_ids = [int(row.party_id) for row in customers]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()}
+    address_map, default_address_map = _crm_party_address_maps(db, party_ids)
+    contact_rows = db.query(CustomerContactPerson).filter(CustomerContactPerson.master_customer_id.in_(customer_ids)).all()
+    contacts_by_customer: dict[int, list[CustomerContactPerson]] = {}
+    for row in contact_rows:
+        contacts_by_customer.setdefault(int(row.master_customer_id), []).append(row)
+    identity_rows = db.query(ExternalIdentity).filter(ExternalIdentity.master_customer_id.in_(customer_ids)).all()
+    identities_by_customer: dict[int, list[ExternalIdentity]] = {}
+    for row in identity_rows:
+        identities_by_customer.setdefault(int(row.master_customer_id), []).append(row)
+    out: list[dict[str, object]] = []
+    for customer in customers:
+        party = parties.get(int(customer.party_id))
+        addresses = address_map.get(int(customer.party_id), [])
+        default_address = default_address_map.get(int(customer.party_id))
+        emails: set[str] = set()
+        phones: set[str] = set()
+        for address in addresses:
+            email_norm = _crm_normalize_email(address.email)
+            phone_norm = _crm_normalize_phone(address.phone)
+            if email_norm:
+                emails.add(email_norm)
+            if phone_norm:
+                phones.add(phone_norm)
+        for contact in contacts_by_customer.get(int(customer.id), []):
+            email_norm = _crm_normalize_email(contact.email)
+            phone_norm = _crm_normalize_phone(contact.phone)
+            if email_norm:
+                emails.add(email_norm)
+            if phone_norm:
+                phones.add(phone_norm)
+        outsmart_keys: set[str] = set()
+        sevdesk_identities: list[ExternalIdentity] = []
+        outsmart_primary = False
+        for identity in identities_by_customer.get(int(customer.id), []):
+            system_name = _crm_normalize_key(identity.system_name)
+            if system_name == "sevdesk":
+                sevdesk_identities.append(identity)
+            if system_name == "outsmart":
+                key_norm = _crm_normalize_key(identity.external_key or identity.external_id)
+                if key_norm:
+                    outsmart_keys.add(key_norm)
+                if bool(identity.is_primary):
+                    outsmart_primary = True
+        out.append(
+            {
+                "customer": customer,
+                "party": party,
+                "default_address": default_address,
+                "name_key": _crm_normalize_key(party.display_name if party else ""),
+                "zip_code": _crm_normalize_key(default_address.zip_code if default_address else ""),
+                "emails": emails,
+                "phones": phones,
+                "outsmart_keys": outsmart_keys,
+                "outsmart_primary": outsmart_primary,
+                "sevdesk_identities": sevdesk_identities,
+            }
+        )
+    return out
+
+
+def _crm_build_merge_candidates(db: Session, q: str = "") -> list[dict[str, object]]:
+    signal_rows = _crm_merge_signal_rows(db)
+    if not signal_rows:
+        return []
+    by_id = {int(item["customer"].id): item for item in signal_rows}
+    rejected = _crm_merge_rejections(db)
+    pair_reasons: dict[str, dict[str, object]] = {}
+
+    def add_reason(customer_ids: list[int], reason_label: str) -> None:
+        ids = sorted({int(value) for value in customer_ids if int(value or 0) > 0})
+        if len(ids) < 2:
+            return
+        for idx, left in enumerate(ids):
+            for right in ids[idx + 1 :]:
+                pair_key = _crm_merge_pair_key(left, right)
+                payload = pair_reasons.setdefault(pair_key, {"ids": (left, right), "reasons": []})
+                reasons = payload["reasons"]
+                if reason_label not in reasons:
+                    reasons.append(reason_label)
+
+    name_zip_groups: dict[tuple[str, str], list[int]] = {}
+    email_groups: dict[str, list[int]] = {}
+    phone_groups: dict[str, list[int]] = {}
+    outsmart_groups: dict[str, list[int]] = {}
+    for item in signal_rows:
+        customer_id = int(item["customer"].id)
+        name_key = str(item["name_key"] or "")
+        zip_code = str(item["zip_code"] or "")
+        if name_key and zip_code:
+            name_zip_groups.setdefault((name_key, zip_code), []).append(customer_id)
+        for email_key in item["emails"]:
+            email_groups.setdefault(email_key, []).append(customer_id)
+        for phone_key in item["phones"]:
+            phone_groups.setdefault(phone_key, []).append(customer_id)
+        for outsmart_key in item["outsmart_keys"]:
+            outsmart_groups.setdefault(outsmart_key, []).append(customer_id)
+
+    for (_, _), ids in name_zip_groups.items():
+        add_reason(ids, "Gleicher Name + PLZ")
+    for email_key, ids in email_groups.items():
+        add_reason(ids, f"Gleiche Mail: {email_key}")
+    for phone_key, ids in phone_groups.items():
+        add_reason(ids, f"Gleiche Telefonnummer: {phone_key}")
+    for outsmart_key, ids in outsmart_groups.items():
+        add_reason(ids, f"Gleiche OutSmart-Nummer: {outsmart_key}")
+
+    query_norm = _crm_normalize_key(q)
+    rows: list[dict[str, object]] = []
+    for pair_key, payload in pair_reasons.items():
+        if pair_key in rejected:
+            continue
+        left_id, right_id = payload["ids"]
+        left = by_id.get(int(left_id))
+        right = by_id.get(int(right_id))
+        if not left or not right:
+            continue
+        ordered = sorted(
+            (left, right),
+            key=lambda item: (
+                0 if item["outsmart_primary"] else 1,
+                0 if item["outsmart_keys"] else 1,
+                0 if _crm_normalize_key(item["customer"].status) == "active" else 1,
+                int(item["customer"].id),
+            ),
+        )
+        master = ordered[0]
+        candidate = ordered[1]
+        reason_text = " | ".join(str(value) for value in payload["reasons"])
+        search_blob = " ".join(
+            [
+                str(master["party"].display_name if master["party"] else ""),
+                str(candidate["party"].display_name if candidate["party"] else ""),
+                reason_text,
+                " ".join(sorted(master["emails"])),
+                " ".join(sorted(candidate["emails"])),
+                " ".join(sorted(master["outsmart_keys"])),
+                " ".join(sorted(candidate["outsmart_keys"])),
+            ]
+        )
+        if query_norm and query_norm not in _crm_normalize_key(search_blob):
+            continue
+        rows.append(
+            {
+                "pair_key": pair_key,
+                "master_customer": master["customer"],
+                "master_party": master["party"],
+                "master_address": master["default_address"],
+                "candidate_customer": candidate["customer"],
+                "candidate_party": candidate["party"],
+                "candidate_address": candidate["default_address"],
+                "reasons": payload["reasons"],
+                "sevdesk_identities": candidate["sevdesk_identities"],
+                "master_outsmart_keys": sorted(master["outsmart_keys"]),
+                "candidate_outsmart_keys": sorted(candidate["outsmart_keys"]),
+            }
+        )
+    rows.sort(key=lambda item: (-len(item["reasons"]), int(item["master_customer"].id), int(item["candidate_customer"].id)))
+    return rows
+
+
+def _crm_set_case_role(
+    db: Session,
+    *,
+    crm_case_id: int,
+    role_type: str,
+    master_customer_id: int | None = None,
+    service_location_id: int | None = None,
+    address_id: int | None = None,
+    note: str | None = None,
+) -> None:
+    row = (
+        db.query(RoleAssignment)
+        .filter(RoleAssignment.case_id == int(crm_case_id), RoleAssignment.role_type == str(role_type))
+        .one_or_none()
+    )
+    if row is None:
+        row = RoleAssignment(case_id=int(crm_case_id), role_type=str(role_type))
+    row.master_customer_id = int(master_customer_id) if int(master_customer_id or 0) > 0 else None
+    row.service_location_id = int(service_location_id) if int(service_location_id or 0) > 0 else None
+    row.address_id = int(address_id) if int(address_id or 0) > 0 else None
+    row.note = _crm_clean_text(note or "") or None
+    db.add(row)
+
+
+def _crm_render_customer_form(
+    request: Request,
+    *,
+    user,
+    page_title: str,
+    form_action: str,
+    customer: MasterCustomer | None,
+    party: Party | None,
+    default_address: CrmAddress | None,
+    form_data: dict[str, str | list[str]],
+    form_errors: dict[str, str],
+):
+    first_error_field_id = _first_error_field_id(
+        form_errors,
+        {
+            "party_type": "crm_party_type",
+            "display_name": "crm_display_name",
+            "status": "crm_customer_status",
+            "address_street": "crm_default_street",
+            "address_city": "crm_default_city",
+        },
+    )
+    return templates.TemplateResponse(
+        "crm/customer_form.html",
+        _ctx(
+            request,
+            user=user,
+            page_title=page_title,
+            form_action=form_action,
+            form_mode="customer",
+            customer=customer,
+            party=party,
+            row=customer,
+            default_address=default_address,
+            party_type_choices=CRM_PARTY_TYPE_CHOICES,
+            status_choices=CRM_CUSTOMER_STATUS_CHOICES,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id=first_error_field_id,
+        ),
+    )
+
+
+def _crm_render_address_form(
+    request: Request,
+    *,
+    user,
+    customer: MasterCustomer,
+    party: Party,
+    row: CrmAddress | None,
+    page_title: str,
+    form_action: str,
+    form_data: dict[str, str | list[str]],
+    form_errors: dict[str, str],
+):
+    first_error_field_id = _first_error_field_id(
+        form_errors,
+        {
+            "label": "crm_address_label",
+            "street": "crm_address_street",
+            "city": "crm_address_city",
+        },
+    )
+    return templates.TemplateResponse(
+        "crm/customer_form.html",
+        _ctx(
+            request,
+            user=user,
+            page_title=page_title,
+            form_action=form_action,
+            form_mode="address",
+            customer=customer,
+            party=party,
+            row=row,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id=first_error_field_id,
+        ),
+    )
+
+
+def _crm_render_location_form(
+    request: Request,
+    *,
+    user,
+    customer: MasterCustomer,
+    party: Party,
+    row: ServiceLocation | None,
+    address_row: CrmAddress | None,
+    address_options: list[dict[str, object]],
+    selected_address_id: int,
+    page_title: str,
+    form_action: str,
+    form_data: dict[str, str | list[str]],
+    form_errors: dict[str, str],
+):
+    first_error_field_id = _first_error_field_id(
+        form_errors,
+        {
+            "location_label": "crm_location_label",
+            "address_street": "crm_location_street",
+            "address_city": "crm_location_city",
+        },
+    )
+    return templates.TemplateResponse(
+        "crm/location_form.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=row,
+            address_row=address_row,
+            address_options=address_options,
+            selected_address_id=int(selected_address_id or 0),
+            page_title=page_title,
+            form_action=form_action,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id=first_error_field_id,
+        ),
+    )
+
+
+def _crm_render_contact_person_form(
+    request: Request,
+    *,
+    user,
+    customer: MasterCustomer,
+    customer_party: Party,
+    row: CustomerContactPerson | None,
+    party: Party | None,
+    page_title: str,
+    form_action: str,
+    form_data: dict[str, str | list[str]],
+    form_errors: dict[str, str],
+):
+    first_error_field_id = _first_error_field_id(
+        form_errors,
+        {
+            "display_name": "crm_contact_display_name",
+            "email": "crm_contact_email",
+            "phone": "crm_contact_phone",
+        },
+    )
+    return templates.TemplateResponse(
+        "crm/contact_person_form.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            customer_party=customer_party,
+            row=row,
+            party=party,
+            page_title=page_title,
+            form_action=form_action,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id=first_error_field_id,
+        ),
+    )
+
+
+def _crm_render_case_form(
+    request: Request,
+    *,
+    user,
+    row: CrmCase | None,
+    page_title: str,
+    form_action: str,
+    form_data: dict[str, str | list[str]],
+    form_errors: dict[str, str],
+    selected_ordering_party_id: int,
+    selected_service_location_id: int,
+    selected_invoice_recipient_id: int,
+    db: Session,
+):
+    first_error_field_id = _first_error_field_id(
+        form_errors,
+        {
+            "title": "crm_case_title",
+            "ordering_party_id": "crm_case_ordering_party_id",
+            "service_location_id": "crm_case_service_location_id",
+            "invoice_recipient_id": "crm_case_invoice_recipient_id",
+        },
+    )
+    return templates.TemplateResponse(
+        "crm/case_form.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            page_title=page_title,
+            form_action=form_action,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id=first_error_field_id,
+            customer_options=_crm_customer_options(db),
+            location_options=_crm_location_options(db),
+            status_choices=CRM_CASE_STATUS_CHOICES,
+            priority_choices=CRM_CASE_PRIORITY_CHOICES,
+            selected_ordering_party_id=int(selected_ordering_party_id or 0),
+            selected_service_location_id=int(selected_service_location_id or 0),
+            selected_invoice_recipient_id=int(selected_invoice_recipient_id or 0),
+        ),
+    )
+
+
+@app.get("/crm/kunden", response_class=HTMLResponse)
+def crm_customers_list(
+    request: Request,
+    user=Depends(require_user),
+    q: str = "",
+    status: str = "",
+    db: Session = Depends(db_session),
+):
+    query = db.query(MasterCustomer).join(Party, Party.id == MasterCustomer.party_id)
+    status_norm = _crm_normalize_key(status)
+    if status_norm in CRM_CUSTOMER_STATUS_CHOICES:
+        query = query.filter(MasterCustomer.status == status_norm)
+    q_norm = _crm_normalize_key(q)
+    if q_norm:
+        like = f"%{q.strip()}%"
+        query = query.filter(
+            or_(
+                MasterCustomer.customer_no_internal.ilike(like),
+                Party.display_name.ilike(like),
+                Party.first_name.ilike(like),
+                Party.last_name.ilike(like),
+                MasterCustomer.note.ilike(like),
+            )
+        )
+    rows = query.order_by(MasterCustomer.created_at.desc(), Party.display_name.asc()).limit(300).all()
+    party_ids = [int(row.party_id) for row in rows]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    _, default_map = _crm_party_address_maps(db, party_ids)
+    out = []
+    for row in rows:
+        party = parties.get(int(row.party_id))
+        default_address = default_map.get(int(row.party_id))
+        search_blob = " ".join(
+            [
+                str(row.customer_no_internal or ""),
+                str(party.display_name if party else ""),
+                str(default_address.city if default_address else ""),
+                str(default_address.email if default_address else ""),
+                str(default_address.phone if default_address else ""),
+            ]
+        )
+        if q_norm and q_norm not in _crm_normalize_key(search_blob):
+            continue
+        out.append(
+            {
+                "customer": row,
+                "party": party,
+                "default_address": default_address,
+                "city_label": _crm_clean_text(f"{str(default_address.zip_code or '').strip()} {str(default_address.city or '').strip()}") if default_address else "",
+                "status_label": _crm_customer_status_label(row.status),
+            }
+        )
+    return templates.TemplateResponse(
+        "crm/customers_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=out,
+            q=q.strip(),
+            status=status_norm,
+            status_choices=CRM_CUSTOMER_STATUS_CHOICES,
+        ),
+    )
+
+
+@app.get("/crm/kunden/neu", response_class=HTMLResponse)
+def crm_customer_new_get(request: Request, user=Depends(require_admin)):
+    return _crm_render_customer_form(
+        request,
+        user=user,
+        page_title="Kunde anlegen",
+        form_action="/crm/kunden/neu",
+        customer=None,
+        party=None,
+        default_address=None,
+        form_data={},
+        form_errors={},
+    )
+
+
+@app.post("/crm/kunden/neu")
+async def crm_customer_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    party_type = _crm_normalize_key(form.get("party_type")) or "company"
+    display_name = _crm_party_display_name(form.get("display_name"), form.get("first_name"), form.get("last_name"))
+    status = _crm_normalize_key(form.get("status")) or "active"
+    note = _crm_clean_text(form.get("note") or "") or None
+    address_payload = _crm_parse_address_payload(form, prefix="address_")
+    if party_type not in CRM_PARTY_TYPE_CHOICES:
+        form_errors["party_type"] = "Bitte einen gültigen Kundentyp wählen."
+    if not display_name:
+        form_errors["display_name"] = "Ein Anzeigename ist Pflicht."
+    if status not in CRM_CUSTOMER_STATUS_CHOICES:
+        form_errors["status"] = "Bitte einen gültigen Status wählen."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_customer_form(
+            request,
+            user=user,
+            page_title="Kunde anlegen",
+            form_action="/crm/kunden/neu",
+            customer=None,
+            party=None,
+            default_address=None,
+            form_data=form_data,
+            form_errors=form_errors,
+        )
+    party = Party(
+        party_type=party_type,
+        display_name=display_name,
+        first_name=_crm_clean_text(form.get("first_name") or "") or None,
+        last_name=_crm_clean_text(form.get("last_name") or "") or None,
+        active=form.get("active") == "on",
+        note=note,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(party)
+    db.flush()
+    customer = MasterCustomer(
+        party_id=int(party.id),
+        customer_no_internal=_crm_next_customer_no(db),
+        status=status,
+        note=note,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(customer)
+    db.flush()
+    if _crm_address_payload_has_content(address_payload):
+        address = CrmAddress(
+            party_id=int(party.id),
+            is_default=True,
+            active=True,
+        )
+        _crm_apply_address_payload(address, address_payload)
+        if not address.label:
+            address.label = "Hauptadresse"
+        db.add(address)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_customer_form(
+            request,
+            user=user,
+            page_title="Kunde anlegen",
+            form_action="/crm/kunden/neu",
+            customer=None,
+            party=None,
+            default_address=None,
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+        )
+    _flash(request, "Kunde angelegt.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}", response_class=HTMLResponse)
+def crm_customer_detail(
+    customer_id: int,
+    request: Request,
+    user=Depends(require_user),
+    timeline_filter: str = "all",
+    sevdesk_q: str = "",
+    db: Session = Depends(db_session),
+):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    addresses = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id == int(party.id))
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.active.desc(), CrmAddress.id.asc())
+        .all()
+    )
+    default_address = _crm_pick_default_address(addresses)
+    contact_rows_raw = (
+        db.query(CustomerContactPerson)
+        .filter(CustomerContactPerson.master_customer_id == int(customer.id))
+        .order_by(CustomerContactPerson.active.desc(), CustomerContactPerson.id.asc())
+        .all()
+    )
+    contact_party_ids = [int(row.party_id) for row in contact_rows_raw]
+    contact_parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(contact_party_ids)).all()} if contact_party_ids else {}
+    contact_rows = [{"row": row, "party": contact_parties.get(int(row.party_id))} for row in contact_rows_raw]
+    location_rows_raw = (
+        db.query(ServiceLocation)
+        .filter(ServiceLocation.master_customer_id == int(customer.id))
+        .order_by(ServiceLocation.active.desc(), ServiceLocation.location_label.asc(), ServiceLocation.id.asc())
+        .all()
+    )
+    location_address_ids = [int(row.address_id) for row in location_rows_raw if int(row.address_id or 0) > 0]
+    location_addresses = {int(row.id): row for row in db.query(CrmAddress).filter(CrmAddress.id.in_(location_address_ids)).all()} if location_address_ids else {}
+    location_rows = [{"row": row, "address": location_addresses.get(int(row.address_id or 0))} for row in location_rows_raw]
+    identities = (
+        db.query(ExternalIdentity)
+        .filter(ExternalIdentity.master_customer_id == int(customer.id))
+        .order_by(ExternalIdentity.system_name.asc(), ExternalIdentity.external_type.asc(), ExternalIdentity.id.asc())
+        .all()
+    )
+    outsmart_settings = _outsmart_settings(db, include_secret=False)
+    outsmart_relation_link = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == "outsmart",
+            ExternalLink.object_type == "master_customer",
+            ExternalLink.object_id == int(customer.id),
+        )
+        .one_or_none()
+    )
+    sevdesk_settings = _sevdesk_settings(db, include_secret=True)
+    sevdesk_results: list[dict] = []
+    sevdesk_identities = [row for row in identities if _crm_normalize_key(row.system_name) == "sevdesk"]
+    if str(sevdesk_q or "").strip() and bool(sevdesk_settings.get("enabled")) and bool(sevdesk_settings.get("api_token")):
+        try:
+            search_text = str(sevdesk_q or "").strip()
+            sevdesk_results = sevdesk_find_contact(
+                sevdesk_settings,
+                customer_number=search_text if search_text.replace("-", "").replace("/", "").isdigit() else str(customer.customer_no_internal or ""),
+                name=search_text if "@" not in search_text else str(party.display_name or ""),
+                city=str(default_address.city or "") if default_address else "",
+                zip_code=str(default_address.zip_code or "") if default_address else "",
+                email=search_text if "@" in search_text else str(default_address.email or "") if default_address else "",
+                limit=10,
+            )
+            search_norm = _crm_normalize_key(sevdesk_q)
+            sevdesk_results = [
+                row
+                for row in sevdesk_results
+                if not search_norm
+                or search_norm
+                in _crm_normalize_key(
+                    " ".join(
+                        [
+                            str(sevdesk_first_value(row, ("name", "displayName")) or ""),
+                            str(sevdesk_first_value(row, ("customerNumber", "customerNo")) or ""),
+                            str(sevdesk_first_value(row, ("email", "emailAddress")) or ""),
+                            str(sevdesk_first_value(row, ("city", "zip")) or ""),
+                        ]
+                    )
+                )
+            ]
+        except Exception as exc:
+            _flash(request, f"sevDesk-Suche fehlgeschlagen: {exc}", "error")
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    recent_case_rows = _crm_recent_case_rows(db, int(customer.id))
+    related_case_ids = [int(item["row"].id) for item in recent_case_rows if int(item["row"].id or 0) > 0]
+    ai_related_logs = (
+        db.query(AiDecisionLog)
+        .filter(
+            or_(
+                and_(AiDecisionLog.related_object_type == "master_customer", AiDecisionLog.related_object_id == int(customer.id)),
+                and_(AiDecisionLog.related_object_type == "crm_case", AiDecisionLog.related_object_id.in_(related_case_ids or [0])),
+            )
+        )
+        .order_by(AiDecisionLog.created_at.desc(), AiDecisionLog.id.desc())
+        .limit(8)
+        .all()
+    )
+    return templates.TemplateResponse(
+        "crm/customer_detail.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            default_address=default_address,
+            addresses=addresses,
+            contact_rows=contact_rows,
+            location_rows=location_rows,
+            identities=identities,
+            sevdesk_identities=sevdesk_identities,
+            sevdesk_enabled=bool(sevdesk_settings.get("enabled")),
+            sevdesk_api_token_set=bool(sevdesk_settings.get("api_token")),
+            sevdesk_search_query=str(sevdesk_q or "").strip(),
+            sevdesk_search_results=sevdesk_results,
+            recent_case_rows=recent_case_rows,
+            customer_objects=_customer_objects_for_customer(db, int(customer.id), limit=8),
+            timeline_rows=_crm_timeline_rows_for_customer(db, int(customer.id), limit=20, timeline_filter=timeline_filter),
+            timeline_filter=(timeline_filter or "all").strip().lower() or "all",
+            outsmart_enabled=bool(outsmart_settings.get("enabled")),
+            outsmart_relation_link=outsmart_relation_link,
+            ai_related_logs=ai_related_logs,
+            paperless_links=_paperless_links_for_object(db, "customer", int(customer.id)),
+            local_attachments=_attachments_for_entity(db, "customer", int(customer.id)),
+            paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+        ),
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/outsmart/synchronisieren")
+def crm_customer_outsmart_sync(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")):
+        _flash(request, "OutSmart ist deaktiviert.", "error")
+        return RedirectResponse(f"/crm/kunden/{customer_id}", status_code=302)
+    if not bool(settings.get("token")) or not bool(settings.get("software_token")):
+        _flash(request, "Bitte zuerst die OutSmart-Zugangsdaten vervollständigen.", "error")
+        return RedirectResponse(f"/crm/kunden/{customer_id}", status_code=302)
+    _, default_map = _crm_party_address_maps(db, [int(party.id)])
+    address = default_map.get(int(party.id))
+    payload_row = _outsmart_relation_payload_for_customer(db, customer, party, address)
+    job = _start_sync_job(db, system_name="outsmart", direction="push", entity_type="relation", log_text=f"Kunde {customer.customer_no_internal}")
+    try:
+        result = outsmart_push_relation(settings, payload_row)
+        result_payload = _outsmart_first_row(result) or {}
+        row_id = _outsmart_row_id(result_payload) or outsmart_first_value(result, ("RowId", "row_id", "id"))
+        deep_link = _outsmart_pick_url(result_payload, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(
+            _outsmart_settings(db, include_secret=False),
+            entity_type="relation",
+            row_id=row_id or None,
+            external_key=str(payload_row.get("RelationNo") or customer.customer_no_internal),
+        )
+        _upsert_external_link(
+            db,
+            system_name="outsmart",
+            object_type="master_customer",
+            object_id=int(customer.id),
+            external_key=str(payload_row.get("RelationNo") or customer.customer_no_internal),
+            external_row_id=row_id or None,
+            deep_link_url=deep_link or None,
+        )
+        _crm_add_timeline_event(
+            db,
+            master_customer_id=int(customer.id),
+            source_system="outsmart",
+            event_type="relation_push",
+            title="Kunde nach OutSmart synchronisiert",
+            body=f"Relation: {payload_row.get('RelationNo') or customer.customer_no_internal}",
+            event_ts=_utcnow_naive(),
+            external_ref=row_id or str(payload_row.get("RelationNo") or customer.customer_no_internal),
+            meta={"deep_link_url": deep_link or "", "relation_no": payload_row.get("RelationNo")},
+        )
+        _finish_sync_job(db, job, status="done", log_text=f"Relation exportiert: {payload_row.get('RelationNo')} ({row_id or '-'})")
+        db.commit()
+        _flash(request, "Kunde nach OutSmart synchronisiert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"OutSmart-Synchronisierung fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/crm/kunden/{customer_id}", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}/objekte", response_class=HTMLResponse)
+def crm_customer_objects(customer_id: int, request: Request, user=Depends(require_user), object_id: int = 0, db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    rows = _customer_objects_for_customer(db, int(customer.id), limit=120)
+    selected = None
+    if int(object_id or 0) > 0:
+        for item in rows:
+            if int(item.id) == int(object_id):
+                selected = item
+                break
+    if selected is None and rows:
+        selected = rows[0]
+    selected_workorders: list[OutsmartWorkorder] = []
+    object_parts: list[dict | str] = []
+    freefields: dict[str, object] = {}
+    if selected:
+        selected_workorders = (
+            db.query(OutsmartWorkorder)
+            .filter(OutsmartWorkorder.customer_object_id == int(selected.id))
+            .order_by(OutsmartWorkorder.updated_at.desc(), OutsmartWorkorder.id.desc())
+            .limit(25)
+            .all()
+        )
+        object_parts = _outsmart_list_json(selected.object_parts_json)
+        try:
+            loaded = json.loads(selected.freefields_json or "{}")
+            if isinstance(loaded, dict):
+                freefields = loaded
+        except Exception:
+            freefields = {}
+    return templates.TemplateResponse(
+        "crm/customer_objects.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            rows=rows,
+            selected=selected,
+            selected_workorders=selected_workorders,
+            object_parts=object_parts,
+            freefields=freefields,
+        ),
+    )
+
+
+@app.get("/crm/kunden/{customer_id}/bearbeiten", response_class=HTMLResponse)
+def crm_customer_edit_get(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    default_address = _crm_pick_default_address(
+        db.query(CrmAddress).filter(CrmAddress.party_id == int(party.id)).order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc()).all()
+    )
+    return _crm_render_customer_form(
+        request,
+        user=user,
+        page_title=f"Kunde bearbeiten: {customer.customer_no_internal}",
+        form_action=f"/crm/kunden/{int(customer.id)}/bearbeiten",
+        customer=customer,
+        party=party,
+        default_address=default_address,
+        form_data={},
+        form_errors={},
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/bearbeiten")
+async def crm_customer_edit_post(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    default_address = _crm_pick_default_address(
+        db.query(CrmAddress).filter(CrmAddress.party_id == int(party.id)).order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc()).all()
+    )
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    party_type = _crm_normalize_key(form.get("party_type")) or "company"
+    display_name = _crm_party_display_name(form.get("display_name"), form.get("first_name"), form.get("last_name"))
+    status = _crm_normalize_key(form.get("status")) or customer.status
+    note = _crm_clean_text(form.get("note") or "") or None
+    address_payload = _crm_parse_address_payload(form, prefix="address_")
+    if party_type not in CRM_PARTY_TYPE_CHOICES:
+        form_errors["party_type"] = "Bitte einen gültigen Kundentyp wählen."
+    if not display_name:
+        form_errors["display_name"] = "Ein Anzeigename ist Pflicht."
+    if status not in CRM_CUSTOMER_STATUS_CHOICES:
+        form_errors["status"] = "Bitte einen gültigen Status wählen."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_customer_form(
+            request,
+            user=user,
+            page_title=f"Kunde bearbeiten: {customer.customer_no_internal}",
+            form_action=f"/crm/kunden/{int(customer.id)}/bearbeiten",
+            customer=customer,
+            party=party,
+            default_address=default_address,
+            form_data=form_data,
+            form_errors=form_errors,
+        )
+    party.party_type = party_type
+    party.display_name = display_name
+    party.first_name = _crm_clean_text(form.get("first_name") or "") or None
+    party.last_name = _crm_clean_text(form.get("last_name") or "") or None
+    party.active = form.get("active") == "on"
+    party.note = note
+    party.updated_at = _utcnow_naive()
+    customer.status = status
+    customer.note = note
+    customer.updated_at = _utcnow_naive()
+    db.add(party)
+    db.add(customer)
+    if _crm_address_payload_has_content(address_payload):
+        address = default_address or CrmAddress(party_id=int(party.id), active=True)
+        _crm_apply_address_payload(address, address_payload)
+        address.is_default = True
+        if not address.label:
+            address.label = "Hauptadresse"
+        db.add(address)
+        db.flush()
+        _crm_clear_default_addresses(db, int(party.id), int(address.id))
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_customer_form(
+            request,
+            user=user,
+            page_title=f"Kunde bearbeiten: {customer.customer_no_internal}",
+            form_action=f"/crm/kunden/{int(customer.id)}/bearbeiten",
+            customer=customer,
+            party=party,
+            default_address=default_address,
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+        )
+    _flash(request, "Kunde gespeichert.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}/adressen/neu", response_class=HTMLResponse)
+def crm_customer_address_new_get(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    return _crm_render_address_form(
+        request,
+        user=user,
+        customer=customer,
+        party=party,
+        row=None,
+        page_title="Adresse anlegen",
+        form_action=f"/crm/kunden/{int(customer.id)}/adressen/neu",
+        form_data={},
+        form_errors={},
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/adressen/neu")
+async def crm_customer_address_new_post(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    payload = _crm_parse_address_payload(form)
+    if not _crm_address_payload_has_content(payload):
+        form_errors["street"] = "Bitte mindestens Anschrift oder Kontaktdaten eingeben."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_address_form(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=None,
+            page_title="Adresse anlegen",
+            form_action=f"/crm/kunden/{int(customer.id)}/adressen/neu",
+            form_data=form_data,
+            form_errors=form_errors,
+        )
+    row = CrmAddress(
+        party_id=int(party.id),
+        active=form.get("active") == "on",
+        is_default=form.get("is_default") == "on",
+    )
+    _crm_apply_address_payload(row, payload)
+    if not row.label:
+        row.label = "Adresse"
+    db.add(row)
+    db.flush()
+    if bool(row.is_default):
+        _crm_clear_default_addresses(db, int(party.id), int(row.id))
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_address_form(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=None,
+            page_title="Adresse anlegen",
+            form_action=f"/crm/kunden/{int(customer.id)}/adressen/neu",
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+        )
+    _flash(request, "Adresse angelegt.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}/adressen/{address_id}/bearbeiten", response_class=HTMLResponse)
+def crm_customer_address_edit_get(customer_id: int, address_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    row = db.get(CrmAddress, address_id)
+    if not party or not row or int(row.party_id or 0) != int(party.id):
+        raise HTTPException(status_code=404)
+    return _crm_render_address_form(
+        request,
+        user=user,
+        customer=customer,
+        party=party,
+        row=row,
+        page_title="Adresse bearbeiten",
+        form_action=f"/crm/kunden/{int(customer.id)}/adressen/{int(row.id)}/bearbeiten",
+        form_data={},
+        form_errors={},
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/adressen/{address_id}/bearbeiten")
+async def crm_customer_address_edit_post(customer_id: int, address_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    row = db.get(CrmAddress, address_id)
+    if not party or not row or int(row.party_id or 0) != int(party.id):
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    payload = _crm_parse_address_payload(form)
+    if not _crm_address_payload_has_content(payload):
+        form_errors["street"] = "Bitte mindestens Anschrift oder Kontaktdaten eingeben."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_address_form(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=row,
+            page_title="Adresse bearbeiten",
+            form_action=f"/crm/kunden/{int(customer.id)}/adressen/{int(row.id)}/bearbeiten",
+            form_data=form_data,
+            form_errors=form_errors,
+        )
+    _crm_apply_address_payload(row, payload)
+    row.active = form.get("active") == "on"
+    row.is_default = form.get("is_default") == "on"
+    if not row.label:
+        row.label = "Adresse"
+    db.add(row)
+    db.flush()
+    if bool(row.is_default):
+        _crm_clear_default_addresses(db, int(party.id), int(row.id))
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_address_form(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=row,
+            page_title="Adresse bearbeiten",
+            form_action=f"/crm/kunden/{int(customer.id)}/adressen/{int(row.id)}/bearbeiten",
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+        )
+    _flash(request, "Adresse gespeichert.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}/standorte/neu", response_class=HTMLResponse)
+def crm_location_new_get(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    address_rows = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id == int(party.id))
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc())
+        .all()
+    )
+    address_options = [{"id": int(row.id), "label": _crm_address_summary(row) or (row.label or f"Adresse {row.id}")} for row in address_rows]
+    return _crm_render_location_form(
+        request,
+        user=user,
+        customer=customer,
+        party=party,
+        row=None,
+        address_row=None,
+        address_options=address_options,
+        selected_address_id=0,
+        page_title="Standort anlegen",
+        form_action=f"/crm/kunden/{int(customer.id)}/standorte/neu",
+        form_data={},
+        form_errors={},
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/standorte/neu")
+async def crm_location_new_post(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    address_rows = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id == int(party.id))
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc())
+        .all()
+    )
+    address_options = [{"id": int(row.id), "label": _crm_address_summary(row) or (row.label or f"Adresse {row.id}")} for row in address_rows]
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    location_label = _crm_clean_text(form.get("location_label") or "")
+    selected_address_id = _to_int(form.get("existing_address_id"), 0)
+    address_payload = _crm_parse_address_payload(form, prefix="address_")
+    if not location_label:
+        form_errors["location_label"] = "Eine Standortbezeichnung ist Pflicht."
+    selected_address = db.get(CrmAddress, selected_address_id) if selected_address_id > 0 else None
+    if selected_address and int(selected_address.party_id or 0) != int(party.id):
+        selected_address = None
+        form_errors["address_street"] = "Die ausgewählte Adresse gehört nicht zu diesem Kunden."
+    if selected_address is None and not _crm_address_payload_has_content(address_payload):
+        form_errors["address_street"] = "Bitte eine vorhandene Adresse wählen oder eine neue Adresse erfassen."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_location_form(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=None,
+            address_row=None,
+            address_options=address_options,
+            selected_address_id=selected_address_id,
+            page_title="Standort anlegen",
+            form_action=f"/crm/kunden/{int(customer.id)}/standorte/neu",
+            form_data=form_data,
+            form_errors=form_errors,
+        )
+    address_row = selected_address
+    if address_row is None:
+        address_row = CrmAddress(party_id=int(party.id), active=True, is_default=False)
+        _crm_apply_address_payload(address_row, address_payload)
+        if not address_row.label:
+            address_row.label = location_label
+        db.add(address_row)
+        db.flush()
+    else:
+        if _crm_address_payload_has_content(address_payload):
+            _crm_apply_address_payload(address_row, address_payload)
+            if not address_row.label:
+                address_row.label = location_label
+            db.add(address_row)
+    row = ServiceLocation(
+        master_customer_id=int(customer.id),
+        party_id=int(party.id),
+        address_id=int(address_row.id),
+        location_label=location_label,
+        note=_crm_clean_text(form.get("note") or "") or None,
+        active=form.get("active") == "on",
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_location_form(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=None,
+            address_row=address_row if getattr(address_row, "id", None) else None,
+            address_options=address_options,
+            selected_address_id=selected_address_id,
+            page_title="Standort anlegen",
+            form_action=f"/crm/kunden/{int(customer.id)}/standorte/neu",
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+        )
+    _flash(request, "Standort angelegt.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}/standorte/{location_id}/bearbeiten", response_class=HTMLResponse)
+def crm_location_edit_get(customer_id: int, location_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    row = db.get(ServiceLocation, location_id)
+    if not customer or not row or int(row.master_customer_id or 0) != int(customer.id):
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    address_rows = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id == int(party.id))
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc())
+        .all()
+    )
+    address_options = [{"id": int(item.id), "label": _crm_address_summary(item) or (item.label or f"Adresse {item.id}")} for item in address_rows]
+    address_row = db.get(CrmAddress, int(row.address_id or 0)) if int(row.address_id or 0) > 0 else None
+    return _crm_render_location_form(
+        request,
+        user=user,
+        customer=customer,
+        party=party,
+        row=row,
+        address_row=address_row,
+        address_options=address_options,
+        selected_address_id=int(row.address_id or 0),
+        page_title="Standort bearbeiten",
+        form_action=f"/crm/kunden/{int(customer.id)}/standorte/{int(row.id)}/bearbeiten",
+        form_data={},
+        form_errors={},
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/standorte/{location_id}/bearbeiten")
+async def crm_location_edit_post(customer_id: int, location_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    row = db.get(ServiceLocation, location_id)
+    if not customer or not row or int(row.master_customer_id or 0) != int(customer.id):
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        raise HTTPException(status_code=404)
+    address_rows = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id == int(party.id))
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc())
+        .all()
+    )
+    address_options = [{"id": int(item.id), "label": _crm_address_summary(item) or (item.label or f"Adresse {item.id}")} for item in address_rows]
+    current_address = db.get(CrmAddress, int(row.address_id or 0)) if int(row.address_id or 0) > 0 else None
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    location_label = _crm_clean_text(form.get("location_label") or "")
+    selected_address_id = _to_int(form.get("existing_address_id"), 0)
+    address_payload = _crm_parse_address_payload(form, prefix="address_")
+    if not location_label:
+        form_errors["location_label"] = "Eine Standortbezeichnung ist Pflicht."
+    selected_address = db.get(CrmAddress, selected_address_id) if selected_address_id > 0 else None
+    if selected_address and int(selected_address.party_id or 0) != int(party.id):
+        selected_address = None
+        form_errors["address_street"] = "Die ausgewählte Adresse gehört nicht zu diesem Kunden."
+    if selected_address is None and not _crm_address_payload_has_content(address_payload):
+        form_errors["address_street"] = "Bitte eine vorhandene Adresse wählen oder eine neue Adresse erfassen."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_location_form(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=row,
+            address_row=current_address,
+            address_options=address_options,
+            selected_address_id=selected_address_id,
+            page_title="Standort bearbeiten",
+            form_action=f"/crm/kunden/{int(customer.id)}/standorte/{int(row.id)}/bearbeiten",
+            form_data=form_data,
+            form_errors=form_errors,
+        )
+    address_row = selected_address
+    if address_row is None:
+        address_row = CrmAddress(party_id=int(party.id), active=True, is_default=False)
+        _crm_apply_address_payload(address_row, address_payload)
+        if not address_row.label:
+            address_row.label = location_label
+        db.add(address_row)
+        db.flush()
+    else:
+        if _crm_address_payload_has_content(address_payload):
+            _crm_apply_address_payload(address_row, address_payload)
+            if not address_row.label:
+                address_row.label = location_label
+            db.add(address_row)
+    row.address_id = int(address_row.id)
+    row.location_label = location_label
+    row.note = _crm_clean_text(form.get("note") or "") or None
+    row.active = form.get("active") == "on"
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_location_form(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            row=row,
+            address_row=address_row,
+            address_options=address_options,
+            selected_address_id=selected_address_id,
+            page_title="Standort bearbeiten",
+            form_action=f"/crm/kunden/{int(customer.id)}/standorte/{int(row.id)}/bearbeiten",
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+        )
+    _flash(request, "Standort gespeichert.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}/kontaktpersonen/neu", response_class=HTMLResponse)
+def crm_contact_new_get(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    customer_party = db.get(Party, int(customer.party_id))
+    if not customer_party:
+        raise HTTPException(status_code=404)
+    return _crm_render_contact_person_form(
+        request,
+        user=user,
+        customer=customer,
+        customer_party=customer_party,
+        row=None,
+        party=None,
+        page_title="Kontaktperson anlegen",
+        form_action=f"/crm/kunden/{int(customer.id)}/kontaktpersonen/neu",
+        form_data={},
+        form_errors={},
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/kontaktpersonen/neu")
+async def crm_contact_new_post(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    customer_party = db.get(Party, int(customer.party_id))
+    if not customer_party:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    display_name = _crm_party_display_name(form.get("display_name"), form.get("first_name"), form.get("last_name"))
+    if not display_name:
+        form_errors["display_name"] = "Ein Anzeigename ist Pflicht."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_contact_person_form(
+            request,
+            user=user,
+            customer=customer,
+            customer_party=customer_party,
+            row=None,
+            party=None,
+            page_title="Kontaktperson anlegen",
+            form_action=f"/crm/kunden/{int(customer.id)}/kontaktpersonen/neu",
+            form_data=form_data,
+            form_errors=form_errors,
+        )
+    party = Party(
+        party_type="person",
+        display_name=display_name,
+        first_name=_crm_clean_text(form.get("first_name") or "") or None,
+        last_name=_crm_clean_text(form.get("last_name") or "") or None,
+        active=form.get("active") == "on",
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(party)
+    db.flush()
+    row = CustomerContactPerson(
+        master_customer_id=int(customer.id),
+        party_id=int(party.id),
+        role_label=_crm_clean_text(form.get("role_label") or "") or None,
+        email=_crm_clean_text(form.get("email") or "") or None,
+        phone=_crm_clean_text(form.get("phone") or "") or None,
+        active=form.get("active") == "on",
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_contact_person_form(
+            request,
+            user=user,
+            customer=customer,
+            customer_party=customer_party,
+            row=None,
+            party=None,
+            page_title="Kontaktperson anlegen",
+            form_action=f"/crm/kunden/{int(customer.id)}/kontaktpersonen/neu",
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+        )
+    _flash(request, "Kontaktperson angelegt.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}/kontaktpersonen/{contact_id}/bearbeiten", response_class=HTMLResponse)
+def crm_contact_edit_get(customer_id: int, contact_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    row = db.get(CustomerContactPerson, contact_id)
+    if not customer or not row or int(row.master_customer_id or 0) != int(customer.id):
+        raise HTTPException(status_code=404)
+    customer_party = db.get(Party, int(customer.party_id))
+    party = db.get(Party, int(row.party_id or 0))
+    if not customer_party or not party:
+        raise HTTPException(status_code=404)
+    return _crm_render_contact_person_form(
+        request,
+        user=user,
+        customer=customer,
+        customer_party=customer_party,
+        row=row,
+        party=party,
+        page_title="Kontaktperson bearbeiten",
+        form_action=f"/crm/kunden/{int(customer.id)}/kontaktpersonen/{int(row.id)}/bearbeiten",
+        form_data={},
+        form_errors={},
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/kontaktpersonen/{contact_id}/bearbeiten")
+async def crm_contact_edit_post(customer_id: int, contact_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    row = db.get(CustomerContactPerson, contact_id)
+    if not customer or not row or int(row.master_customer_id or 0) != int(customer.id):
+        raise HTTPException(status_code=404)
+    customer_party = db.get(Party, int(customer.party_id))
+    party = db.get(Party, int(row.party_id or 0))
+    if not customer_party or not party:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    display_name = _crm_party_display_name(form.get("display_name"), form.get("first_name"), form.get("last_name"))
+    if not display_name:
+        form_errors["display_name"] = "Ein Anzeigename ist Pflicht."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_contact_person_form(
+            request,
+            user=user,
+            customer=customer,
+            customer_party=customer_party,
+            row=row,
+            party=party,
+            page_title="Kontaktperson bearbeiten",
+            form_action=f"/crm/kunden/{int(customer.id)}/kontaktpersonen/{int(row.id)}/bearbeiten",
+            form_data=form_data,
+            form_errors=form_errors,
+        )
+    party.display_name = display_name
+    party.first_name = _crm_clean_text(form.get("first_name") or "") or None
+    party.last_name = _crm_clean_text(form.get("last_name") or "") or None
+    party.active = form.get("active") == "on"
+    party.updated_at = _utcnow_naive()
+    row.role_label = _crm_clean_text(form.get("role_label") or "") or None
+    row.email = _crm_clean_text(form.get("email") or "") or None
+    row.phone = _crm_clean_text(form.get("phone") or "") or None
+    row.active = form.get("active") == "on"
+    db.add(party)
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_contact_person_form(
+            request,
+            user=user,
+            customer=customer,
+            customer_party=customer_party,
+            row=row,
+            party=party,
+            page_title="Kontaktperson bearbeiten",
+            form_action=f"/crm/kunden/{int(customer.id)}/kontaktpersonen/{int(row.id)}/bearbeiten",
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+        )
+    _flash(request, "Kontaktperson gespeichert.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
+
+
+@app.get("/crm/vorgaenge", response_class=HTMLResponse)
+def crm_cases_list(
+    request: Request,
+    user=Depends(require_user),
+    q: str = "",
+    status: str = "",
+    priority: str = "",
+    db: Session = Depends(db_session),
+):
+    query = db.query(CrmCase)
+    status_norm = _crm_normalize_key(status)
+    priority_norm = _crm_normalize_key(priority)
+    if status_norm in CRM_CASE_STATUS_CHOICES:
+        query = query.filter(CrmCase.status == status_norm)
+    if priority_norm in CRM_CASE_PRIORITY_CHOICES:
+        query = query.filter(CrmCase.priority == priority_norm)
+    if _crm_clean_text(q):
+        like = f"%{_crm_clean_text(q)}%"
+        query = query.filter(or_(CrmCase.case_no.ilike(like), CrmCase.title.ilike(like), CrmCase.note.ilike(like)))
+    rows = query.order_by(CrmCase.updated_at.desc(), CrmCase.id.desc()).limit(250).all()
+    role_map = _crm_case_role_map(db, [int(row.id) for row in rows])
+    customer_ids = []
+    location_ids = []
+    for assignment_map in role_map.values():
+        for role_type, assignment in assignment_map.items():
+            if role_type in (CRM_ROLE_ORDERING_PARTY, CRM_ROLE_INVOICE_RECIPIENT) and int(assignment.master_customer_id or 0) > 0:
+                customer_ids.append(int(assignment.master_customer_id))
+            if role_type == CRM_ROLE_SERVICE_LOCATION and int(assignment.service_location_id or 0) > 0:
+                location_ids.append(int(assignment.service_location_id))
+    customers = {int(row.id): row for row in db.query(MasterCustomer).filter(MasterCustomer.id.in_(sorted(set(customer_ids)))).all()} if customer_ids else {}
+    locations = {int(row.id): row for row in db.query(ServiceLocation).filter(ServiceLocation.id.in_(sorted(set(location_ids)))).all()} if location_ids else {}
+    location_address_ids = [int(row.address_id) for row in locations.values() if int(row.address_id or 0) > 0]
+    location_addresses = {int(row.id): row for row in db.query(CrmAddress).filter(CrmAddress.id.in_(location_address_ids)).all()} if location_address_ids else {}
+    out = []
+    for row in rows:
+        assignments = role_map.get(int(row.id), {})
+        out.append(
+            {
+                "row": row,
+                "ordering_party": customers.get(int(assignments.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if assignments.get(CRM_ROLE_ORDERING_PARTY) else None,
+                "service_location": locations.get(int(assignments.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0)) if assignments.get(CRM_ROLE_SERVICE_LOCATION) else None,
+                "service_address": location_addresses.get(int(assignments.get(CRM_ROLE_SERVICE_LOCATION).address_id or 0)) if assignments.get(CRM_ROLE_SERVICE_LOCATION) else None,
+                "invoice_recipient": customers.get(int(assignments.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0)) if assignments.get(CRM_ROLE_INVOICE_RECIPIENT) else None,
+            }
+        )
+    return templates.TemplateResponse(
+        "crm/cases_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=out,
+            q=_crm_clean_text(q),
+            status=status_norm,
+            priority=priority_norm,
+            status_choices=CRM_CASE_STATUS_CHOICES,
+            priority_choices=CRM_CASE_PRIORITY_CHOICES,
+        ),
+    )
+
+
+@app.get("/crm/vorgaenge/neu", response_class=HTMLResponse)
+def crm_case_new_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    return _crm_render_case_form(
+        request,
+        user=user,
+        row=None,
+        page_title="Vorgang anlegen",
+        form_action="/crm/vorgaenge/neu",
+        form_data={},
+        form_errors={},
+        selected_ordering_party_id=0,
+        selected_service_location_id=0,
+        selected_invoice_recipient_id=0,
+        db=db,
+    )
+
+
+@app.post("/crm/vorgaenge/neu")
+async def crm_case_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    title = _crm_clean_text(form.get("title") or "")
+    status = _crm_normalize_key(form.get("status")) or "open"
+    priority = _crm_normalize_key(form.get("priority")) or "normal"
+    ordering_party_id = _to_int(form.get("ordering_party_id"), 0)
+    service_location_id = _to_int(form.get("service_location_id"), 0)
+    invoice_recipient_id = _to_int(form.get("invoice_recipient_id"), 0) or ordering_party_id
+    if not title:
+        form_errors["title"] = "Ein Titel ist Pflicht."
+    if status not in CRM_CASE_STATUS_CHOICES:
+        form_errors["status"] = "Bitte einen gültigen Status wählen."
+    if priority not in CRM_CASE_PRIORITY_CHOICES:
+        form_errors["priority"] = "Bitte eine gültige Priorität wählen."
+    ordering_party = db.get(MasterCustomer, ordering_party_id) if ordering_party_id > 0 else None
+    service_location = db.get(ServiceLocation, service_location_id) if service_location_id > 0 else None
+    invoice_recipient = db.get(MasterCustomer, invoice_recipient_id) if invoice_recipient_id > 0 else None
+    if ordering_party is None:
+        form_errors["ordering_party_id"] = "Bitte einen Auftraggeber wählen."
+    if service_location is None:
+        form_errors["service_location_id"] = "Bitte einen Leistungsort wählen."
+    if invoice_recipient is None:
+        form_errors["invoice_recipient_id"] = "Bitte einen Rechnungsempfänger wählen."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_case_form(
+            request,
+            user=user,
+            row=None,
+            page_title="Vorgang anlegen",
+            form_action="/crm/vorgaenge/neu",
+            form_data=form_data,
+            form_errors=form_errors,
+            selected_ordering_party_id=ordering_party_id,
+            selected_service_location_id=service_location_id,
+            selected_invoice_recipient_id=invoice_recipient_id,
+            db=db,
+        )
+    row = CrmCase(
+        case_no=_crm_next_case_no(db),
+        title=title,
+        status=status,
+        priority=priority,
+        source_system="local",
+        note=_crm_clean_text(form.get("note") or "") or None,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(row)
+    db.flush()
+    _, ordering_default_map = _crm_party_address_maps(db, [int(ordering_party.party_id), int(invoice_recipient.party_id)])
+    _crm_set_case_role(
+        db,
+        crm_case_id=int(row.id),
+        role_type=CRM_ROLE_ORDERING_PARTY,
+        master_customer_id=int(ordering_party.id),
+        address_id=int(ordering_default_map.get(int(ordering_party.party_id)).id) if ordering_default_map.get(int(ordering_party.party_id)) else None,
+    )
+    _crm_set_case_role(
+        db,
+        crm_case_id=int(row.id),
+        role_type=CRM_ROLE_SERVICE_LOCATION,
+        master_customer_id=int(service_location.master_customer_id or 0) or None,
+        service_location_id=int(service_location.id),
+        address_id=int(service_location.address_id or 0) or None,
+    )
+    _crm_set_case_role(
+        db,
+        crm_case_id=int(row.id),
+        role_type=CRM_ROLE_INVOICE_RECIPIENT,
+        master_customer_id=int(invoice_recipient.id),
+        address_id=int(ordering_default_map.get(int(invoice_recipient.party_id)).id) if ordering_default_map.get(int(invoice_recipient.party_id)) else None,
+    )
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_case_form(
+            request,
+            user=user,
+            row=None,
+            page_title="Vorgang anlegen",
+            form_action="/crm/vorgaenge/neu",
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+            selected_ordering_party_id=ordering_party_id,
+            selected_service_location_id=service_location_id,
+            selected_invoice_recipient_id=invoice_recipient_id,
+            db=db,
+        )
+    _flash(request, "Vorgang angelegt.", "info")
+    return RedirectResponse(f"/crm/vorgaenge/{int(row.id)}", status_code=302)
+
+
+@app.get("/crm/vorgaenge/{case_id}", response_class=HTMLResponse)
+def crm_case_detail(
+    case_id: int,
+    request: Request,
+    user=Depends(require_user),
+    timeline_filter: str = "all",
+    db: Session = Depends(db_session),
+):
+    row = db.get(CrmCase, case_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
+    ordering_role = role_map.get(CRM_ROLE_ORDERING_PARTY)
+    service_role = role_map.get(CRM_ROLE_SERVICE_LOCATION)
+    invoice_role = role_map.get(CRM_ROLE_INVOICE_RECIPIENT)
+    customer_ids = [int(value.master_customer_id) for value in (ordering_role, invoice_role) if value and int(value.master_customer_id or 0) > 0]
+    customers = {int(item.id): item for item in db.query(MasterCustomer).filter(MasterCustomer.id.in_(customer_ids)).all()} if customer_ids else {}
+    location = db.get(ServiceLocation, int(service_role.service_location_id or 0)) if service_role and int(service_role.service_location_id or 0) > 0 else None
+    address_ids = []
+    for role in (ordering_role, service_role, invoice_role):
+        if role and int(role.address_id or 0) > 0:
+            address_ids.append(int(role.address_id))
+    addresses = {int(item.id): item for item in db.query(CrmAddress).filter(CrmAddress.id.in_(address_ids)).all()} if address_ids else {}
+    outsmart_settings = _outsmart_settings(db, include_secret=False)
+    outsmart_project_link = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == "outsmart",
+            ExternalLink.object_type == "crm_case_project",
+            ExternalLink.object_id == int(row.id),
+        )
+        .one_or_none()
+    )
+    outsmart_case_workorder_link = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == "outsmart",
+            ExternalLink.object_type == "crm_case_workorder",
+            ExternalLink.object_id == int(row.id),
+        )
+        .one_or_none()
+    )
+    outsmart_workorder = (
+        db.query(OutsmartWorkorder)
+        .filter(OutsmartWorkorder.case_id == int(row.id))
+        .order_by(OutsmartWorkorder.updated_at.desc(), OutsmartWorkorder.id.desc())
+        .first()
+    )
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    ai_role_result = ai_suggest_role_assignment(
+        db,
+        settings=_openai_settings(db, include_secret=True),
+        input_payload={
+            "case_id": int(row.id),
+            "case_no": str(row.case_no or ""),
+            "title": str(row.title or ""),
+            "ordering_party_id": int(ordering_role.master_customer_id or 0) if ordering_role else None,
+            "service_location_id": int(service_role.service_location_id or 0) if service_role else None,
+            "invoice_recipient_id": int(invoice_role.master_customer_id or 0) if invoice_role else None,
+            "available_customers": [{"id": int(item.id)} for item in customers.values()],
+            "available_locations": [{"id": int(location.id)}] if location else [],
+        },
+        related_object_id=int(row.id),
+    )
+    return templates.TemplateResponse(
+        "crm/case_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            ordering_party=customers.get(int(ordering_role.master_customer_id or 0)) if ordering_role else None,
+            ordering_party_address=addresses.get(int(ordering_role.address_id or 0)) if ordering_role else None,
+            service_location=location,
+            service_address=addresses.get(int(service_role.address_id or 0)) if service_role else None,
+            invoice_recipient=customers.get(int(invoice_role.master_customer_id or 0)) if invoice_role else None,
+            invoice_address=addresses.get(int(invoice_role.address_id or 0)) if invoice_role else None,
+            timeline_rows=_crm_timeline_rows_for_case(db, int(row.id), limit=20, timeline_filter=timeline_filter),
+            timeline_filter=(timeline_filter or "all").strip().lower() or "all",
+            customer_objects=_customer_objects_for_case(db, row, limit=8),
+            outsmart_enabled=bool(outsmart_settings.get("enabled")),
+            outsmart_project_link=outsmart_project_link,
+            outsmart_case_workorder_link=outsmart_case_workorder_link,
+            outsmart_workorder=outsmart_workorder,
+            paperless_links=_paperless_links_for_object(db, "case", int(row.id)),
+            local_attachments=_attachments_for_entity(db, "case", int(row.id)),
+            ai_role_result=ai_role_result,
+            ai_role_review=ai_find_review_item(db, int(ai_role_result["log"].id)) if ai_role_result else None,
+            paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+        ),
+    )
+
+
+@app.get("/crm/vorgaenge/{case_id}/outsmart/vorbereiten", response_class=HTMLResponse)
+def crm_case_outsmart_prepare(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(CrmCase, case_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
+    ordering = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
+    service_location = db.get(ServiceLocation, int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0)) if role_map.get(CRM_ROLE_SERVICE_LOCATION) else None
+    invoice = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0)) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else None
+    relation_payload = None
+    if ordering and ordering.party:
+        _, default_map = _crm_party_address_maps(db, [int(ordering.party_id)])
+        relation_payload = _outsmart_relation_payload_for_customer(db, ordering, ordering.party, default_map.get(int(ordering.party_id)))
+    project_payload = _outsmart_project_payload_for_case(db, row)
+    workorder_payload = _outsmart_workorder_payload_for_case(db, row)
+    return templates.TemplateResponse(
+        "outsmart/workorder_prepare.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            ordering_party=ordering,
+            service_location=service_location,
+            invoice_recipient=invoice,
+            relation_payload=relation_payload,
+            project_payload=project_payload,
+            workorder_payload=workorder_payload,
+            outsmart_project_link=(
+                db.query(ExternalLink)
+                .filter(
+                    ExternalLink.system_name == "outsmart",
+                    ExternalLink.object_type == "crm_case_project",
+                    ExternalLink.object_id == int(row.id),
+                )
+                .one_or_none()
+            ),
+            outsmart_workorder=(
+                db.query(OutsmartWorkorder)
+                .filter(OutsmartWorkorder.case_id == int(row.id))
+                .order_by(OutsmartWorkorder.updated_at.desc(), OutsmartWorkorder.id.desc())
+                .first()
+            ),
+            customer_objects=_customer_objects_for_case(db, row, limit=10),
+        ),
+    )
+
+
+@app.post("/crm/vorgaenge/{case_id}/outsmart/senden")
+def crm_case_outsmart_send(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(CrmCase, case_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")):
+        _flash(request, "OutSmart ist deaktiviert.", "error")
+        return RedirectResponse(f"/crm/vorgaenge/{case_id}", status_code=302)
+    if not bool(settings.get("token")) or not bool(settings.get("software_token")):
+        _flash(request, "Bitte zuerst die OutSmart-Zugangsdaten vervollständigen.", "error")
+        return RedirectResponse(f"/crm/vorgaenge/{case_id}", status_code=302)
+    role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
+    ordering = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
+    relation_payload = None
+    if ordering and ordering.party:
+        _, default_map = _crm_party_address_maps(db, [int(ordering.party_id)])
+        relation_payload = _outsmart_relation_payload_for_customer(db, ordering, ordering.party, default_map.get(int(ordering.party_id)))
+    project_payload = _outsmart_project_payload_for_case(db, row)
+    workorder_payload = _outsmart_workorder_payload_for_case(db, row)
+    job = _start_sync_job(db, system_name="outsmart", direction="push", entity_type="workorder", log_text=f"Vorgang {row.case_no}")
+    try:
+        if ordering and relation_payload:
+            relation_result = outsmart_push_relation(settings, relation_payload)
+            relation_payload_result = _outsmart_first_row(relation_result) or {}
+            relation_row_id = _outsmart_row_id(relation_payload_result) or outsmart_first_value(relation_result, ("RowId", "row_id", "id"))
+            relation_deep_link = _outsmart_pick_url(relation_payload_result, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(
+                _outsmart_settings(db, include_secret=False),
+                entity_type="relation",
+                row_id=relation_row_id or None,
+                external_key=str(relation_payload.get("RelationNo") or ordering.customer_no_internal),
+            )
+            _upsert_external_link(
+                db,
+                system_name="outsmart",
+                object_type="master_customer",
+                object_id=int(ordering.id),
+                external_key=str(relation_payload.get("RelationNo") or ordering.customer_no_internal),
+                external_row_id=relation_row_id or None,
+                deep_link_url=relation_deep_link or None,
+            )
+        project_result = outsmart_push_project(settings, project_payload)
+        project_payload_result = _outsmart_first_row(project_result) or {}
+        project_row_id = _outsmart_row_id(project_payload_result) or outsmart_first_value(project_result, ("RowId", "row_id", "id"))
+        project_deep_link = _outsmart_pick_url(project_payload_result, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(
+            _outsmart_settings(db, include_secret=False),
+            entity_type="project",
+            row_id=project_row_id or None,
+            external_key=str(project_payload.get("ProjectNo") or row.case_no),
+        )
+        _upsert_external_link(
+            db,
+            system_name="outsmart",
+            object_type="crm_case_project",
+            object_id=int(row.id),
+            external_key=str(project_payload.get("ProjectNo") or row.case_no),
+            external_row_id=project_row_id or None,
+            deep_link_url=project_deep_link or None,
+        )
+        result = outsmart_push_workorder(settings, workorder_payload)
+        result_payload = dict(workorder_payload)
+        returned_row = _outsmart_first_row(result) or {}
+        result_payload.update(returned_row)
+        row_id = _outsmart_row_id(result_payload) or outsmart_first_value(result, ("RowId", "row_id", "id"))
+        if row_id and "RowId" not in result_payload:
+            result_payload["RowId"] = row_id
+        workorder_row, _, _ = _outsmart_upsert_workorder_summary(db, result_payload)
+        if workorder_row:
+            _upsert_external_link(
+                db,
+                system_name="outsmart",
+                object_type="crm_case_workorder",
+                object_id=int(row.id),
+                external_key=str(workorder_row.workorder_no),
+                external_row_id=workorder_row.external_row_id,
+                deep_link_url=workorder_row.deep_link_url,
+            )
+            _crm_add_timeline_event(
+                db,
+                case_id=int(row.id),
+                master_customer_id=int(workorder_row.master_customer_id or 0) or None,
+                service_location_id=int(workorder_row.service_location_id or 0) or None,
+                customer_object_id=int(workorder_row.customer_object_id or 0) or None,
+                outsmart_workorder_id=int(workorder_row.id),
+                source_system="outsmart",
+                event_type="workorder_push",
+                title=f"Arbeitsauftrag nach OutSmart gesendet: {workorder_row.workorder_no}",
+                body=workorder_row.short_description or workorder_row.work_description or row.title,
+                event_ts=_utcnow_naive(),
+                external_ref=workorder_row.external_row_id or workorder_row.workorder_no,
+                meta={"deep_link_url": workorder_row.deep_link_url or "", "project": project_payload.get("ProjectNo")},
+            )
+        _finish_sync_job(db, job, status="done", log_text=f"Arbeitsauftrag exportiert: {row.case_no} ({row_id or '-'})")
+        db.commit()
+        _flash(request, "Vorgang an OutSmart gesendet.", "info")
+        if workorder_row:
+            return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(workorder_row.id)}", status_code=302)
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"OutSmart-Senden fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/crm/vorgaenge/{case_id}", status_code=302)
+
+
+@app.get("/outsmart/arbeitsauftraege/{workorder_id}", response_class=HTMLResponse)
+def outsmart_workorder_detail_local(workorder_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    row = db.get(OutsmartWorkorder, workorder_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    crm_case = db.get(CrmCase, int(row.case_id or 0)) if int(row.case_id or 0) > 0 else None
+    customer = db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None
+    service_location = db.get(ServiceLocation, int(row.service_location_id or 0)) if int(row.service_location_id or 0) > 0 else None
+    customer_object = db.get(CustomerObject, int(row.customer_object_id or 0)) if int(row.customer_object_id or 0) > 0 else None
+    return templates.TemplateResponse(
+        "outsmart/workorder_detail_local.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            crm_case=crm_case,
+            customer=customer,
+            service_location=service_location,
+            customer_object=customer_object,
+            forms_rows=_outsmart_list_json(row.forms_json),
+            photo_rows=_outsmart_list_json(row.photos_json),
+            material_rows=_outsmart_list_json(row.materials_json),
+            workperiod_rows=_outsmart_list_json(row.workperiods_json),
+            workobject_rows=_outsmart_list_json(row.workobjects_json),
+            employee_rows=_outsmart_list_json(row.employees_json),
+        ),
+    )
+
+
+@app.get("/crm/vorgaenge/{case_id}/bearbeiten", response_class=HTMLResponse)
+def crm_case_edit_get(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(CrmCase, case_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
+    ordering_id = int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0) if role_map.get(CRM_ROLE_ORDERING_PARTY) else 0
+    service_location_id = int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0) if role_map.get(CRM_ROLE_SERVICE_LOCATION) else 0
+    invoice_id = int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else 0
+    return _crm_render_case_form(
+        request,
+        user=user,
+        row=row,
+        page_title=f"Vorgang bearbeiten: {row.case_no}",
+        form_action=f"/crm/vorgaenge/{int(row.id)}/bearbeiten",
+        form_data={},
+        form_errors={},
+        selected_ordering_party_id=ordering_id,
+        selected_service_location_id=service_location_id,
+        selected_invoice_recipient_id=invoice_id,
+        db=db,
+    )
+
+
+@app.post("/crm/vorgaenge/{case_id}/bearbeiten")
+async def crm_case_edit_post(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(CrmCase, case_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    title = _crm_clean_text(form.get("title") or "")
+    status = _crm_normalize_key(form.get("status")) or row.status
+    priority = _crm_normalize_key(form.get("priority")) or row.priority
+    ordering_party_id = _to_int(form.get("ordering_party_id"), 0)
+    service_location_id = _to_int(form.get("service_location_id"), 0)
+    invoice_recipient_id = _to_int(form.get("invoice_recipient_id"), 0) or ordering_party_id
+    if not title:
+        form_errors["title"] = "Ein Titel ist Pflicht."
+    if status not in CRM_CASE_STATUS_CHOICES:
+        form_errors["status"] = "Bitte einen gültigen Status wählen."
+    if priority not in CRM_CASE_PRIORITY_CHOICES:
+        form_errors["priority"] = "Bitte eine gültige Priorität wählen."
+    ordering_party = db.get(MasterCustomer, ordering_party_id) if ordering_party_id > 0 else None
+    service_location = db.get(ServiceLocation, service_location_id) if service_location_id > 0 else None
+    invoice_recipient = db.get(MasterCustomer, invoice_recipient_id) if invoice_recipient_id > 0 else None
+    if ordering_party is None:
+        form_errors["ordering_party_id"] = "Bitte einen Auftraggeber wählen."
+    if service_location is None:
+        form_errors["service_location_id"] = "Bitte einen Leistungsort wählen."
+    if invoice_recipient is None:
+        form_errors["invoice_recipient_id"] = "Bitte einen Rechnungsempfänger wählen."
+    if form_errors:
+        for message in form_errors.values():
+            _flash(request, message, "error")
+        return _crm_render_case_form(
+            request,
+            user=user,
+            row=row,
+            page_title=f"Vorgang bearbeiten: {row.case_no}",
+            form_action=f"/crm/vorgaenge/{int(row.id)}/bearbeiten",
+            form_data=form_data,
+            form_errors=form_errors,
+            selected_ordering_party_id=ordering_party_id,
+            selected_service_location_id=service_location_id,
+            selected_invoice_recipient_id=invoice_recipient_id,
+            db=db,
+        )
+    row.title = title
+    row.status = status
+    row.priority = priority
+    row.note = _crm_clean_text(form.get("note") or "") or None
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    _, default_map = _crm_party_address_maps(db, [int(ordering_party.party_id), int(invoice_recipient.party_id)])
+    _crm_set_case_role(
+        db,
+        crm_case_id=int(row.id),
+        role_type=CRM_ROLE_ORDERING_PARTY,
+        master_customer_id=int(ordering_party.id),
+        address_id=int(default_map.get(int(ordering_party.party_id)).id) if default_map.get(int(ordering_party.party_id)) else None,
+    )
+    _crm_set_case_role(
+        db,
+        crm_case_id=int(row.id),
+        role_type=CRM_ROLE_SERVICE_LOCATION,
+        master_customer_id=int(service_location.master_customer_id or 0) or None,
+        service_location_id=int(service_location.id),
+        address_id=int(service_location.address_id or 0) or None,
+    )
+    _crm_set_case_role(
+        db,
+        crm_case_id=int(row.id),
+        role_type=CRM_ROLE_INVOICE_RECIPIENT,
+        master_customer_id=int(invoice_recipient.id),
+        address_id=int(default_map.get(int(invoice_recipient.party_id)).id) if default_map.get(int(invoice_recipient.party_id)) else None,
+    )
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return _crm_render_case_form(
+            request,
+            user=user,
+            row=row,
+            page_title=f"Vorgang bearbeiten: {row.case_no}",
+            form_action=f"/crm/vorgaenge/{int(row.id)}/bearbeiten",
+            form_data=form_data,
+            form_errors={"__all__": _friendly_db_write_error(exc)},
+            selected_ordering_party_id=ordering_party_id,
+            selected_service_location_id=service_location_id,
+            selected_invoice_recipient_id=invoice_recipient_id,
+            db=db,
+        )
+    _flash(request, "Vorgang gespeichert.", "info")
+    return RedirectResponse(f"/crm/vorgaenge/{int(row.id)}", status_code=302)
+
+
+@app.get("/crm/identitaeten", response_class=HTMLResponse)
+def crm_identity_map(
+    request: Request,
+    user=Depends(require_user),
+    q: str = "",
+    system: str = "",
+    db: Session = Depends(db_session),
+):
+    system_norm = _crm_normalize_key(system)
+    query = db.query(ExternalIdentity)
+    if system_norm in CRM_EXTERNAL_SYSTEM_CHOICES:
+        query = query.filter(ExternalIdentity.system_name == system_norm)
+    q_norm = _crm_normalize_key(q)
+    if q_norm:
+        like = f"%{_crm_clean_text(q)}%"
+        query = query.filter(
+            or_(
+                ExternalIdentity.external_key.ilike(like),
+                ExternalIdentity.external_id.ilike(like),
+                ExternalIdentity.note.ilike(like),
+            )
+        )
+    identities = query.order_by(ExternalIdentity.master_customer_id.asc(), ExternalIdentity.system_name.asc(), ExternalIdentity.id.asc()).all()
+    customer_ids = [int(row.master_customer_id) for row in identities]
+    customers = {int(row.id): row for row in db.query(MasterCustomer).filter(MasterCustomer.id.in_(sorted(set(customer_ids)))).all()} if customer_ids else {}
+    party_ids = [int(row.party_id) for row in customers.values()]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    _, default_map = _crm_party_address_maps(db, party_ids)
+    grouped: dict[int, dict[str, object]] = {}
+    for identity in identities:
+        customer = customers.get(int(identity.master_customer_id))
+        if not customer:
+            continue
+        party = parties.get(int(customer.party_id))
+        search_blob = " ".join(
+            [
+                str(customer.customer_no_internal or ""),
+                str(party.display_name if party else ""),
+                str(identity.external_key or ""),
+                str(identity.external_id or ""),
+            ]
+        )
+        if q_norm and q_norm not in _crm_normalize_key(search_blob):
+            continue
+        payload = grouped.setdefault(
+            int(customer.id),
+            {
+                "customer": customer,
+                "party": party,
+                "default_address": default_map.get(int(customer.party_id)),
+                "identities": [],
+            },
+        )
+        payload["identities"].append(identity)
+    return templates.TemplateResponse(
+        "crm/customer_identity_map.html",
+        _ctx(
+            request,
+            user=user,
+            rows=list(grouped.values()),
+            q=_crm_clean_text(q),
+            system=system_norm,
+            system_choices=CRM_EXTERNAL_SYSTEM_CHOICES,
+            sevdesk_enabled=bool(_sevdesk_settings(db, include_secret=False).get("enabled")),
+        ),
+    )
+
+
+@app.get("/crm/merge-kandidaten", response_class=HTMLResponse)
+def crm_merge_candidates(request: Request, user=Depends(require_admin), q: str = "", db: Session = Depends(db_session)):
+    rows = _crm_build_merge_candidates(db, q=q)
+    ai_results: dict[str, dict[str, object]] = {}
+    for item in rows[:20]:
+        master_address = item.get("master_address")
+        candidate_address = item.get("candidate_address")
+        sevdesk_identities = item.get("sevdesk_identities") or []
+        ai_result = ai_evaluate_merge_candidate(
+            db,
+            settings=_openai_settings(db, include_secret=True),
+            input_payload={
+                "master_id": int(item["master_customer"].id),
+                "candidate_id": int(item["candidate_customer"].id),
+                "master_name": str(item["master_party"].display_name or ""),
+                "candidate_name": str(item["candidate_party"].display_name or ""),
+                "master_email": str(getattr(master_address, "email", "") or ""),
+                "candidate_email": str(getattr(candidate_address, "email", "") or ""),
+                "master_phone": str(getattr(master_address, "phone", "") or ""),
+                "candidate_phone": str(getattr(candidate_address, "phone", "") or ""),
+                "master_zip": str(getattr(master_address, "zip_code", "") or ""),
+                "candidate_zip": str(getattr(candidate_address, "zip_code", "") or ""),
+                "master_outsmart_key": "",
+                "candidate_outsmart_key": str(sevdesk_identities[0].external_key if sevdesk_identities else ""),
+            },
+            related_object_id=int(item["master_customer"].id),
+        )
+        ai_results[_crm_merge_pair_key(int(item["master_customer"].id), int(item["candidate_customer"].id))] = ai_result
+    return templates.TemplateResponse(
+        "crm/customer_merge_candidates.html",
+        _ctx(request, user=user, rows=rows, ai_results=ai_results),
+    )
+
+
+@app.post("/crm/merge-kandidaten/{master_id}/zuordnen")
+async def crm_merge_candidate_assign(master_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    candidate_id = _to_int(form.get("candidate_id"), 0)
+    master = db.get(MasterCustomer, master_id)
+    candidate = db.get(MasterCustomer, candidate_id)
+    if not master or not candidate:
+        raise HTTPException(status_code=404)
+    candidate_identities = db.query(ExternalIdentity).filter(ExternalIdentity.master_customer_id == int(candidate.id)).all()
+    master_identities = db.query(ExternalIdentity).filter(ExternalIdentity.master_customer_id == int(master.id)).all()
+    candidate_outsmart = {
+        _crm_normalize_key(identity.external_key or identity.external_id)
+        for identity in candidate_identities
+        if _crm_normalize_key(identity.system_name) == "outsmart" and _crm_normalize_key(identity.external_key or identity.external_id)
+    }
+    master_outsmart = {
+        _crm_normalize_key(identity.external_key or identity.external_id)
+        for identity in master_identities
+        if _crm_normalize_key(identity.system_name) == "outsmart" and _crm_normalize_key(identity.external_key or identity.external_id)
+    }
+    if candidate_outsmart and candidate_outsmart != master_outsmart:
+        _flash(request, "Der Kandidat hat eine eigene OutSmart-Identität. OutSmart ist führend und darf nicht blind umgehängt werden.", "error")
+        return RedirectResponse("/crm/merge-kandidaten", status_code=302)
+    sevdesk_rows = [identity for identity in candidate_identities if _crm_normalize_key(identity.system_name) == "sevdesk"]
+    if not sevdesk_rows:
+        _flash(request, "Beim Kandidaten wurden keine sevDesk-Identitäten gefunden.", "info")
+        return RedirectResponse("/crm/merge-kandidaten", status_code=302)
+    master_has_primary = any(_crm_normalize_key(identity.system_name) == "sevdesk" and bool(identity.is_primary) for identity in master_identities)
+    for idx, identity in enumerate(sevdesk_rows):
+        identity.master_customer_id = int(master.id)
+        if master_has_primary:
+            identity.is_primary = False
+        elif idx == 0:
+            identity.is_primary = True
+            master_has_primary = True
+        db.add(identity)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/crm/merge-kandidaten", status_code=302)
+    _flash(request, f"{len(sevdesk_rows)} sevDesk-Identität(en) wurden dem Masterkunden zugeordnet.", "info")
+    return RedirectResponse("/crm/merge-kandidaten", status_code=302)
+
+
+@app.post("/crm/merge-kandidaten/ablehnen")
+async def crm_merge_candidate_reject(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    master_id = _to_int(form.get("master_id"), 0)
+    candidate_id = _to_int(form.get("candidate_id"), 0)
+    if master_id <= 0 or candidate_id <= 0:
+        raise HTTPException(status_code=400)
+    values = _crm_merge_rejections(db)
+    values.add(_crm_merge_pair_key(master_id, candidate_id))
+    _crm_save_merge_rejections(db, values)
+    db.commit()
+    _flash(request, "Merge-Kandidat abgelehnt.", "info")
+    return RedirectResponse("/crm/merge-kandidaten", status_code=302)
+
+# ---------------------------
 # Reparaturen
 # ---------------------------
 
-@app.get("/inventory/reparaturen", response_class=HTMLResponse)
-def repair_list(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+def _repair_order_context(db: Session, order: RepairOrder) -> dict[str, int]:
+    line = (
+        db.query(RepairOrderLine)
+        .filter(RepairOrderLine.repair_order_id == int(order.id))
+        .order_by(RepairOrderLine.id.asc())
+        .first()
+    )
+    product_id = int(order.article_id or 0)
+    qty = int(order.qty or 0)
+    source_warehouse_id = int(order.source_warehouse_id or 0)
+    target_warehouse_id = int(order.target_warehouse_id or 0)
+    if line:
+        if product_id <= 0:
+            product_id = int(line.product_id or 0)
+        if qty <= 0:
+            qty = int(line.qty or 0)
+        if source_warehouse_id <= 0:
+            source_warehouse_id = int(line.warehouse_from_id or 0)
+        if target_warehouse_id <= 0 and line.warehouse_to_id:
+            target_warehouse_id = int(line.warehouse_to_id or 0)
+    if qty <= 0:
+        qty = 1
+    if source_warehouse_id > 0 and target_warehouse_id <= 0:
+        target_warehouse_id = source_warehouse_id
+    return {
+        "product_id": int(product_id or 0),
+        "qty": int(max(1, qty)),
+        "source_warehouse_id": int(source_warehouse_id or 0),
+        "target_warehouse_id": int(target_warehouse_id or 0),
+    }
+
+
+def _repair_pick_source_warehouse_for_qty(db: Session, product_id: int, qty: int) -> int:
     rows = (
-        db.query(RepairOrder)
-        .filter(RepairOrder.status.in_(("open", "in_repair", "returned")))
-        .order_by(RepairOrder.id.desc())
+        db.query(
+            StockBalance.warehouse_id,
+            func.coalesce(func.sum(StockBalance.quantity), 0).label("qty_sum"),
+        )
+        .filter(
+            StockBalance.product_id == int(product_id),
+            StockBalance.quantity > 0,
+        )
+        .group_by(StockBalance.warehouse_id)
+        .order_by(func.coalesce(func.sum(StockBalance.quantity), 0).desc(), StockBalance.warehouse_id.asc())
+        .all()
+    )
+    for warehouse_id, qty_sum in rows:
+        if int(qty_sum or 0) >= int(qty):
+            return int(warehouse_id or 0)
+    if rows:
+        return int(rows[0][0] or 0)
+    return 0
+
+
+def _repair_pick_condition_with_qty(db: Session, product_id: int, warehouse_id: int, qty: int) -> tuple[str, int]:
+    rows = (
+        db.query(
+            StockBalance.condition,
+            func.coalesce(func.sum(StockBalance.quantity), 0).label("qty_sum"),
+        )
+        .filter(
+            StockBalance.product_id == int(product_id),
+            StockBalance.warehouse_id == int(warehouse_id),
+            StockBalance.quantity > 0,
+        )
+        .group_by(StockBalance.condition)
+        .order_by(func.coalesce(func.sum(StockBalance.quantity), 0).desc(), StockBalance.condition.asc())
+        .all()
+    )
+    fallback_condition = _default_condition_code()
+    fallback_qty = 0
+    for condition, qty_sum in rows:
+        normalized = _condition_code_from_input(condition)
+        value = int(qty_sum or 0)
+        if not normalized:
+            continue
+        if value > fallback_qty:
+            fallback_condition = normalized
+            fallback_qty = value
+        if value >= int(qty):
+            return normalized, value
+    return fallback_condition, fallback_qty
+
+
+def _repair_default_return_condition(db: Session) -> str:
+    for candidate in ("B_WARE", "A_WARE", _default_condition_code()):
+        if _condition_exists(db, candidate, active_only=False):
+            return candidate
+    return _default_condition_code()
+
+
+def _repair_event_meta(event: RepairEvent) -> dict:
+    raw = str(event.meta_json or "").strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _repair_attachment_map(db: Session, event_ids: list[int]) -> dict[int, list[RepairAttachment]]:
+    items: dict[int, list[RepairAttachment]] = {}
+    if not event_ids:
+        return items
+    rows = (
+        db.query(RepairAttachment)
+        .filter(RepairAttachment.repair_event_id.in_(event_ids))
+        .order_by(RepairAttachment.id.asc())
+        .all()
+    )
+    for row in rows:
+        key = int(row.repair_event_id or 0)
+        if key <= 0:
+            continue
+        items.setdefault(key, []).append(row)
+    return items
+
+
+def _repair_event_meta_items(db: Session, meta: dict | None) -> list[dict[str, str]]:
+    payload = meta or {}
+    items: list[dict[str, str]] = []
+
+    def add(label: str, value) -> None:
+        text = str(value or "").strip()
+        if text:
+            items.append({"label": label, "value": text})
+
+    old_status_raw = str(payload.get("old_status") or "").strip()
+    new_status_raw = str(payload.get("new_status") or "").strip()
+    old_status = _repair_normalize_status_code(old_status_raw) if old_status_raw else ""
+    new_status = _repair_normalize_status_code(new_status_raw) if new_status_raw else ""
+    if old_status and new_status:
+        add("Status", f"{_repair_status_label(old_status)} -> {_repair_status_label(new_status)}")
+    account_id = int(payload.get("account_id") or payload.get("commission_account_id") or 0) or None
+    if account_id:
+        add("E-Mail-Konto", _repair_email_account_label(db.get(EmailAccount, int(account_id))))
+    add("Mail-UID", payload.get("uid") or payload.get("commission_email_uid"))
+    add("Mail-Referenz", payload.get("message_id") or payload.get("commission_message_id"))
+    add("Von", payload.get("from") or payload.get("commission_email_from_text"))
+    add("Datum", payload.get("date") or payload.get("commission_email_date_text"))
+    add("Betreff", payload.get("subject") or payload.get("commission_email_subject"))
+    if payload.get("repair_cost_cents") is not None:
+        add("Reparaturpreis", _format_eur(payload.get("repair_cost_cents")))
+    add("Dienstleister-Referenz", payload.get("commission_reference"))
+    add("Paketdienst", payload.get("shipping_carrier"))
+    add("Trackingnummer", payload.get("tracking_no"))
+    add("Tracking-URL", payload.get("tracking_url"))
+    add("Hinweis", payload.get("commission_note"))
+    add("E-Mail-Outbox", payload.get("email_outbox_id"))
+    add("Warenausgang TX", payload.get("tx_out_id"))
+    add("Wareneingang TX", payload.get("tx_in_id"))
+    add("Paperless", payload.get("paperless_document_id"))
+    return items
+
+
+def _repair_related_events(db: Session, order_id: int, parent_event_id: int) -> list[dict[str, object]]:
+    rows = (
+        db.query(RepairEvent)
+        .filter(RepairEvent.repair_order_id == int(order_id))
+        .order_by(RepairEvent.ts.desc(), RepairEvent.id.desc())
+        .all()
+    )
+    related_rows: list[RepairEvent] = []
+    for row in rows:
+        meta = _repair_event_meta(row)
+        if int(meta.get("related_event_id") or 0) != int(parent_event_id):
+            continue
+        related_rows.append(row)
+    attachment_map = _repair_attachment_map(db, [int(row.id) for row in related_rows])
+    items: list[dict[str, object]] = []
+    for row in related_rows:
+        meta = _repair_event_meta(row)
+        items.append(
+            {
+                "event": row,
+                "meta": meta,
+                "meta_items": _repair_event_meta_items(db, meta),
+                "attachments": attachment_map.get(int(row.id), []),
+                "type_label": _repair_event_type_label(row.event_type),
+                "detail_url": f"/inventory/reparaturen/{int(order_id)}/events/{int(row.id)}",
+            }
+        )
+    return items
+
+
+def _repair_render_event_detail(
+    request: Request,
+    *,
+    user,
+    db: Session,
+    order: RepairOrder,
+    event: RepairEvent,
+    form_data: dict[str, str | list[str]] | None = None,
+    form_errors: dict[str, str] | None = None,
+):
+    meta = _repair_event_meta(event)
+    attachments = _repair_attachment_map(db, [int(event.id)]).get(int(event.id), [])
+    followups = _repair_related_events(db, int(order.id), int(event.id))
+    current_message = _repair_email_message_lookup(db, int(order.commission_account_id or 0) or None, order.commission_email_uid)
+    recent_emails = _repair_recent_email_options(db, limit=60)
+    enabled_accounts = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.enabled == True)
+        .order_by(EmailAccount.is_default.desc(), EmailAccount.id.asc())
+        .all()
+    )
+    default_mail_account = _repair_pick_send_account(db, account_id=None)
+    if form_data is None:
+        selected_message_id = int(current_message.id) if current_message else 0
+        form_data = {
+            "commission_email_account_id": str(int(order.commission_account_id or (default_mail_account.id if default_mail_account else 0) or 0)),
+            "commission_email_message_id": str(selected_message_id),
+            "commission_message_id": str(order.commission_message_id or ""),
+            "commission_reference": str(order.commission_reference or ""),
+            "repair_cost": (_format_eur(order.repair_cost_cents).replace(" €", "") if order.repair_cost_cents is not None else ""),
+            "shipping_carrier": str(order.shipping_carrier or ""),
+            "tracking_no": str(order.tracking_no or ""),
+            "tracking_url": str(order.tracking_url or ""),
+            "commission_note": str(order.commission_note or ""),
+            "event_note": "",
+        }
+    if form_errors is None:
+        form_errors = {}
+    first_error_field_id = _first_error_field_id(
+        form_errors,
+        {
+            "commission_email_account_id": "event_commission_email_account_id",
+            "commission_email_message_id": "event_commission_email_message_id",
+            "commission_message_id": "event_commission_message_id",
+            "repair_cost": "event_repair_cost",
+            "commission_reference": "event_commission_reference",
+            "shipping_carrier": "event_shipping_carrier",
+            "tracking_no": "event_tracking_no",
+            "tracking_url": "event_tracking_url",
+            "commission_note": "event_commission_note",
+            "event_note": "event_note_text",
+        },
+    )
+    return templates.TemplateResponse(
+        "inventory/reparatur_event_detail.html",
+        _ctx(
+            request,
+            user=user,
+            order=order,
+            event=event,
+            event_type_label=_repair_event_type_label(event.event_type),
+            event_meta=meta,
+            event_meta_items=_repair_event_meta_items(db, meta),
+            event_meta_pretty=(json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=True) if meta else ""),
+            event_attachments=attachments,
+            event_followups=followups,
+            event_can_edit_commission=_repair_event_supports_commission_details(event, meta),
+            commission_summary=_repair_commission_summary_dict(db, order),
+            linked_mail_views=_repair_linked_mail_views(db, int(order.id)),
+            commission_mail_options=recent_emails,
+            mail_accounts=enabled_accounts,
+            default_mail_account_id=int(default_mail_account.id) if default_mail_account else 0,
+            current_commission_email_message_id=int(current_message.id) if current_message else 0,
+            repair_event_type_label=_repair_event_type_label,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id=first_error_field_id,
+        ),
+    )
+
+
+def _repair_render_detail(
+    request: Request,
+    *,
+    user,
+    db: Session,
+    order: RepairOrder,
+    form_data: dict[str, str | list[str]] | None = None,
+    form_errors: dict[str, str] | None = None,
+):
+    data = _repair_order_context(db, order)
+    normalized_status = _repair_normalize_status_code(order.status)
+    product = db.get(Product, int(data["product_id"])) if int(data["product_id"]) > 0 else None
+    supplier = db.get(Supplier, int(order.supplier_id)) if order.supplier_id else None
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
+    warehouse_map = {int(row.id): row for row in warehouses}
+    events = (
+        db.query(RepairEvent)
+        .filter(RepairEvent.repair_order_id == int(order.id))
+        .order_by(RepairEvent.ts.desc(), RepairEvent.id.desc())
+        .all()
+    )
+    event_ids = [int(row.id) for row in events]
+    attachments_map = _repair_attachment_map(db, event_ids)
+
+    timeline: list[dict[str, object]] = []
+    for event in events:
+        meta = _repair_event_meta(event)
+        timeline.append(
+            {
+                "event": event,
+                "meta": meta,
+                "meta_items": _repair_event_meta_items(db, meta),
+                "attachments": attachments_map.get(int(event.id), []),
+                "type_label": _repair_event_type_label(event.event_type),
+                "detail_url": f"/inventory/reparaturen/{int(order.id)}/events/{int(event.id)}",
+            }
+        )
+    legacy_attachments = (
+        db.query(Attachment)
+        .filter(Attachment.entity_type == "repair", Attachment.entity_id == int(order.id))
+        .order_by(Attachment.id.asc())
+        .all()
+    )
+
+    enabled_accounts = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.enabled == True)
+        .order_by(EmailAccount.is_default.desc(), EmailAccount.id.asc())
+        .all()
+    )
+    default_mail_account = _repair_pick_send_account(db, account_id=None)
+    current_message = _repair_email_message_lookup(db, int(order.commission_account_id or 0) or None, order.commission_email_uid)
+    recent_email_options = _repair_recent_email_options(db, limit=60)
+    first_error_field_id = _first_error_field_id(
+        form_errors or {},
+        {
+            "email_subject": "repair_email_subject",
+            "email_body": "repair_email_body",
+            "commission_email_account_id": "repair_commission_email_account_id",
+            "commission_email_message_id": "repair_commission_email_message_id",
+            "commission_message_id": "repair_commission_message_id",
+            "repair_cost": "repair_commission_cost",
+            "commission_reference": "repair_commission_reference",
+            "shipping_carrier": "repair_shipping_carrier",
+            "tracking_no": "repair_tracking_no",
+            "tracking_url": "repair_tracking_url",
+            "commission_note": "repair_commission_note",
+            "note": "repair_note_text",
+            "target_warehouse_id": "repair_target_warehouse_id",
+            "reservation_ref": "repair_reservation_ref",
+        },
+    )
+    outsmart_settings = _outsmart_settings(db, include_secret=False)
+    outsmart_ready = bool(outsmart_settings.get("enabled")) and bool(outsmart_settings.get("token_set")) and bool(outsmart_settings.get("software_token_set"))
+    if form_data is None:
+        form_data = {
+            "commission_email_account_id": str(int(order.commission_account_id or (default_mail_account.id if default_mail_account else 0) or 0)),
+            "commission_email_message_id": str(int(current_message.id) if current_message else 0),
+            "commission_message_id": str(order.commission_message_id or ""),
+            "commission_reference": str(order.commission_reference or ""),
+            "repair_cost": (_format_eur(order.repair_cost_cents).replace(" €", "") if order.repair_cost_cents is not None else ""),
+            "shipping_carrier": str(order.shipping_carrier or ""),
+            "tracking_no": str(order.tracking_no or ""),
+            "tracking_url": str(order.tracking_url or ""),
+            "commission_note": str(order.commission_note or ""),
+        }
+    if form_errors is None:
+        form_errors = {}
+    return templates.TemplateResponse(
+        "inventory/reparatur_detail.html",
+        _ctx(
+            request,
+            user=user,
+            order=order,
+            product=product,
+            supplier=supplier,
+            warehouses=warehouses,
+            warehouse_map=warehouse_map,
+            timeline=timeline,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id=first_error_field_id,
+            repair_status=_repair_normalize_status_code(normalized_status),
+            repair_status_label=_repair_status_label,
+            repair_outcome_label=_repair_outcome_label,
+            qty=int(data["qty"]),
+            source_warehouse_id=int(data["source_warehouse_id"]),
+            target_warehouse_id=int(data["target_warehouse_id"]),
+            repair_warehouse_id=int(order.repair_warehouse_id or 0),
+            default_mail_account_id=int(default_mail_account.id) if default_mail_account else 0,
+            mail_accounts=enabled_accounts,
+            commission_mail_options=recent_email_options,
+            commission_summary=_repair_commission_summary_dict(db, order),
+            linked_mail_views=_repair_linked_mail_views(db, int(order.id)),
+            current_commission_email_message_id=int(current_message.id) if current_message else 0,
+            default_subject=_repair_subject_default(order, product),
+            default_mail_body=(
+                f"Reparaturanfrage {order.repair_no or _repair_reference(order)}\n"
+                f"Artikel: {_mobile_display_name(product)}\n"
+                f"Materialnummer: {(product.material_no if product else '') or '-'}\n"
+                f"Menge: {int(data['qty'])}\n"
+                f"Referenz: {order.reservation_ref or '-'}\n"
+                f"Hinweis: {_repair_note_text(order) or '-'}"
+            ),
+            can_send_request=bool(supplier and (supplier.email or "").strip()),
+            can_beauftragen=_repair_normalize_status_code(order.status) in (REPAIR_STATUS_ENTWURF, REPAIR_STATUS_ANGEFRAGT, REPAIR_STATUS_WARTET),
+            can_in_repair=_repair_normalize_status_code(order.status) in (REPAIR_STATUS_ENTWURF, REPAIR_STATUS_ANGEFRAGT, REPAIR_STATUS_WARTET, REPAIR_STATUS_BEAUFTRAGT),
+            can_return=_repair_normalize_status_code(order.status) in (REPAIR_STATUS_IN_REPARATUR, REPAIR_STATUS_BEAUFTRAGT, REPAIR_STATUS_WARTET, REPAIR_STATUS_ANGEFRAGT),
+            can_fail=_repair_normalize_status_code(order.status) in (REPAIR_STATUS_IN_REPARATUR, REPAIR_STATUS_BEAUFTRAGT, REPAIR_STATUS_WARTET, REPAIR_STATUS_ANGEFRAGT, REPAIR_STATUS_REPARIERT),
+            can_book_stock=_repair_normalize_status_code(order.status) in (REPAIR_STATUS_REPARIERT, REPAIR_STATUS_ERFOLGLOS, REPAIR_STATUS_IN_REPARATUR),
+            can_reserve=_repair_normalize_status_code(order.status) in (REPAIR_STATUS_REPARIERT, REPAIR_STATUS_IN_REPARATUR),
+            can_scrap=_repair_normalize_status_code(order.status) in (REPAIR_STATUS_ERFOLGLOS, REPAIR_STATUS_IN_REPARATUR, REPAIR_STATUS_REPARIERT),
+            outsmart_ready=outsmart_ready,
+            legacy_attachments=legacy_attachments,
+            repair_event_type_label=_repair_event_type_label,
+        ),
+    )
+
+
+def _repair_move_into_repair(db: Session, order: RepairOrder, *, actor_user_id: int | None) -> None:
+    status_code = _repair_normalize_status_code(order.status)
+    if status_code == REPAIR_STATUS_IN_REPARATUR:
+        raise ValueError("Auftrag ist bereits im Status In Reparatur.")
+    if status_code in (REPAIR_STATUS_INS_LAGER, REPAIR_STATUS_RESERVIERT, REPAIR_STATUS_VERSCHROTTET, REPAIR_STATUS_ABGESCHLOSSEN):
+        raise ValueError("Auftrag ist bereits abgeschlossen.")
+
+    context = _repair_order_context(db, order)
+    product_id = int(context["product_id"] or 0)
+    qty = int(context["qty"] or 1)
+    if product_id <= 0:
+        raise ValueError("Artikel fehlt am Reparaturauftrag.")
+    product = db.get(Product, product_id)
+    if not product:
+        raise ValueError("Artikel wurde nicht gefunden.")
+
+    source_warehouse_id = int(context["source_warehouse_id"] or 0)
+    if source_warehouse_id <= 0:
+        source_warehouse_id = _repair_pick_source_warehouse_for_qty(db, product_id, qty)
+    if source_warehouse_id <= 0 or not db.get(Warehouse, source_warehouse_id):
+        raise ValueError("Quelllager konnte nicht ermittelt werden.")
+
+    source_condition, available_qty = _repair_pick_condition_with_qty(db, product_id, source_warehouse_id, qty)
+    if available_qty < qty:
+        raise ValueError(f"Nicht genug Bestand im Quelllager vorhanden (verfügbar: {available_qty}).")
+
+    repair_warehouse_id = _repair_default_warehouse_id(db)
+    in_repair_condition = "IN_REPARATUR" if _condition_exists(db, "IN_REPARATUR", active_only=False) else source_condition
+    reference = _repair_reference(order)
+
+    tx_out = InventoryTransaction(
+        tx_type="issue",
+        product_id=product_id,
+        warehouse_from_id=source_warehouse_id,
+        warehouse_to_id=None,
+        bin_from_id=None,
+        bin_to_id=None,
+        owner_id=None,
+        supplier_id=None,
+        delivery_note_no=None,
+        unit_cost=None,
+        condition=source_condition,
+        quantity=qty,
+        serial_number=None,
+        reference=reference,
+        note=f"{reference}: Ausbuchung ins Reparaturlager",
+    )
+    apply_transaction(db, tx_out, actor_user_id=actor_user_id)
+
+    tx_in = InventoryTransaction(
+        tx_type="receipt",
+        product_id=product_id,
+        warehouse_from_id=None,
+        warehouse_to_id=repair_warehouse_id,
+        bin_from_id=None,
+        bin_to_id=None,
+        owner_id=None,
+        supplier_id=None,
+        delivery_note_no=None,
+        unit_cost=None,
+        condition=in_repair_condition,
+        quantity=qty,
+        serial_number=None,
+        reference=reference,
+        note=f"{reference}: Eingang ins Reparaturlager",
+    )
+    apply_transaction(db, tx_in, actor_user_id=actor_user_id)
+
+    order.article_id = int(product_id)
+    order.qty = int(qty)
+    order.source_warehouse_id = int(source_warehouse_id)
+    order.repair_warehouse_id = int(repair_warehouse_id)
+    if not order.target_warehouse_id and int(context["target_warehouse_id"] or 0) > 0:
+        order.target_warehouse_id = int(context["target_warehouse_id"])
+    db.add(order)
+
+    _repair_add_event(
+        db,
+        order,
+        "stock_move",
+        title="In Reparatur gebucht",
+        body=f"{qty}x {_mobile_display_name(product)} von Lager {source_warehouse_id} ins Reparaturlager {repair_warehouse_id}.",
+        meta={
+            "tx_out_id": int(tx_out.id),
+            "tx_in_id": int(tx_in.id),
+            "source_warehouse_id": int(source_warehouse_id),
+            "repair_warehouse_id": int(repair_warehouse_id),
+            "condition_out": source_condition,
+            "condition_in": in_repair_condition,
+        },
+    )
+    _repair_set_status(
+        db,
+        order,
+        REPAIR_STATUS_IN_REPARATUR,
+        title="Status auf In Reparatur gesetzt",
+    )
+
+
+def _repair_move_from_repair(
+    db: Session,
+    order: RepairOrder,
+    *,
+    actor_user_id: int | None,
+    target_warehouse_id: int | None = None,
+    reserve: bool = False,
+    reservation_ref: str | None = None,
+    scrap: bool = False,
+) -> None:
+    status_code = _repair_normalize_status_code(order.status)
+    if status_code in (REPAIR_STATUS_INS_LAGER, REPAIR_STATUS_RESERVIERT, REPAIR_STATUS_VERSCHROTTET, REPAIR_STATUS_ABGESCHLOSSEN):
+        raise ValueError("Auftrag ist bereits abgeschlossen.")
+
+    context = _repair_order_context(db, order)
+    product_id = int(context["product_id"] or 0)
+    qty = int(context["qty"] or 1)
+    if product_id <= 0:
+        raise ValueError("Artikel fehlt am Reparaturauftrag.")
+    product = db.get(Product, product_id)
+    if not product:
+        raise ValueError("Artikel wurde nicht gefunden.")
+
+    repair_warehouse_id = int(order.repair_warehouse_id or _repair_default_warehouse_id(db))
+    source_condition, available_qty = _repair_pick_condition_with_qty(db, product_id, repair_warehouse_id, qty)
+    if available_qty < qty:
+        raise ValueError(f"Nicht genug Bestand im Reparaturlager (verfügbar: {available_qty}).")
+
+    if scrap:
+        target_wh_id = _scrap_default_warehouse_id(db)
+        target_condition = source_condition
+        status = REPAIR_STATUS_VERSCHROTTET
+        outcome = REPAIR_OUTCOME_VERSCHROTTET
+        status_title = "Verschrottet"
+        status_body = "Teil wurde aus dem Reparaturlager in das Verschrottet-Lager gebucht."
+    else:
+        target_wh_id = int(target_warehouse_id or order.target_warehouse_id or context["source_warehouse_id"] or 0)
+        if target_wh_id <= 0 or not db.get(Warehouse, target_wh_id):
+            raise ValueError("Ziellager fehlt.")
+        target_condition = _repair_default_return_condition(db)
+        status = REPAIR_STATUS_RESERVIERT if reserve else REPAIR_STATUS_INS_LAGER
+        outcome = REPAIR_OUTCOME_REPARIERT if _repair_normalize_status_code(order.status) != REPAIR_STATUS_ERFOLGLOS else REPAIR_OUTCOME_ERFOLGLOS
+        status_title = "Reserviert" if reserve else "Ins Lager eingebucht"
+        status_body = "Rückkehr wurde mit Reservierung verbucht." if reserve else "Rückkehr wurde ins Lager verbucht."
+
+    reference = _repair_reference(order)
+    tx_out = InventoryTransaction(
+        tx_type="issue",
+        product_id=product_id,
+        warehouse_from_id=repair_warehouse_id,
+        warehouse_to_id=None,
+        bin_from_id=None,
+        bin_to_id=None,
+        owner_id=None,
+        supplier_id=None,
+        delivery_note_no=None,
+        unit_cost=None,
+        condition=source_condition,
+        quantity=qty,
+        serial_number=None,
+        reference=reference,
+        note=f"{reference}: Ausbuchung aus Reparaturlager",
+    )
+    apply_transaction(db, tx_out, actor_user_id=actor_user_id)
+
+    tx_in = InventoryTransaction(
+        tx_type="receipt",
+        product_id=product_id,
+        warehouse_from_id=None,
+        warehouse_to_id=target_wh_id,
+        bin_from_id=None,
+        bin_to_id=None,
+        owner_id=None,
+        supplier_id=None,
+        delivery_note_no=None,
+        unit_cost=None,
+        condition=target_condition,
+        quantity=qty,
+        serial_number=None,
+        reference=reference,
+        note=f"{reference}: Eingang in Ziellager",
+    )
+    apply_transaction(db, tx_in, actor_user_id=actor_user_id)
+
+    if reserve:
+        reservation_text = (reservation_ref or order.reservation_ref or "").strip() or None
+        reservation = Reservation(
+            product_id=product_id,
+            warehouse_id=int(target_wh_id),
+            condition=target_condition,
+            qty=qty,
+            serial_id=None,
+            reference=reservation_text,
+            status="active",
+            created_by_user_id=actor_user_id,
+        )
+        db.add(reservation)
+        db.flush()
+        write_reservation_outbox_event(db, reservation, event_type="ReservationCreated")
+        order.reservation_ref = reservation_text
+
+    order.article_id = int(product_id)
+    order.qty = int(qty)
+    order.repair_warehouse_id = int(repair_warehouse_id)
+    order.target_warehouse_id = int(target_wh_id)
+    db.add(order)
+
+    _repair_add_event(
+        db,
+        order,
+        "stock_move",
+        title=status_title,
+        body=f"{qty}x {_mobile_display_name(product)} von Lager {repair_warehouse_id} nach {target_wh_id} gebucht.",
+        meta={
+            "tx_out_id": int(tx_out.id),
+            "tx_in_id": int(tx_in.id),
+            "repair_warehouse_id": int(repair_warehouse_id),
+            "target_warehouse_id": int(target_wh_id),
+            "reserve": bool(reserve),
+            "scrap": bool(scrap),
+        },
+    )
+    _repair_set_status(
+        db,
+        order,
+        status,
+        title=f"Status auf {_repair_status_label(status)} gesetzt",
+        body=status_body,
+        outcome=outcome,
+        close_order=True,
+    )
+
+
+def _outsmart_first_value(payload, keys: tuple[str, ...]) -> str:
+    return outsmart_first_value(payload, keys)
+
+
+def _repair_send_to_outsmart(db: Session, order: RepairOrder) -> str:
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")):
+        raise ValueError("OutSmart ist deaktiviert.")
+    if not bool(settings.get("token")) or not bool(settings.get("software_token")):
+        raise ValueError("OutSmart-Tokens fehlen.")
+    job = _start_sync_job(db, system_name="outsmart", direction="push", entity_type="workorder", log_text=f"Reparatur {order.repair_no or _repair_reference(order)}")
+    context = _repair_order_context(db, order)
+    product = db.get(Product, int(context["product_id"])) if int(context["product_id"]) > 0 else None
+    supplier = db.get(Supplier, int(order.supplier_id)) if order.supplier_id else None
+    source_wh = db.get(Warehouse, int(context["source_warehouse_id"])) if int(context["source_warehouse_id"]) > 0 else None
+    desc_lines = [
+        f"Reparaturnummer: {order.repair_no or _repair_reference(order)}",
+        f"Artikel: {_mobile_display_name(product)}",
+        f"Materialnummer: {(product.material_no if product else '') or '-'}",
+        f"Menge: {int(context['qty'])}",
+        f"Lagerort Quelle: {(source_wh.name if source_wh else '-')}",
+        f"Lieferant: {(supplier.name if supplier else '-')}",
+        f"Referenz: {order.reservation_ref or '-'}",
+        f"Hinweis: {_repair_note_text(order) or '-'}",
+    ]
+    payload_row = {
+        "WorkorderNo": order.repair_no or _repair_reference(order),
+        "TypeOfWork": "Reparatie",
+        "ShortWorkDescription": f"Reparatur {_mobile_display_name(product)}",
+        "WorkDescription": "\n".join(desc_lines),
+    }
+    result = outsmart_post_workorders(settings, [payload_row])
+    row_id = _outsmart_first_value(result, ("row_id", "RowId", "id", "rowid"))
+    if not row_id:
+        _finish_sync_job(db, job, status="failed", log_text=json.dumps(result, ensure_ascii=False))
+        raise ValueError("OutSmart hat keine Workorder-Referenz geliefert.")
+    order.outsmart_row_id = row_id
+    db.add(order)
+    _upsert_external_link(
+        db,
+        system_name="outsmart",
+        object_type="repair_order",
+        object_id=int(order.id),
+        external_key=order.repair_no or _repair_reference(order),
+        external_row_id=row_id,
+    )
+    _repair_add_event(
+        db,
+        order,
+        "integration",
+        title=f"An OutSmart gesendet: {row_id}",
+        body="Reparaturauftrag wurde als Workorder angelegt.",
+        meta={"integration": "outsmart", "row_id": row_id, "payload": result},
+    )
+    _finish_sync_job(db, job, status="done", log_text=f"Workorder {row_id} angelegt.")
+    return row_id
+
+
+@app.get("/inventory/reparaturen", response_class=HTMLResponse)
+def repair_list(
+    request: Request,
+    user=Depends(require_lager_access),
+    q: str = "",
+    status: str = "",
+    supplier_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    query = db.query(RepairOrder)
+    normalized_status = _repair_normalize_status_code(status) if status else ""
+    if normalized_status and normalized_status in REPAIR_STATUS_CHOICES:
+        query = query.filter(func.upper(func.coalesce(RepairOrder.status, "")) == normalized_status)
+    supplier_filter = int(supplier_id or 0)
+    if supplier_filter > 0:
+        query = query.filter(RepairOrder.supplier_id == supplier_filter)
+
+    search = (q or "").strip()
+    if search:
+        like = f"%{search}%"
+        query = query.outerjoin(Product, Product.id == RepairOrder.article_id).outerjoin(Supplier, Supplier.id == RepairOrder.supplier_id)
+        query = query.filter(
+            or_(
+                RepairOrder.repair_no.ilike(like),
+                RepairOrder.reservation_ref.ilike(like),
+                RepairOrder.notes.ilike(like),
+                RepairOrder.reference.ilike(like),
+                Product.name.ilike(like),
+                Product.material_no.ilike(like),
+                Product.sales_name.ilike(like),
+                Supplier.name.ilike(like),
+            )
+        )
+
+    rows = (
+        query.order_by(func.coalesce(RepairOrder.updated_at, RepairOrder.created_at).desc(), RepairOrder.id.desc())
         .limit(300)
         .all()
     )
-    suppliers = {s.id: s for s in db.query(Supplier).all()}
-    line_counts_raw = (
-        db.query(RepairOrderLine.repair_order_id, func.count(RepairOrderLine.id))
-        .group_by(RepairOrderLine.repair_order_id)
-        .all()
-    )
-    line_counts = {int(order_id): int(cnt) for order_id, cnt in line_counts_raw}
+    order_ids = [int(row.id) for row in rows]
+    context_map: dict[int, dict[str, int]] = {}
+    product_ids: set[int] = set()
+    for row in rows:
+        ctx_row = _repair_order_context(db, row)
+        context_map[int(row.id)] = ctx_row
+        if int(ctx_row["product_id"]) > 0:
+            product_ids.add(int(ctx_row["product_id"]))
+    products = {int(row.id): row for row in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+    suppliers = {int(row.id): row for row in db.query(Supplier).all()}
+
+    latest_event_map: dict[int, RepairEvent] = {}
+    if order_ids:
+        latest_rows = (
+            db.query(RepairEvent)
+            .filter(RepairEvent.repair_order_id.in_(order_ids))
+            .order_by(RepairEvent.repair_order_id.asc(), RepairEvent.ts.desc(), RepairEvent.id.desc())
+            .all()
+        )
+        for event in latest_rows:
+            key = int(event.repair_order_id or 0)
+            if key <= 0 or key in latest_event_map:
+                continue
+            latest_event_map[key] = event
+
+    rows_view: list[dict[str, object]] = []
+    for row in rows:
+        oid = int(row.id)
+        ctx_row = context_map.get(oid, {"product_id": 0, "qty": 1, "source_warehouse_id": 0, "target_warehouse_id": 0})
+        product = products.get(int(ctx_row.get("product_id") or 0))
+        supplier = suppliers.get(int(row.supplier_id or 0)) if row.supplier_id else None
+        latest = latest_event_map.get(oid)
+        latest_label = latest.title if latest else "Keine Aktivität"
+        latest_ts = latest.ts if latest else row.updated_at or row.created_at
+        rows_view.append(
+            {
+                "order": row,
+                "product": product,
+                "supplier": supplier,
+                "status_code": _repair_normalize_status_code(row.status),
+                "status_label": _repair_status_label(row.status),
+                "latest_label": latest_label,
+                "latest_ts": latest_ts,
+            }
+        )
+
+    active_suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
     return templates.TemplateResponse(
         "inventory/reparaturen_list.html",
-        _ctx(request, user=user, rows=rows, suppliers=suppliers, line_counts=line_counts),
+        _ctx(
+            request,
+            user=user,
+            rows=rows_view,
+            q=search,
+            status_filter=normalized_status if normalized_status in REPAIR_STATUS_CHOICES else "",
+            status_options=[{"code": code, "label": _repair_status_label(code)} for code in REPAIR_STATUS_CHOICES],
+            supplier_options=active_suppliers,
+            supplier_filter=int(supplier_filter or 0),
+        ),
     )
 
 
 @app.get("/inventory/reparaturen/new", response_class=HTMLResponse)
-def repair_new_get(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+def repair_new_get(
+    request: Request,
+    user=Depends(require_lager_access),
+    article_id: int = 0,
+    source_warehouse_id: int = 0,
+    target_warehouse_id: int = 0,
+    qty: int = 1,
+    supplier_id: int = 0,
+    db: Session = Depends(db_session),
+):
     draft_key = "draft:/inventory/reparaturen/new"
-    prefill_form_data: dict[str, str | list[str]] = {}
+    form_data: dict[str, str | list[str]] = {}
     if not request.query_params:
         loaded = _draft_get(request, draft_key)
         if isinstance(loaded, dict):
-            prefill_form_data = dict(loaded)
-    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
-    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc()).all()
-    selected_product_id = _to_int(_form_scalar(prefill_form_data, "product_id"), 0)
-    if selected_product_id and all(int(p.id) != int(selected_product_id) for p in products):
-        selected_product = db.get(Product, selected_product_id)
-        if selected_product:
-            products.append(selected_product)
-            products = sorted(products, key=lambda row: (str(row.name or "").lower(), int(row.id)))
-    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
-    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc()).all()
-    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+            form_data = dict(loaded)
+    if not form_data:
+        default_wh = int(_receipt_defaults(db).get("warehouse_id") or 0)
+        cookie_supplier = _to_int(request.cookies.get(REPAIR_LAST_SUPPLIER_COOKIE), 0)
+        form_data = {
+            "article_id": str(int(article_id or 0)),
+            "source_warehouse_id": str(int(source_warehouse_id or default_wh or 0)),
+            "target_warehouse_id": str(int(target_warehouse_id or source_warehouse_id or default_wh or 0)),
+            "qty": str(int(qty or 1)),
+            "supplier_id": str(int(supplier_id or cookie_supplier or 0)),
+            "reservation_ref": "",
+            "notes": "",
+        }
+
+    products = db.query(Product).filter(Product.active == True).order_by(Product.name.asc(), Product.id.asc()).all()
+    suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc(), Supplier.id.asc()).all()
+    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc(), Warehouse.id.asc()).all()
     return templates.TemplateResponse(
         "inventory/reparatur_new.html",
         _ctx(
             request,
             user=user,
-            suppliers=suppliers,
             products=products,
+            suppliers=suppliers,
             warehouses=warehouses,
-            condition_defs=condition_defs,
-            default_condition_in="GEBRAUCHT",
-            default_condition_out="B_WARE",
-            form_data=prefill_form_data,
+            form_data=form_data,
             form_errors={},
             first_error_field_id="",
             draft_key=draft_key,
@@ -7906,156 +18552,87 @@ async def repair_new_post(request: Request, user=Depends(require_lager_access), 
         if field_key not in form_errors:
             form_errors[field_key] = message
         _flash(request, message, "error")
-        response = repair_new_get(request, user=user, db=db)
+        response = repair_new_get(request=request, user=user, db=db)
         response.context["form_data"] = form_data
         response.context["form_errors"] = form_errors
-        response.context["first_error_field_id"] = _first_error_field_id(form_errors, REPAIR_FORM_FIELD_IDS)
+        response.context["first_error_field_id"] = _first_error_field_id(
+            form_errors,
+            {
+                "article_id": "repair_article_id",
+                "supplier_id": "repair_supplier_id",
+                "qty": "repair_qty",
+                "source_warehouse_id": "repair_source_warehouse_id",
+                "target_warehouse_id": "repair_target_warehouse_id",
+            },
+        )
         return _rerender_template_response(response)
 
-    create_product = (form.get("create_product") or "").strip() == "1"
-    supplier_input = form.get("supplier_id")
-    supplier_id, _supplier = _parse_supplier_id(db, supplier_input, active_only=True)
-    if supplier_input and not supplier_id:
+    try:
+        article_id = int(form.get("article_id") or 0)
+    except Exception:
+        article_id = 0
+    product = db.get(Product, article_id) if article_id else None
+    if not product:
+        return render_error("article_id", "Bitte ein gültiges Ersatzteil wählen.")
+    if not bool(product.active):
+        return render_error("article_id", "Archivierte Artikel können nicht in Reparatur angelegt werden.")
+
+    supplier_raw = form.get("supplier_id")
+    supplier_id, supplier = _parse_supplier_id(db, supplier_raw, active_only=True)
+    if supplier_raw and str(supplier_raw).strip() and str(supplier_raw) != "0" and not supplier_id:
         return render_error("supplier_id", "Lieferant wurde nicht gefunden oder ist inaktiv.")
 
-    product_id = 0
-    created_product_id = None
-    if create_product:
-        product_name = (form.get("new_product_name") or "").strip()
-        material_no = (form.get("new_product_material_no") or "").strip()
-        manufacturer_name = (form.get("new_product_manufacturer") or "").strip() or None
-        description = (form.get("new_product_description") or "").strip() or None
-        if not product_name:
-            return render_error("new_product_name", "Bezeichnung für neues Ersatzteil fehlt.")
-        if not material_no:
-            return render_error("new_product_material_no", "Materialnummer für neues Ersatzteil fehlt.")
-        existing = (
-            db.query(Product)
-            .filter(func.lower(Product.material_no) == material_no.lower())
-            .one_or_none()
-        )
-        if existing:
-            return render_error("new_product_material_no", "Materialnummer existiert bereits.")
-        try:
-            ean = normalize_ean(form.get("new_product_ean"))
-        except ValueError as exc:
-            return render_error("new_product_ean", f"Ungültige EAN: {exc}")
-        manufacturer_row = None
-        if manufacturer_name:
-            manufacturer_row = (
-                db.query(Manufacturer)
-                .filter(func.lower(Manufacturer.name) == manufacturer_name.lower())
-                .one_or_none()
-            )
-        product = Product(
-            name=product_name,
-            item_type="spare_part",
-            material_no=material_no,
-            manufacturer_name=manufacturer_name,
-            manufacturer=manufacturer_name,
-            manufacturer_id=manufacturer_row.id if manufacturer_row else None,
-            ean=ean,
-            description=description,
-            track_mode="quantity",
-            active=True,
-        )
-        db.add(product)
-        db.flush()
-        _refresh_product_search_blob(db, product)
-        product_id = int(product.id)
-        created_product_id = int(product.id)
-    else:
-        try:
-            product_id = int(form.get("product_id") or 0)
-        except Exception:
-            product_id = 0
-
-    upload: UploadFile = form.get("photo")  # type: ignore
-    photo_bytes = None
-    photo_mime = None
-    photo_ext = None
-    photo_original_name = None
-    if upload and getattr(upload, "filename", ""):
-        photo_original_name = str(upload.filename or "").strip()
-        photo_mime = (getattr(upload, "content_type", "") or "").strip().lower()
-        if photo_mime not in REPAIR_ATTACHMENT_ALLOWED_MIME:
-            return render_error("__all__", "Foto-Upload: nur JPG, PNG oder WEBP ist erlaubt.")
-        photo_ext = REPAIR_ATTACHMENT_ALLOWED_MIME.get(photo_mime)
-        raw = await upload.read()
-        if not raw:
-            return render_error("__all__", "Foto-Upload: Datei ist leer.")
-        if len(raw) > REPAIR_ATTACHMENT_MAX_BYTES:
-            return render_error("__all__", "Foto-Upload: Datei ist zu groß (max. 6 MB).")
-        photo_bytes = raw
-
-    try:
-        warehouse_from_id = int(form.get("warehouse_from_id") or 0)
-    except Exception:
-        warehouse_from_id = 0
-    try:
-        warehouse_to_id = int(form.get("warehouse_to_id") or 0) or None
-    except Exception:
-        warehouse_to_id = None
     try:
         qty = int(form.get("qty") or 0)
     except Exception:
         qty = 0
-    condition_in = _condition_code_from_input(form.get("condition_in"))
-    condition_out = _condition_code_from_input(form.get("condition_out"))
-
-    selected_product = db.get(Product, product_id) if product_id else None
-    if not selected_product:
-        return render_error("product_id", "Produkt fehlt.")
-    if not bool(selected_product.active):
-        return render_error("product_id", "Archiviertes Produkt kann nicht neu in Reparatur angelegt werden.")
-    if not warehouse_from_id or not db.get(Warehouse, warehouse_from_id):
-        return render_error("warehouse_from_id", "Quell-Lager fehlt.")
-    if warehouse_to_id and not db.get(Warehouse, warehouse_to_id):
-        return render_error("warehouse_to_id", "Ziellager wurde nicht gefunden.")
     if qty <= 0:
         return render_error("qty", "Menge muss größer 0 sein.")
-    if not _condition_exists(db, condition_in, active_only=False):
-        return render_error("condition_in", "Eingangs-Zustand ist ungültig.")
-    if not _condition_exists(db, condition_out, active_only=False):
-        return render_error("condition_out", "Ausgangs-Zustand ist ungültig.")
 
     try:
-        order = RepairOrder(
-            supplier_id=supplier_id,
-            status="open",
-            reference=(form.get("reference") or "").strip() or None,
-            note=(form.get("note") or "").strip() or None,
+        source_warehouse_id = int(form.get("source_warehouse_id") or 0)
+    except Exception:
+        source_warehouse_id = 0
+    if source_warehouse_id <= 0 or not db.get(Warehouse, source_warehouse_id):
+        return render_error("source_warehouse_id", "Bitte ein gültiges Quelllager wählen.")
+
+    try:
+        target_warehouse_id = int(form.get("target_warehouse_id") or 0)
+    except Exception:
+        target_warehouse_id = 0
+    if target_warehouse_id and not db.get(Warehouse, target_warehouse_id):
+        return render_error("target_warehouse_id", "Ziellager wurde nicht gefunden.")
+    if target_warehouse_id <= 0:
+        target_warehouse_id = source_warehouse_id
+
+    reservation_ref = (form.get("reservation_ref") or "").strip() or None
+    notes = (form.get("notes") or "").strip() or None
+    create_action = (form.get("create_action") or "").strip().lower()
+    if create_action == "send" and not supplier:
+        return render_error("supplier_id", "Für \"Anlegen und Anfrage senden\" ist ein Lieferant erforderlich.")
+
+    try:
+        order = _repair_create_order(
+            db,
+            article_id=int(product.id),
+            qty=int(qty),
+            supplier_id=(int(supplier_id) if supplier_id else None),
+            source_warehouse_id=int(source_warehouse_id),
+            target_warehouse_id=int(target_warehouse_id),
+            reservation_ref=reservation_ref,
+            notes=notes,
+            created_by_user_id=user.id,
         )
-        db.add(order)
-        db.flush()
-        db.add(
-            RepairOrderLine(
-                repair_order_id=order.id,
-                product_id=product_id,
-                qty=qty,
-                warehouse_from_id=warehouse_from_id,
-                warehouse_to_id=warehouse_to_id,
-                condition_in=condition_in,
-                condition_out=condition_out,
-            )
-        )
-        if photo_bytes is not None and photo_ext:
-            dirs = ensure_dirs()
-            photo_dir = dirs["uploads"] / "repairs" / str(order.id)
-            photo_dir.mkdir(parents=True, exist_ok=True)
-            file_name = f"{uuid.uuid4().hex}{photo_ext}"
-            abs_path = photo_dir / file_name
-            abs_path.write_bytes(photo_bytes)
-            rel_path = str(Path("repairs") / str(order.id) / file_name)
-            db.add(
-                Attachment(
-                    entity_type="repair",
-                    entity_id=order.id,
-                    filename=rel_path,
-                    original_name=photo_original_name or None,
-                    mime_type=photo_mime or None,
-                    size_bytes=len(photo_bytes),
-                )
+        if create_action == "send" and supplier:
+            _repair_send_request_email(
+                db,
+                order=order,
+                supplier=supplier,
+                product=product,
+                account_id=None,
+                subject=None,
+                body=None,
+                send_now=True,
             )
         db.commit()
     except Exception as exc:
@@ -8063,10 +18640,17 @@ async def repair_new_post(request: Request, user=Depends(require_lager_access), 
         return render_error("__all__", f"Reparaturauftrag konnte nicht gespeichert werden: {exc}")
 
     _draft_clear(request, draft_key)
-    if created_product_id:
-        _flash(request, f"Ersatzteil #{created_product_id} wurde angelegt und übernommen.", "info")
-    _flash(request, f"Reparaturauftrag #{order.id} angelegt.", "info")
-    return RedirectResponse(f"/inventory/reparaturen/{order.id}", status_code=302)
+    _flash(request, f"Reparaturauftrag {order.repair_no} angelegt.", "info")
+    response = RedirectResponse(f"/inventory/reparaturen/{int(order.id)}", status_code=302)
+    if supplier_id:
+        response.set_cookie(
+            REPAIR_LAST_SUPPLIER_COOKIE,
+            str(int(supplier_id)),
+            max_age=LAST_REPAIR_SUPPLIER_COOKIE_MAX_AGE,
+            path="/",
+            samesite="lax",
+        )
+    return response
 
 
 @app.get("/inventory/reparaturen/{repair_id}", response_class=HTMLResponse)
@@ -8074,39 +18658,24 @@ def repair_detail_get(repair_id: int, request: Request, user=Depends(require_lag
     order = db.get(RepairOrder, repair_id)
     if not order:
         raise HTTPException(status_code=404)
-    lines = (
-        db.query(RepairOrderLine)
-        .filter(RepairOrderLine.repair_order_id == repair_id)
-        .order_by(RepairOrderLine.id.asc())
-        .all()
-    )
-    product_ids = sorted({int(line.product_id) for line in lines})
-    warehouse_ids = sorted({int(line.warehouse_from_id) for line in lines} | {int(line.warehouse_to_id or 0) for line in lines if line.warehouse_to_id})
-    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
-    warehouses = {w.id: w for w in db.query(Warehouse).filter(Warehouse.id.in_(warehouse_ids)).all()} if warehouse_ids else {}
-    supplier = db.get(Supplier, order.supplier_id) if order.supplier_id else None
-    condition_labels = _condition_label_map(db)
-    attachments = (
-        db.query(Attachment)
-        .filter(Attachment.entity_type == "repair", Attachment.entity_id == repair_id)
-        .order_by(Attachment.id.asc())
-        .all()
-    )
-    return templates.TemplateResponse(
-        "inventory/reparatur_detail.html",
-        _ctx(
-            request,
-            user=user,
-            order=order,
-            lines=lines,
-            products=products,
-            warehouses=warehouses,
-            supplier=supplier,
-            condition_labels=condition_labels,
-            attachments=attachments,
-            repair_status_label={"open": "Offen", "in_repair": "In Reparatur", "returned": "Zurück", "closed": "Abgeschlossen"},
-        ),
-    )
+    return _repair_render_detail(request, user=user, db=db, order=order, form_data=None, form_errors=None)
+
+
+@app.get("/inventory/reparaturen/{repair_id}/events/{event_id}", response_class=HTMLResponse)
+def repair_event_detail_get(
+    repair_id: int,
+    event_id: int,
+    request: Request,
+    user=Depends(require_lager_access),
+    db: Session = Depends(db_session),
+):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    event = db.get(RepairEvent, event_id)
+    if not event or int(event.repair_order_id or 0) != int(repair_id):
+        raise HTTPException(status_code=404)
+    return _repair_render_event_detail(request, user=user, db=db, order=order, event=event, form_data=None, form_errors=None)
 
 
 @app.get("/inventory/reparaturen/{repair_id}/attachments/{attachment_id}")
@@ -8121,22 +18690,271 @@ def repair_attachment_get(
     order = db.get(RepairOrder, repair_id)
     if not order:
         raise HTTPException(status_code=404)
-    att = db.get(Attachment, attachment_id)
-    if not att or att.entity_type != "repair" or int(att.entity_id) != int(repair_id):
+    attachment = db.get(RepairAttachment, attachment_id)
+    if not attachment:
         raise HTTPException(status_code=404)
-    abs_path = ensure_dirs()["uploads"] / str(att.filename or "")
+    event = db.get(RepairEvent, int(attachment.repair_event_id))
+    if not event or int(event.repair_order_id) != int(repair_id):
+        raise HTTPException(status_code=404)
+    abs_path = _repair_attachment_abs_path(attachment.storage_path)
+    if not abs_path or not abs_path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(
+        path=str(abs_path),
+        media_type=(attachment.mime or "application/octet-stream"),
+        filename=(attachment.filename or abs_path.name),
+    )
+
+
+@app.get("/inventory/reparaturen/{repair_id}/legacy-attachments/{attachment_id}")
+def repair_legacy_attachment_get(
+    repair_id: int,
+    attachment_id: int,
+    request: Request,
+    user=Depends(require_lager_access),
+    db: Session = Depends(db_session),
+):
+    _ = request
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    attachment = db.get(Attachment, attachment_id)
+    if not attachment or attachment.entity_type != "repair" or int(attachment.entity_id or 0) != int(repair_id):
+        raise HTTPException(status_code=404)
+    abs_path = ensure_dirs()["uploads"] / str(attachment.filename or "")
     if not abs_path.is_file():
         raise HTTPException(status_code=404)
     return FileResponse(
         path=str(abs_path),
-        media_type=(att.mime_type or "application/octet-stream"),
-        filename=(att.original_name or abs_path.name),
+        media_type=(attachment.mime_type or "application/octet-stream"),
+        filename=(attachment.original_name or abs_path.name),
     )
 
 
 @app.post("/inventory/reparaturen/{repair_id}/send")
-def repair_send(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
-    return repair_in_repair(repair_id=repair_id, request=request, user=user, db=db)
+async def repair_send(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+
+    supplier = db.get(Supplier, int(order.supplier_id)) if order.supplier_id else None
+    product_context = _repair_order_context(db, order)
+    product = db.get(Product, int(product_context["product_id"])) if int(product_context["product_id"]) > 0 else None
+    if not supplier:
+        form_errors["__all__"] = "Lieferant fehlt am Reparaturauftrag."
+        _flash(request, form_errors["__all__"], "error")
+        response = _repair_render_detail(request, user=user, db=db, order=order, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+
+    try:
+        account_id = int(form.get("email_account_id") or 0) or None
+    except Exception:
+        account_id = None
+    subject = (form.get("email_subject") or "").strip() or None
+    body = (form.get("email_body") or "").strip() or None
+
+    try:
+        _repair_send_request_email(
+            db,
+            order=order,
+            supplier=supplier,
+            product=product,
+            account_id=account_id,
+            subject=subject,
+            body=body,
+            send_now=True,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        form_errors["__all__"] = str(exc)
+        _flash(request, f"Anfrage konnte nicht gesendet werden: {exc}", "error")
+        response = _repair_render_detail(request, user=user, db=db, order=order, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+
+    _flash(request, "Reparaturanfrage wurde gesendet.", "info")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/beauftragen")
+async def repair_beauftragen(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    _ = user
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    default_mail_account = _repair_pick_send_account(db, account_id=None)
+    payload, form_errors = _repair_parse_commission_form(
+        db,
+        form,
+        default_account_id=int(default_mail_account.id) if default_mail_account else None,
+    )
+    if form_errors:
+        _flash(request, "Beauftragung konnte nicht gespeichert werden.", "error")
+        response = _repair_render_detail(request, user=user, db=db, order=order, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+    try:
+        changes = _repair_apply_commission_payload(db, order, payload, set_commissioned_at=True)
+        body_lines = ["Dienstleister wurde beauftragt."]
+        body_lines.extend(changes)
+        _repair_set_status(
+            db,
+            order,
+            REPAIR_STATUS_BEAUFTRAGT,
+            title="Beauftragt",
+            body="\n".join(line for line in body_lines if line).strip(),
+            meta={
+                "workflow": "commission",
+                "commission_account_id": payload.get("commission_account_id"),
+                "commission_email_uid": payload.get("commission_email_uid"),
+                "commission_message_id": payload.get("commission_message_id"),
+                "commission_reference": payload.get("commission_reference"),
+                "repair_cost_cents": payload.get("repair_cost_cents"),
+                "shipping_carrier": payload.get("shipping_carrier"),
+                "tracking_no": payload.get("tracking_no"),
+                "tracking_url": payload.get("tracking_url"),
+                "commission_note": payload.get("commission_note"),
+                "commission_email_subject": payload.get("commission_email_subject"),
+                "commission_email_from_text": payload.get("commission_email_from_text"),
+                "commission_email_date_text": payload.get("commission_email_date_text"),
+            },
+        )
+        db.commit()
+        _flash(request, "Status auf Beauftragt gesetzt.", "info")
+    except Exception as exc:
+        db.rollback()
+        form_errors["__all__"] = str(exc)
+        _flash(request, f"Statuswechsel fehlgeschlagen: {exc}", "error")
+        response = _repair_render_detail(request, user=user, db=db, order=order, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/events/{event_id}/supplement")
+async def repair_event_supplement(
+    repair_id: int,
+    event_id: int,
+    request: Request,
+    user=Depends(require_lager_access),
+    db: Session = Depends(db_session),
+):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    event = db.get(RepairEvent, event_id)
+    if not event or int(event.repair_order_id or 0) != int(repair_id):
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    note = (form.get("event_note") or "").strip()
+    if not note:
+        form_errors = {"event_note": "Bitte eine Ergänzung erfassen."}
+        response = _repair_render_event_detail(request, user=user, db=db, order=order, event=event, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+    try:
+        _repair_add_event(
+            db,
+            order,
+            "note",
+            title=f"Ergänzung zu: {event.title}",
+            body=note,
+            meta={"related_event_id": int(event.id), "workflow": "supplement"},
+        )
+        db.commit()
+        _flash(request, "Ergänzung wurde dokumentiert.", "info")
+    except Exception as exc:
+        db.rollback()
+        form_errors = {"__all__": str(exc)}
+        response = _repair_render_event_detail(request, user=user, db=db, order=order, event=event, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}/events/{event_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/events/{event_id}/commission")
+async def repair_event_commission_update(
+    repair_id: int,
+    event_id: int,
+    request: Request,
+    user=Depends(require_lager_access),
+    db: Session = Depends(db_session),
+):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    event = db.get(RepairEvent, event_id)
+    if not event or int(event.repair_order_id or 0) != int(repair_id):
+        raise HTTPException(status_code=404)
+    if not _repair_event_supports_commission_details(event):
+        raise HTTPException(status_code=400, detail="Dieser Timeline-Eintrag unterstützt keine Beauftragungsdetails.")
+
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    default_mail_account = _repair_pick_send_account(db, account_id=None)
+    payload, form_errors = _repair_parse_commission_form(
+        db,
+        form,
+        default_account_id=int(default_mail_account.id) if default_mail_account else None,
+    )
+    extra_note = (form.get("event_note") or "").strip() or None
+    if form_errors:
+        response = _repair_render_event_detail(request, user=user, db=db, order=order, event=event, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+
+    try:
+        changes = _repair_apply_commission_payload(db, order, payload, set_commissioned_at=False)
+        if not changes and not extra_note:
+            db.rollback()
+            order = db.get(RepairOrder, repair_id)
+            event = db.get(RepairEvent, event_id)
+            form_errors["__all__"] = "Keine Änderungen oder Ergänzungen erfasst."
+            response = _repair_render_event_detail(
+                request,
+                user=user,
+                db=db,
+                order=order,
+                event=event,
+                form_data=form_data,
+                form_errors=form_errors,
+            )
+            return _rerender_template_response(response)
+        body_lines = list(changes)
+        if extra_note:
+            body_lines.append(f"Zusatz: {extra_note}")
+        _repair_add_event(
+            db,
+            order,
+            "note",
+            title="Beauftragungsdetails ergänzt",
+            body="\n".join(body_lines).strip(),
+            meta={
+                "related_event_id": int(event.id),
+                "workflow": "commission_update",
+                "commission_account_id": payload.get("commission_account_id"),
+                "commission_email_uid": payload.get("commission_email_uid"),
+                "commission_message_id": payload.get("commission_message_id"),
+                "commission_reference": payload.get("commission_reference"),
+                "repair_cost_cents": payload.get("repair_cost_cents"),
+                "shipping_carrier": payload.get("shipping_carrier"),
+                "tracking_no": payload.get("tracking_no"),
+                "tracking_url": payload.get("tracking_url"),
+                "commission_note": payload.get("commission_note"),
+                "commission_email_subject": payload.get("commission_email_subject"),
+                "commission_email_from_text": payload.get("commission_email_from_text"),
+                "commission_email_date_text": payload.get("commission_email_date_text"),
+            },
+        )
+        db.commit()
+        _flash(request, "Beauftragungsdetails wurden ergänzt.", "info")
+    except Exception as exc:
+        db.rollback()
+        form_errors["__all__"] = str(exc)
+        response = _repair_render_event_detail(request, user=user, db=db, order=order, event=event, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}/events/{event_id}", status_code=302)
 
 
 @app.post("/inventory/reparaturen/{repair_id}/in_repair")
@@ -8144,214 +18962,1617 @@ def repair_in_repair(repair_id: int, request: Request, user=Depends(require_lage
     order = db.get(RepairOrder, repair_id)
     if not order:
         raise HTTPException(status_code=404)
-    if order.status != "open":
-        _flash(request, "Nur offene Reparaturaufträge können eingebucht werden.", "error")
-        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
-    lines = db.query(RepairOrderLine).filter(RepairOrderLine.repair_order_id == repair_id).all()
-    if not lines:
-        _flash(request, "Reparaturauftrag enthält keine Positionen.", "error")
-        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
-    repair_wh = _ensure_repair_warehouse(db)
-    if not _condition_exists(db, "IN_REPARATUR", active_only=False):
-        _flash(request, "Zustand IN_REPARATUR fehlt in den Stammdaten.", "error")
-        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
-
     try:
-        for line in lines:
-            qty = int(line.qty or 0)
-            if qty <= 0:
-                raise ValueError("Menge muss größer 0 sein.")
-            condition_in = _condition_code_from_input(line.condition_in)
-            if not _condition_exists(db, condition_in, active_only=False):
-                raise ValueError(f"Zustand fehlt: {condition_in}")
-            available = int(
-                db.query(func.coalesce(func.sum(StockBalance.quantity), 0))
-                .filter(
-                    StockBalance.product_id == line.product_id,
-                    StockBalance.warehouse_id == line.warehouse_from_id,
-                    StockBalance.condition == condition_in,
-                )
-                .scalar()
-                or 0
-            )
-            if available < qty:
-                product = db.get(Product, line.product_id)
-                raise ValueError(
-                    f"Nicht genug Bestand in Zustand {condition_in} für {product.name if product else line.product_id}."
-                )
-
-            ref = _repair_reference(order)
-            tx_out = InventoryTransaction(
-                tx_type="issue",
-                product_id=line.product_id,
-                warehouse_from_id=line.warehouse_from_id,
-                warehouse_to_id=None,
-                condition=condition_in,
-                quantity=qty,
-                serial_number=None,
-                reference=ref,
-                note=f"Reparaturauftrag #{order.id}: In Reparatur",
-            )
-            apply_transaction(db, tx_out, actor_user_id=user.id)
-
-            tx_in = InventoryTransaction(
-                tx_type="receipt",
-                product_id=line.product_id,
-                warehouse_from_id=None,
-                warehouse_to_id=repair_wh.id,
-                condition="IN_REPARATUR",
-                quantity=qty,
-                serial_number=None,
-                reference=ref,
-                note=f"Reparaturauftrag #{order.id}: Eingang Reparaturlager",
-            )
-            apply_transaction(db, tx_in, actor_user_id=user.id)
-
-        order.status = "in_repair"
-        db.add(order)
+        _repair_move_into_repair(db, order, actor_user_id=user.id)
         db.commit()
+        _flash(request, "Auftrag wurde ins Reparaturlager gebucht.", "info")
     except Exception as exc:
         db.rollback()
         _flash(request, f"In-Reparatur-Buchung fehlgeschlagen: {exc}", "error")
-        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
-
-    _flash(request, "Reparaturauftrag eingebucht.", "info")
     return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
 
 
 @app.post("/inventory/reparaturen/{repair_id}/return")
 def repair_return(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    _ = user
     order = db.get(RepairOrder, repair_id)
     if not order:
         raise HTTPException(status_code=404)
-    if order.status != "in_repair":
-        _flash(request, "Nur Aufträge im Status 'In Reparatur' können zurückgebucht werden.", "error")
-        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
-    lines = db.query(RepairOrderLine).filter(RepairOrderLine.repair_order_id == repair_id).all()
-    if not lines:
-        _flash(request, "Reparaturauftrag enthält keine Positionen.", "error")
-        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
-    repair_wh = _ensure_repair_warehouse(db)
-    if not _condition_exists(db, "IN_REPARATUR", active_only=False):
-        _flash(request, "Zustand IN_REPARATUR fehlt in den Stammdaten.", "error")
-        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
-
     try:
-        for line in lines:
-            qty = int(line.qty or 0)
-            if qty <= 0:
-                raise ValueError("Menge muss größer 0 sein.")
-            target_warehouse = int(line.warehouse_to_id or line.warehouse_from_id)
-            condition_out = _condition_code_from_input(line.condition_out)
-            if not _condition_exists(db, condition_out, active_only=False):
-                raise ValueError(f"Zustand fehlt: {condition_out}")
-            available = int(
-                db.query(func.coalesce(func.sum(StockBalance.quantity), 0))
-                .filter(
-                    StockBalance.product_id == line.product_id,
-                    StockBalance.warehouse_id == repair_wh.id,
-                    StockBalance.condition == "IN_REPARATUR",
-                )
-                .scalar()
-                or 0
-            )
-            if available < qty:
-                product = db.get(Product, line.product_id)
-                raise ValueError(
-                    f"Nicht genug Bestand in Zustand IN_REPARATUR für {product.name if product else line.product_id}."
-                )
-
-            ref = _repair_reference(order)
-            tx_out = InventoryTransaction(
-                tx_type="issue",
-                product_id=line.product_id,
-                warehouse_from_id=repair_wh.id,
-                warehouse_to_id=None,
-                condition="IN_REPARATUR",
-                quantity=qty,
-                serial_number=None,
-                reference=ref,
-                note=f"Reparaturauftrag #{order.id}: Rückbuchung aus Reparaturlager",
-            )
-            apply_transaction(db, tx_out, actor_user_id=user.id)
-
-            tx_in = InventoryTransaction(
-                tx_type="receipt",
-                product_id=line.product_id,
-                warehouse_from_id=None,
-                warehouse_to_id=target_warehouse,
-                condition=condition_out,
-                quantity=qty,
-                serial_number=None,
-                reference=ref,
-                note=f"Reparaturauftrag #{order.id}: Rückbuchung ins Ziel-Lager",
-            )
-            apply_transaction(db, tx_in, actor_user_id=user.id)
-
-        order.status = "returned"
-        db.add(order)
+        _repair_set_status(
+            db,
+            order,
+            REPAIR_STATUS_REPARIERT,
+            title="Rückkehr erfasst",
+            body="Rückkehr wurde erfasst. Bitte Einbuchung (L) oder Reservierung (S) wählen.",
+            outcome=REPAIR_OUTCOME_REPARIERT,
+        )
         db.commit()
+        _flash(request, "Rückkehr wurde erfasst.", "info")
     except Exception as exc:
         db.rollback()
-        _flash(request, f"Rückbuchung fehlgeschlagen: {exc}", "error")
-        return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
-
-    _flash(request, "Reparaturauftrag zurückgebucht.", "info")
+        _flash(request, f"Rückkehr konnte nicht erfasst werden: {exc}", "error")
     return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/erfolglos")
+def repair_erfolglos(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    _ = user
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    try:
+        _repair_set_status(
+            db,
+            order,
+            REPAIR_STATUS_ERFOLGLOS,
+            title="Als erfolglos markiert",
+            body="Reparatur wurde als erfolglos markiert.",
+            outcome=REPAIR_OUTCOME_ERFOLGLOS,
+        )
+        db.commit()
+        _flash(request, "Auftrag wurde als erfolglos markiert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Statuswechsel fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/lager")
+async def repair_lager_einbuchen(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    try:
+        target_warehouse_id = int(form.get("target_warehouse_id") or 0) or None
+    except Exception:
+        target_warehouse_id = None
+    try:
+        _repair_move_from_repair(
+            db,
+            order,
+            actor_user_id=user.id,
+            target_warehouse_id=target_warehouse_id,
+            reserve=False,
+            reservation_ref=None,
+            scrap=False,
+        )
+        db.commit()
+        _flash(request, "Rückkehr wurde ins Lager eingebucht.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Einbuchung fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/reservieren")
+async def repair_reservieren(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    try:
+        target_warehouse_id = int(form.get("target_warehouse_id") or 0) or None
+    except Exception:
+        target_warehouse_id = None
+    reservation_ref = (form.get("reservation_ref") or "").strip() or None
+    if not reservation_ref:
+        form_errors["reservation_ref"] = "Für Reservierung ist eine Referenz erforderlich."
+        _flash(request, form_errors["reservation_ref"], "error")
+        response = _repair_render_detail(request, user=user, db=db, order=order, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+    try:
+        _repair_move_from_repair(
+            db,
+            order,
+            actor_user_id=user.id,
+            target_warehouse_id=target_warehouse_id,
+            reserve=True,
+            reservation_ref=reservation_ref,
+            scrap=False,
+        )
+        db.commit()
+        _flash(request, "Rückkehr wurde reserviert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Reservierung fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/verschrotten")
+def repair_verschrotten(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    try:
+        _repair_move_from_repair(
+            db,
+            order,
+            actor_user_id=user.id,
+            target_warehouse_id=None,
+            reserve=False,
+            reservation_ref=None,
+            scrap=True,
+        )
+        db.commit()
+        _flash(request, "Teil wurde verschrottet.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Verschrottung fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/note")
+async def repair_note_add(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    _ = user
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    note_text = (form.get("note") or "").strip()
+    if not note_text:
+        form_errors["note"] = "Notiz darf nicht leer sein."
+        _flash(request, form_errors["note"], "error")
+        response = _repair_render_detail(request, user=user, db=db, order=order, form_data=form_data, form_errors=form_errors)
+        return _rerender_template_response(response)
+    try:
+        _repair_add_event(
+            db,
+            order,
+            "note",
+            title="Notiz hinzugefügt",
+            body=note_text,
+        )
+        db.commit()
+        _flash(request, "Notiz gespeichert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Notiz konnte nicht gespeichert werden: {exc}", "error")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/inventory/reparaturen/{repair_id}/outsmart/send")
+def repair_outsmart_send(repair_id: int, request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
+    _ = user
+    order = db.get(RepairOrder, repair_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    try:
+        row_id = _repair_send_to_outsmart(db, order)
+        db.commit()
+        _flash(request, f"An OutSmart gesendet (Referenz {row_id}).", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"OutSmart-Senden fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/inventory/reparaturen/{repair_id}", status_code=302)
+
+
+@app.post("/catalog/products/{product_id}/outsmart/export")
+def product_outsmart_export(product_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404)
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")):
+        _flash(request, "OutSmart ist deaktiviert.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    job = _start_sync_job(db, system_name="outsmart", direction="push", entity_type="material", log_text=f"Produkt {product_id}")
+    payload_row = {
+        "Code": (product.material_no or product.sku or f"P-{product.id}"),
+        "Description": (_mobile_display_name(product) or product.name or f"Produkt {product.id}"),
+        "Price": round(float(int(product.sale_price_cents or 0)) / 100.0, 2),
+        "Unit": "st",
+        "EanCode": str(product.ean or "").strip(),
+    }
+    try:
+        result = outsmart_push_material(settings, payload_row)
+        result_payload = _outsmart_first_row(result) or {}
+        row_id = _outsmart_row_id(result_payload) or outsmart_first_value(result, ("row_id", "RowId", "id", "rowid"))
+        deep_link = _outsmart_pick_url(result_payload, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(
+            _outsmart_settings(db, include_secret=False),
+            entity_type="material",
+            row_id=row_id or None,
+            external_key=str(payload_row["Code"]),
+        )
+        _upsert_external_link(
+            db,
+            system_name="outsmart",
+            object_type="product",
+            object_id=int(product_id),
+            external_key=str(payload_row["Code"]),
+            external_row_id=row_id or None,
+            deep_link_url=deep_link or None,
+        )
+        _finish_sync_job(db, job, status="done", log_text=f"Material exportiert: {payload_row['Code']} ({row_id or '-'})")
+        db.commit()
+        _flash(request, f"Material an OutSmart exportiert ({payload_row['Code']}).", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"OutSmart-Materialexport fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+
+
+@app.post("/stammdaten/lieferanten/{supplier_id}/outsmart/export")
+def supplier_outsmart_export(supplier_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(Supplier, supplier_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")):
+        _flash(request, "OutSmart ist deaktiviert.", "error")
+        return RedirectResponse(f"/stammdaten/lieferanten/{supplier_id}", status_code=302)
+    job = _start_sync_job(db, system_name="outsmart", direction="push", entity_type="relation", log_text=f"Lieferant {supplier_id}")
+    payload_row = {
+        "RelationNo": f"L-{row.id}",
+        "Name": row.name,
+        "Email": str(row.email or "").strip(),
+        "Phone": str(row.phone or "").strip(),
+        "Address": str(row.address or "").strip(),
+    }
+    try:
+        result = outsmart_push_relation(settings, payload_row)
+        result_payload = _outsmart_first_row(result) or {}
+        row_id = _outsmart_row_id(result_payload) or outsmart_first_value(result, ("row_id", "RowId", "id", "rowid"))
+        deep_link = _outsmart_pick_url(result_payload, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(
+            _outsmart_settings(db, include_secret=False),
+            entity_type="relation",
+            row_id=row_id or None,
+            external_key=str(payload_row["RelationNo"]),
+        )
+        _upsert_external_link(
+            db,
+            system_name="outsmart",
+            object_type="supplier",
+            object_id=int(supplier_id),
+            external_key=str(payload_row["RelationNo"]),
+            external_row_id=row_id or None,
+            deep_link_url=deep_link or None,
+        )
+        _finish_sync_job(db, job, status="done", log_text=f"Relation exportiert: {payload_row['RelationNo']} ({row_id or '-'})")
+        db.commit()
+        _flash(request, f"Lieferant an OutSmart exportiert ({payload_row['RelationNo']}).", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"OutSmart-Relationexport fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/stammdaten/lieferanten/{supplier_id}", status_code=302)
+
+
+# ---------------------------
+# Einkauf v2: Helfer
+# ---------------------------
+
+
+def _form_list(form, key: str) -> list[str]:
+    try:
+        return [str(value or "") for value in form.getlist(key)]
+    except Exception:
+        value = form.get(key)
+        return [str(value or "")]
+
+
+def _parse_percent_value(raw: str | None, field_label: str) -> float | None:
+    text = (raw or "").strip().replace("%", "").replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        raise ValueError(f"{field_label}: Ungültiger Prozentwert.")
+
+
+def _coerce_date_value(raw: str | None) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        value = _parse_date_input(text)
+    except Exception:
+        return text
+    return value.strftime("%Y-%m-%d")
+
+
+def _active_suppliers(db: Session) -> list[Supplier]:
+    return db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+
+
+def _active_products_for_einkauf(db: Session, extra_ids: list[int] | None = None) -> list[Product]:
+    query = db.query(Product).filter(Product.active == True)
+    rows = query.order_by(Product.name.asc(), Product.id.asc()).limit(3000).all()
+    extras = [int(value) for value in (extra_ids or []) if int(value or 0) > 0]
+    missing_ids = [value for value in extras if all(int(row.id) != value for row in rows)]
+    if missing_ids:
+        rows.extend(db.query(Product).filter(Product.id.in_(missing_ids)).all())
+        rows = sorted(rows, key=lambda row: (str(row.name or "").lower(), int(row.id)))
+    return rows
+
+
+def _supplier_condition_sets(db: Session, supplier_id: int | None = None) -> list[SupplierConditionSet]:
+    query = db.query(SupplierConditionSet).order_by(SupplierConditionSet.active.desc(), SupplierConditionSet.id.desc())
+    if supplier_id:
+        query = query.filter(SupplierConditionSet.supplier_id == int(supplier_id))
+    return query.all()
+
+
+AGREEMENT_SEG_SUPPLIER_KEY = "seg"
+AGREEMENT_SEG_SUPPLIER_NAME = "SEG Hausgeräte GmbH"
+AGREEMENT_SEG_BRAND = "Siemens"
+AGREEMENT_IMPORT_READY_CONFIDENCE = 0.8
+
+
+def _agreement_text_key(raw: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(raw or "").lower().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"))
+
+
+def _agreement_input_money(value: int | None) -> str:
+    return _format_eur(value).replace(" €", "") if value is not None else ""
+
+
+def _agreement_input_float(value: float | int | None) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def _agreement_input_int(value: int | None) -> str:
+    return str(int(value)) if value is not None else ""
+
+
+def _agreement_is_checked(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in ("1", "on", "true", "ja")
+
+
+def _agreement_supplier_candidate(db: Session) -> Supplier | None:
+    rows = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc(), Supplier.id.asc()).all()
+    exact_key = _agreement_text_key(AGREEMENT_SEG_SUPPLIER_NAME)
+    exact = [row for row in rows if _agreement_text_key(row.name) == exact_key]
+    if exact:
+        return exact[0]
+    matching = [row for row in rows if "seg" in _agreement_text_key(row.name) and "hausgeraete" in _agreement_text_key(row.name)]
+    if len(matching) == 1:
+        return matching[0]
+    seg_only = [row for row in rows if "seg" in _agreement_text_key(row.name)]
+    return seg_only[0] if len(seg_only) == 1 else None
+
+
+def _agreement_brand_candidate(db: Session, brand_label: str | None = None) -> Manufacturer | None:
+    target = _agreement_text_key(brand_label or AGREEMENT_SEG_BRAND)
+    rows = db.query(Manufacturer).filter(Manufacturer.active == True).order_by(Manufacturer.name.asc(), Manufacturer.id.asc()).all()
+    exact = [row for row in rows if _agreement_text_key(row.name) == target]
+    if exact:
+        return exact[0]
+    matching = [row for row in rows if target and target in _agreement_text_key(row.name)]
+    return matching[0] if len(matching) == 1 else None
+
+
+def _agreement_device_kind_candidate(db: Session, raw_text: str | None = None) -> DeviceKind | None:
+    key = _agreement_text_key(raw_text)
+    if key and not any(token in key for token in ("hausgeraet", "hausgerat", "grossgeraet", "grossgerat", "weisseware")):
+        return None
+    rows = db.query(DeviceKind).order_by(DeviceKind.name.asc(), DeviceKind.id.asc()).all()
+    matching = [
+        row
+        for row in rows
+        if any(token in _agreement_text_key(row.name) for token in ("hausgeraet", "hausgerat", "grossgeraet", "grossgerat", "weisseware"))
+    ]
+    return matching[0] if len(matching) == 1 else None
+
+
+def _agreement_pick_row_count(rows: list[dict[str, str]], minimum: int = 3) -> list[dict[str, str]]:
+    normalized = [row for row in rows if any(str(value or "").strip() for value in row.values())]
+    target_len = max(minimum, len(normalized) + 1)
+    while len(normalized) < target_len:
+        normalized.append({"threshold": "", "percent": "", "amount": ""})
+    return normalized
+
+
+def _agreement_rows_from_extracted(extracted: dict, dotted_key: str, *, mode: str) -> list[dict[str, str]]:
+    current = extracted
+    for part in dotted_key.split("."):
+        current = current.get(part) if isinstance(current, dict) else None
+    rows: list[dict[str, str]] = []
+    if isinstance(current, list):
+        for entry in current:
+            if not isinstance(entry, dict):
+                continue
+            rows.append(
+                {
+                    "threshold": _agreement_input_money(entry.get("threshold")),
+                    "percent": _agreement_input_float(entry.get("percent")),
+                    "amount": _agreement_input_money(entry.get("amount_eur")),
+                }
+            )
+    return _agreement_pick_row_count(rows, minimum=3)
+
+
+def _agreement_rows_from_form(form, prefix: str, *, mode: str) -> list[dict[str, str]]:
+    thresholds = _form_list(form, f"{prefix}_threshold")
+    percents = _form_list(form, f"{prefix}_percent")
+    amounts = _form_list(form, f"{prefix}_amount")
+    row_count = max(len(thresholds), len(percents), len(amounts), 3)
+    rows: list[dict[str, str]] = []
+    for idx in range(row_count):
+        rows.append(
+            {
+                "threshold": (thresholds[idx] if idx < len(thresholds) else "").strip(),
+                "percent": (percents[idx] if idx < len(percents) else "").strip(),
+                "amount": (amounts[idx] if idx < len(amounts) else "").strip(),
+            }
+        )
+    return _agreement_pick_row_count(rows, minimum=3)
+
+
+def _agreement_review_form_values(extracted: dict, *, duplicate_mode: str = "update", force_seg: bool = False) -> dict[str, str]:
+    targets = extracted.get("targets") if isinstance(extracted.get("targets"), dict) else {}
+    discount = extracted.get("discount") if isinstance(extracted.get("discount"), dict) else {}
+    payment_terms = extracted.get("payment_terms") if isinstance(extracted.get("payment_terms"), dict) else {}
+    bonuses = extracted.get("bonuses") if isinstance(extracted.get("bonuses"), dict) else {}
+    return {
+        "brand": str(extracted.get("brand") or AGREEMENT_SEG_BRAND),
+        "customer_no": str(extracted.get("customer_no") or ""),
+        "agreement_version": str(extracted.get("agreement_version") or ""),
+        "valid_from": str(extracted.get("valid_from") or ""),
+        "valid_to": str(extracted.get("valid_to") or ""),
+        "target_solo": _agreement_input_money(targets.get("solo")),
+        "target_einbau": _agreement_input_money(targets.get("einbau")),
+        "target_gesamt": _agreement_input_money(targets.get("gesamt")),
+        "base_percent": _agreement_input_float(discount.get("base_percent")),
+        "basis_label": str(discount.get("basis_label") or ""),
+        "skonto_days": _agreement_input_int(payment_terms.get("skonto_days")),
+        "skonto_percent": _agreement_input_float(payment_terms.get("skonto_percent")),
+        "net_days": _agreement_input_int(payment_terms.get("net_days")),
+        "concentration_bonus_percent": _agreement_input_float(bonuses.get("concentration_bonus_percent")),
+        "duplicate_mode": duplicate_mode,
+        "force_seg": "1" if force_seg else "",
+        "create_supplier_if_missing": "",
+        "create_brand_if_missing": "",
+    }
+
+
+def _agreement_document_score(row: dict, query: str = "") -> tuple[int, str, str]:
+    title = str(row.get("title") or "")
+    correspondent = str(row.get("correspondent") or row.get("correspondent_name") or "")
+    document_type = str(row.get("document_type") or row.get("document_type_name") or "")
+    haystack = " ".join((title, correspondent, document_type)).lower()
+    score = 0
+    if "seg" in haystack:
+        score += 80
+    if "siemens" in haystack:
+        score += 70
+    if "jahresvereinbarung" in haystack:
+        score += 60
+    if "kondition" in haystack or "preisvereinbarung" in haystack:
+        score += 40
+    if query and query.lower() in haystack:
+        score += 30
+    return score, str(row.get("created_date") or ""), haystack
+
+
+def _agreement_document_tags(row: dict) -> list[str]:
+    title = str(row.get("title") or "")
+    correspondent = str(row.get("correspondent") or row.get("correspondent_name") or "")
+    document_type = str(row.get("document_type") or row.get("document_type_name") or "")
+    haystack = " ".join((title, correspondent, document_type)).lower()
+    tags: list[str] = []
+    if "seg" in haystack:
+        tags.append("SEG")
+    if "siemens" in haystack:
+        tags.append("Siemens")
+    if "jahresvereinbarung" in haystack:
+        tags.append("Jahresvereinbarung")
+    elif "kondition" in haystack or "preisvereinbarung" in haystack:
+        tags.append("Konditionen")
+    return tags[:3]
+
+
+def _agreement_rank_documents(rows: list[dict], query: str = "") -> list[dict]:
+    return sorted(
+        [row for row in rows if isinstance(row, dict)],
+        key=lambda row: _agreement_document_score(row, query=query),
+        reverse=True,
+    )
+
+
+def _agreement_parse_optional_int(raw: str | None, label: str) -> tuple[int | None, str | None]:
+    text = str(raw or "").strip()
+    if not text:
+        return None, None
+    if not re.fullmatch(r"\d{1,4}", text):
+        return None, f"{label} muss eine ganze Zahl sein."
+    return int(text), None
+
+
+def _agreement_parse_bonus_rows(form, *, prefix: str, label: str, mode: str) -> tuple[list[dict[str, int | float | None]], str | None]:
+    rows = _agreement_rows_from_form(form, prefix, mode=mode)
+    parsed: list[dict[str, int | float | None]] = []
+    for idx, row in enumerate(rows):
+        threshold_raw = str(row.get("threshold") or "").strip()
+        percent_raw = str(row.get("percent") or "").strip()
+        amount_raw = str(row.get("amount") or "").strip()
+        if not threshold_raw and not percent_raw and not amount_raw:
+            continue
+        try:
+            threshold = _parse_eur_to_cents(threshold_raw, f"{label} Zeile {idx + 1} Schwelle") if threshold_raw else None
+            percent_value = _parse_percent_value(percent_raw, f"{label} Zeile {idx + 1} Prozent") if percent_raw else None
+            amount_eur = _parse_eur_to_cents(amount_raw, f"{label} Zeile {idx + 1} Betrag") if amount_raw else None
+        except ValueError as exc:
+            return [], str(exc)
+        if mode == "percent" and (threshold is None or percent_value is None):
+            return [], f"{label} Zeile {idx + 1}: Schwelle und Prozent sind erforderlich."
+        if mode == "amount" and (threshold is None or amount_eur is None):
+            return [], f"{label} Zeile {idx + 1}: Schwelle und Betrag sind erforderlich."
+        parsed.append(
+            {
+                "threshold": threshold,
+                "percent": percent_value,
+                "amount_eur": amount_eur,
+            }
+        )
+    return parsed, None
+
+
+def _agreement_review_payload_from_form(form, existing_extracted: dict) -> tuple[dict, dict[str, str]]:
+    payload = json.loads(json.dumps(existing_extracted or {}, ensure_ascii=False))
+    errors: dict[str, str] = {}
+
+    payload["supplier_name"] = AGREEMENT_SEG_SUPPLIER_NAME
+    payload["supplier_key"] = AGREEMENT_SEG_SUPPLIER_KEY
+    payload["brand"] = (form.get("brand") or AGREEMENT_SEG_BRAND).strip() or AGREEMENT_SEG_BRAND
+    payload["customer_no"] = (form.get("customer_no") or "").strip() or None
+    payload["agreement_version"] = (form.get("agreement_version") or "").strip() or None
+
+    try:
+        valid_from = _parse_date_input(form.get("valid_from"))
+        payload["valid_from"] = valid_from.strftime("%Y-%m-%d") if valid_from else None
+    except ValueError:
+        errors["valid_from"] = "Ungültiges Datum."
+        payload["valid_from"] = (form.get("valid_from") or "").strip() or None
+    try:
+        valid_to = _parse_date_input(form.get("valid_to"))
+        payload["valid_to"] = valid_to.strftime("%Y-%m-%d") if valid_to else None
+    except ValueError:
+        errors["valid_to"] = "Ungültiges Datum."
+        payload["valid_to"] = (form.get("valid_to") or "").strip() or None
+
+    try:
+        targets = {
+            "solo": _parse_eur_to_cents(form.get("target_solo"), "Zielumsatz Solo"),
+            "einbau": _parse_eur_to_cents(form.get("target_einbau"), "Zielumsatz Einbau"),
+            "gesamt": _parse_eur_to_cents(form.get("target_gesamt"), "Zielumsatz Gesamt"),
+        }
+    except ValueError as exc:
+        errors["targets"] = str(exc)
+        targets = {
+            "solo": existing_extracted.get("targets", {}).get("solo") if isinstance(existing_extracted.get("targets"), dict) else None,
+            "einbau": existing_extracted.get("targets", {}).get("einbau") if isinstance(existing_extracted.get("targets"), dict) else None,
+            "gesamt": existing_extracted.get("targets", {}).get("gesamt") if isinstance(existing_extracted.get("targets"), dict) else None,
+        }
+    payload["targets"] = targets
+
+    try:
+        payload["discount"] = {
+            "base_percent": _parse_percent_value(form.get("base_percent"), "Grundrabatt"),
+            "basis_label": (form.get("basis_label") or "").strip() or None,
+        }
+    except ValueError as exc:
+        errors["discount"] = str(exc)
+        payload["discount"] = existing_extracted.get("discount") if isinstance(existing_extracted.get("discount"), dict) else {}
+
+    skonto_days, skonto_days_error = _agreement_parse_optional_int(form.get("skonto_days"), "Skonto-Tage")
+    if skonto_days_error:
+        errors["skonto_days"] = skonto_days_error
+    net_days, net_days_error = _agreement_parse_optional_int(form.get("net_days"), "Netto-Tage")
+    if net_days_error:
+        errors["net_days"] = net_days_error
+    try:
+        skonto_percent = _parse_percent_value(form.get("skonto_percent"), "Skonto")
+    except ValueError as exc:
+        errors["skonto_percent"] = str(exc)
+        skonto_percent = existing_extracted.get("payment_terms", {}).get("skonto_percent") if isinstance(existing_extracted.get("payment_terms"), dict) else None
+    payload["payment_terms"] = {
+        "skonto_days": skonto_days if "skonto_days" not in errors else existing_extracted.get("payment_terms", {}).get("skonto_days"),
+        "skonto_percent": skonto_percent,
+        "net_days": net_days if "net_days" not in errors else existing_extracted.get("payment_terms", {}).get("net_days"),
+    }
+
+    try:
+        concentration_bonus = _parse_percent_value(form.get("concentration_bonus_percent"), "Konzentrationsbonus")
+    except ValueError as exc:
+        errors["concentration_bonus_percent"] = str(exc)
+        concentration_bonus = existing_extracted.get("bonuses", {}).get("concentration_bonus_percent") if isinstance(existing_extracted.get("bonuses"), dict) else None
+
+    annual_bonus_tiers, annual_error = _agreement_parse_bonus_rows(form, prefix="annual", label="Jahresbonus", mode="percent")
+    if annual_error:
+        errors["annual_bonus_tiers"] = annual_error
+    achievement_bonus_tiers, achievement_error = _agreement_parse_bonus_rows(form, prefix="achievement", label="Erfüllungsbonus", mode="amount")
+    if achievement_error:
+        errors["achievement_bonus_tiers"] = achievement_error
+    tier_bonus_tiers, tier_error = _agreement_parse_bonus_rows(form, prefix="tier", label="Staffelbonus", mode="percent")
+    if tier_error:
+        errors["tier_bonus_tiers"] = tier_error
+
+    bonuses = existing_extracted.get("bonuses") if isinstance(existing_extracted.get("bonuses"), dict) else {}
+    payload["bonuses"] = {
+        "concentration_bonus_percent": concentration_bonus,
+        "annual_bonus_tiers": annual_bonus_tiers if not annual_error else bonuses.get("annual_bonus_tiers", []),
+        "achievement_bonus_tiers": achievement_bonus_tiers if not achievement_error else bonuses.get("achievement_bonus_tiers", []),
+        "tier_bonus_tiers": tier_bonus_tiers if not tier_error else bonuses.get("tier_bonus_tiers", []),
+    }
+
+    payload["parser_notes"] = list(existing_extracted.get("parser_notes") or [])
+    payload["parser_confidence"] = float(existing_extracted.get("parser_confidence") or 0.0)
+    payload["source_snippets"] = existing_extracted.get("source_snippets") if isinstance(existing_extracted.get("source_snippets"), dict) else {}
+    payload["unsupported_document"] = bool(existing_extracted.get("unsupported_document"))
+    payload["source_hint"] = existing_extracted.get("source_hint")
+    return payload, errors
+
+
+def _agreement_duplicate_condition_set(db: Session, *, supplier_id: int, agreement_version: str | None, valid_from: str | None) -> SupplierConditionSet | None:
+    if supplier_id <= 0 or not agreement_version or not valid_from:
+        return None
+    try:
+        valid_from_dt = _parse_date_input(valid_from)
+    except ValueError:
+        return None
+    if not valid_from_dt:
+        return None
+    return (
+        db.query(SupplierConditionSet)
+        .filter(
+            SupplierConditionSet.supplier_id == int(supplier_id),
+            SupplierConditionSet.agreement_version == agreement_version,
+            SupplierConditionSet.valid_from == valid_from_dt,
+        )
+        .order_by(SupplierConditionSet.id.desc())
+        .first()
+    )
+
+
+def _agreement_condition_name(extracted: dict) -> str:
+    version = str(extracted.get("agreement_version") or "").strip()
+    valid_from = str(extracted.get("valid_from") or "").strip()
+    if version and valid_from:
+        return f"SEG Siemens {version} ab {valid_from}"
+    if version:
+        return f"SEG Siemens {version}"
+    if valid_from:
+        return f"SEG Siemens ab {valid_from}"
+    return "SEG Siemens Jahresvereinbarung"
+
+
+def _agreement_import_condition_set(
+    db: Session,
+    *,
+    draft: AgreementImportDraft,
+    extracted: dict,
+    duplicate_mode: str,
+    create_supplier_if_missing: bool,
+    create_brand_if_missing: bool,
+) -> tuple[SupplierConditionSet, list[str]]:
+    warnings: list[str] = []
+    supplier = db.get(Supplier, int(draft.supplier_id)) if draft.supplier_id else _agreement_supplier_candidate(db)
+    if not supplier and create_supplier_if_missing:
+        supplier = Supplier(name=AGREEMENT_SEG_SUPPLIER_NAME, active=True, created_at=_utcnow_naive())
+        db.add(supplier)
+        db.flush()
+    if not supplier:
+        raise ValueError("SEG Hausgeräte GmbH ist in den Lieferanten nicht vorhanden. Bitte beim Übernehmen anlegen aktivieren.")
+
+    brand_label = str(extracted.get("brand") or AGREEMENT_SEG_BRAND).strip() or AGREEMENT_SEG_BRAND
+    manufacturer = _agreement_brand_candidate(db, brand_label)
+    if not manufacturer and create_brand_if_missing:
+        manufacturer = Manufacturer(name=brand_label, active=True, created_at=_utcnow_naive())
+        db.add(manufacturer)
+        db.flush()
+    device_kind = _agreement_device_kind_candidate(db, draft.raw_text)
+
+    existing = _agreement_duplicate_condition_set(
+        db,
+        supplier_id=int(supplier.id),
+        agreement_version=str(extracted.get("agreement_version") or "").strip() or None,
+        valid_from=str(extracted.get("valid_from") or "").strip() or None,
+    )
+    if existing and duplicate_mode not in ("update", "duplicate"):
+        raise ValueError("Bitte wählen, ob der vorhandene Vertrag aktualisiert oder bewusst dupliziert werden soll.")
+
+    row = existing if existing and duplicate_mode == "update" else SupplierConditionSet(created_at=_utcnow_naive())
+    row.supplier_id = int(supplier.id)
+    row.name = _agreement_condition_name(extracted)
+    row.customer_no = str(extracted.get("customer_no") or "").strip() or None
+    row.agreement_version = str(extracted.get("agreement_version") or "").strip() or None
+    row.brand_label = brand_label
+    row.valid_from = _parse_date_input(extracted.get("valid_from"))
+    row.valid_to = _parse_date_input(extracted.get("valid_to"))
+    payment_terms = extracted.get("payment_terms") if isinstance(extracted.get("payment_terms"), dict) else {}
+    discount = extracted.get("discount") if isinstance(extracted.get("discount"), dict) else {}
+    targets = extracted.get("targets") if isinstance(extracted.get("targets"), dict) else {}
+    bonuses = extracted.get("bonuses") if isinstance(extracted.get("bonuses"), dict) else {}
+    row.skonto_days = _to_int(payment_terms.get("skonto_days"), 0) or None
+    row.payment_term_days = _to_int(payment_terms.get("net_days"), 0) or None
+    row.skonto_percent = float(payment_terms.get("skonto_percent")) if payment_terms.get("skonto_percent") not in (None, "") else None
+    row.basic_discount_percent = float(discount.get("base_percent")) if discount.get("base_percent") not in (None, "") else None
+    row.extra_discount_percent = None
+    row.basis_label = str(discount.get("basis_label") or "").strip() or None
+    row.freight_free_from = None
+    row.min_order_value = None
+    row.bonus_target_value = _to_int(targets.get("gesamt"), 0) or None
+    row.bonus_percent = float(bonuses.get("concentration_bonus_percent")) if bonuses.get("concentration_bonus_percent") not in (None, "") else None
+    row.manufacturer_id = int(manufacturer.id) if manufacturer else None
+    row.device_kind_id = int(device_kind.id) if device_kind else None
+    row.applies_to = "manufacturer" if manufacturer else ("device_kind" if device_kind else "all")
+    row.active = True
+    db.add(row)
+    db.flush()
+
+    if existing and duplicate_mode == "update":
+        db.query(SupplierConditionTarget).filter(SupplierConditionTarget.condition_set_id == int(row.id)).delete()
+        db.query(SupplierConditionBonusTier).filter(SupplierConditionBonusTier.condition_set_id == int(row.id)).delete()
+        db.query(SupplierConditionFlatBonus).filter(SupplierConditionFlatBonus.condition_set_id == int(row.id)).delete()
+
+    for target_type in ("solo", "einbau", "gesamt"):
+        value = _to_int(targets.get(target_type), 0) or None
+        if value is None:
+            continue
+        db.add(
+            SupplierConditionTarget(
+                condition_set_id=int(row.id),
+                target_type=target_type,
+                target_value=value,
+                created_at=_utcnow_naive(),
+            )
+        )
+
+    concentration_value = bonuses.get("concentration_bonus_percent")
+    if concentration_value not in (None, ""):
+        db.add(
+            SupplierConditionFlatBonus(
+                condition_set_id=int(row.id),
+                bonus_kind="concentration_bonus",
+                percent_value=float(concentration_value),
+                created_at=_utcnow_naive(),
+            )
+        )
+
+    tier_definitions = (
+        ("annual_bonus", bonuses.get("annual_bonus_tiers") or []),
+        ("achievement_bonus", bonuses.get("achievement_bonus_tiers") or []),
+        ("tier_bonus", bonuses.get("tier_bonus_tiers") or []),
+    )
+    for bonus_kind, rows in tier_definitions:
+        for idx, entry in enumerate(rows):
+            if not isinstance(entry, dict):
+                continue
+            db.add(
+                SupplierConditionBonusTier(
+                    condition_set_id=int(row.id),
+                    bonus_kind=bonus_kind,
+                    threshold_value=_to_int(entry.get("threshold"), 0) or None,
+                    percent_value=float(entry.get("percent")) if entry.get("percent") not in (None, "") else None,
+                    amount_eur=_to_int(entry.get("amount_eur"), 0) or None,
+                    sort_order=idx,
+                    created_at=_utcnow_naive(),
+                )
+            )
+
+    settings = _paperless_settings(db, include_secret=True)
+    paperless_ready = bool(settings.get("enabled")) and bool(settings.get("token"))
+    paperless_document_id = str(draft.paperless_document_id or "").strip()
+    if draft.source_type == "upload" and draft.source_file_path and paperless_ready:
+        try:
+            upload_result = _paperless_upload_document(
+                settings=settings,
+                file_path=draft.source_file_path,
+                title=_agreement_condition_name(extracted),
+                correspondent=str(settings.get("correspondent") or ""),
+                document_type=str(settings.get("document_type") or ""),
+            )
+            uploaded_id = str(upload_result.get("document_id") or "").strip()
+            if uploaded_id:
+                paperless_document_id = uploaded_id
+                draft.paperless_document_id = uploaded_id
+        except Exception as exc:
+            warnings.append(f"Upload nach Paperless fehlgeschlagen: {exc}")
+    if paperless_document_id:
+        _ensure_paperless_link(
+            db,
+            object_type="supplier_condition_set",
+            object_id=int(row.id),
+            paperless_document_id=paperless_document_id,
+            paperless_title=draft.source_filename,
+        )
+        if paperless_ready:
+            try:
+                paperless_update_document_metadata(
+                    paperless_document_id,
+                    settings,
+                    title=_agreement_condition_name(extracted),
+                )
+            except Exception as exc:
+                warnings.append(f"Paperless-Metadaten konnten nicht aktualisiert werden: {exc}")
+
+    agreement_mark_imported(db, draft, condition_set_id=int(row.id))
+    return row, warnings
+
+
+def _agreement_review_context(
+    db: Session,
+    draft: AgreementImportDraft,
+    extracted: dict,
+    validation: dict,
+    *,
+    form_values: dict[str, str] | None = None,
+    annual_rows: list[dict[str, str]] | None = None,
+    achievement_rows: list[dict[str, str]] | None = None,
+    tier_rows: list[dict[str, str]] | None = None,
+    form_errors: dict[str, str] | None = None,
+) -> dict[str, object]:
+    supplier_row = db.get(Supplier, int(draft.supplier_id)) if draft.supplier_id else _agreement_supplier_candidate(db)
+    manufacturer_row = _agreement_brand_candidate(db, str((form_values or {}).get("brand") or extracted.get("brand") or AGREEMENT_SEG_BRAND))
+    duplicate_candidate = (
+        _agreement_duplicate_condition_set(
+            db,
+            supplier_id=int(supplier_row.id),
+            agreement_version=str((form_values or {}).get("agreement_version") or extracted.get("agreement_version") or "").strip() or None,
+            valid_from=str((form_values or {}).get("valid_from") or extracted.get("valid_from") or "").strip() or None,
+        )
+        if supplier_row
+        else None
+    )
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    paperless_url = (
+        paperless_build_document_url(paperless_settings, draft.paperless_document_id)
+        if draft.paperless_document_id and str(paperless_settings.get("base_url") or "").strip()
+        else ""
+    )
+    source_open_url = f"/einkauf/konditionen/import/{draft.id}/quelle" if draft.source_type == "upload" and draft.source_file_path else ""
+    force_seg_active = bool(extracted.get("unsupported_document")) and not bool(validation.get("guardrail_blocked"))
+    return {
+        "draft": draft,
+        "extracted": extracted,
+        "validation": validation,
+        "form_values": form_values or _agreement_review_form_values(
+            extracted,
+            duplicate_mode="update" if duplicate_candidate else "duplicate",
+            force_seg=force_seg_active,
+        ),
+        "annual_rows": annual_rows or _agreement_rows_from_extracted(extracted, "bonuses.annual_bonus_tiers", mode="percent"),
+        "achievement_rows": achievement_rows or _agreement_rows_from_extracted(extracted, "bonuses.achievement_bonus_tiers", mode="amount"),
+        "tier_rows": tier_rows or _agreement_rows_from_extracted(extracted, "bonuses.tier_bonus_tiers", mode="percent"),
+        "form_errors": form_errors or {},
+        "supplier_row": supplier_row,
+        "manufacturer_row": manufacturer_row,
+        "device_kind_row": _agreement_device_kind_candidate(db, draft.raw_text),
+        "duplicate_candidate": duplicate_candidate,
+        "paperless_url": paperless_url,
+        "source_open_url": source_open_url,
+        "paperless_available": bool(paperless_settings.get("enabled")) and bool(str(paperless_settings.get("base_url") or "").strip()),
+        "confidence_ready": float(validation.get("parser_confidence") or 0.0) >= AGREEMENT_IMPORT_READY_CONFIDENCE and bool(validation.get("ready_to_import")),
+    }
+
+
+def _document_inbox_unmatched(db: Session, limit: int = 100) -> list[DocumentInboxItem]:
+    return (
+        db.query(DocumentInboxItem)
+        .filter(DocumentInboxItem.status == "new")
+        .order_by(DocumentInboxItem.created_date.desc(), DocumentInboxItem.id.desc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+
+
+def _purchase_order_line_options(db: Session, *, supplier_id: int | None = None, purchase_order_id: int | None = None) -> list[dict[str, object]]:
+    query = db.query(PurchaseOrderLine, PurchaseOrder, Product).join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id).join(Product, Product.id == PurchaseOrderLine.product_id)
+    if supplier_id:
+        query = query.filter(PurchaseOrder.supplier_id == int(supplier_id))
+    if purchase_order_id:
+        query = query.filter(PurchaseOrder.id == int(purchase_order_id))
+    rows = query.order_by(PurchaseOrder.id.desc(), PurchaseOrderLine.id.asc()).limit(300).all()
+    out: list[dict[str, object]] = []
+    for line, order, product in rows:
+        open_qty = max(0, int(getattr(line, "qty_ordered", None) or line.qty or 0) - int(getattr(line, "qty_received", 0) or 0))
+        out.append(
+            {
+                "id": int(line.id),
+                "label": f"{_purchase_reference(order)} | {product.name} | offen {open_qty}",
+            }
+        )
+    return out
+
+
+def _goods_receipt_line_options(db: Session, *, supplier_id: int | None = None, goods_receipt_id: int | None = None) -> list[dict[str, object]]:
+    query = db.query(GoodsReceiptLine, GoodsReceipt, Product).join(GoodsReceipt, GoodsReceipt.id == GoodsReceiptLine.goods_receipt_id).join(Product, Product.id == GoodsReceiptLine.product_id)
+    if supplier_id:
+        query = query.filter(GoodsReceipt.supplier_id == int(supplier_id))
+    if goods_receipt_id:
+        query = query.filter(GoodsReceipt.id == int(goods_receipt_id))
+    rows = query.order_by(GoodsReceipt.id.desc(), GoodsReceiptLine.id.asc()).limit(300).all()
+    out: list[dict[str, object]] = []
+    for line, receipt, product in rows:
+        out.append(
+            {
+                "id": int(line.id),
+                "label": f"{receipt.receipt_no or ('WE-' + str(receipt.id))} | {product.name} | {int(line.qty_received or 0)}x",
+            }
+        )
+    return out
+
+
+def _parse_order_line_rows(db: Session, form) -> tuple[list[dict[str, object]], dict[str, str], list[int]]:
+    product_ids = _form_list(form, "line_product_id")
+    qty_values = _form_list(form, "line_qty_ordered")
+    price_values = _form_list(form, "line_unit_price_expected")
+    supplier_product_nos = _form_list(form, "line_supplier_product_no")
+    notes = _form_list(form, "line_note")
+    row_count = max(len(product_ids), len(qty_values), len(price_values), len(supplier_product_nos), len(notes), 6)
+    errors: dict[str, str] = {}
+    lines: list[dict[str, object]] = []
+    extra_product_ids: list[int] = []
+    for idx in range(row_count):
+        product_id = _to_int(product_ids[idx] if idx < len(product_ids) else "", 0)
+        qty_raw = qty_values[idx] if idx < len(qty_values) else ""
+        price_raw = price_values[idx] if idx < len(price_values) else ""
+        supplier_product_no = (supplier_product_nos[idx] if idx < len(supplier_product_nos) else "").strip()
+        note = (notes[idx] if idx < len(notes) else "").strip()
+        try:
+            qty = int(qty_raw or 0)
+        except Exception:
+            qty = 0
+        if product_id > 0:
+            extra_product_ids.append(product_id)
+        if product_id <= 0 and qty <= 0 and not price_raw.strip() and not supplier_product_no and not note:
+            continue
+        if product_id <= 0 or not db.get(Product, product_id):
+            errors[f"line_{idx}"] = f"Position {idx + 1}: Produkt fehlt."
+            continue
+        if qty <= 0:
+            errors[f"line_{idx}"] = f"Position {idx + 1}: Menge muss größer 0 sein."
+            continue
+        try:
+            unit_price_expected = _parse_eur_to_cents(price_raw, f"Position {idx + 1} EK")
+        except ValueError as exc:
+            errors[f"line_{idx}"] = str(exc)
+            continue
+        lines.append(
+            {
+                "product_id": product_id,
+                "qty_ordered": qty,
+                "unit_price_expected": unit_price_expected,
+                "supplier_product_no": supplier_product_no or None,
+                "note": note or None,
+            }
+        )
+    if not lines:
+        errors["lines"] = "Mindestens eine Position ist erforderlich."
+    return lines, errors, extra_product_ids
+
+
+def _parse_receipt_line_rows(db: Session, form) -> tuple[list[dict[str, object]], dict[str, str], list[int]]:
+    product_ids = _form_list(form, "line_product_id")
+    qty_values = _form_list(form, "line_qty_received")
+    cost_values = _form_list(form, "line_unit_cost_received")
+    condition_values = _form_list(form, "line_condition_code")
+    note_values = _form_list(form, "line_note")
+    po_line_values = _form_list(form, "line_purchase_order_line_id")
+    row_count = max(len(product_ids), len(qty_values), len(cost_values), len(condition_values), len(note_values), len(po_line_values), 6)
+    errors: dict[str, str] = {}
+    lines: list[dict[str, object]] = []
+    extra_product_ids: list[int] = []
+    for idx in range(row_count):
+        product_id = _to_int(product_ids[idx] if idx < len(product_ids) else "", 0)
+        qty_raw = qty_values[idx] if idx < len(qty_values) else ""
+        cost_raw = cost_values[idx] if idx < len(cost_values) else ""
+        condition_code = (condition_values[idx] if idx < len(condition_values) else "A_WARE").strip() or "A_WARE"
+        note = (note_values[idx] if idx < len(note_values) else "").strip()
+        purchase_order_line_id = _to_int(po_line_values[idx] if idx < len(po_line_values) else "", 0)
+        try:
+            qty = int(qty_raw or 0)
+        except Exception:
+            qty = 0
+        if product_id > 0:
+            extra_product_ids.append(product_id)
+        if product_id <= 0 and qty <= 0 and not cost_raw.strip() and not note:
+            continue
+        if product_id <= 0 or not db.get(Product, product_id):
+            errors[f"line_{idx}"] = f"Position {idx + 1}: Produkt fehlt."
+            continue
+        if qty <= 0:
+            errors[f"line_{idx}"] = f"Position {idx + 1}: Menge muss größer 0 sein."
+            continue
+        if not _condition_exists(db, condition_code, active_only=False):
+            errors[f"line_{idx}"] = f"Position {idx + 1}: Ungültiger Zustand."
+            continue
+        try:
+            unit_cost_received = _parse_eur_to_cents(cost_raw, f"Position {idx + 1} EK")
+        except ValueError as exc:
+            errors[f"line_{idx}"] = str(exc)
+            continue
+        lines.append(
+            {
+                "product_id": product_id,
+                "qty_received": qty,
+                "unit_cost_received": unit_cost_received,
+                "condition_code": condition_code,
+                "note": note or None,
+                "purchase_order_line_id": purchase_order_line_id or None,
+            }
+        )
+    if not lines:
+        errors["lines"] = "Mindestens eine Position ist erforderlich."
+    return lines, errors, extra_product_ids
+
+
+def _parse_invoice_line_rows(db: Session, form) -> tuple[list[dict[str, object]], dict[str, str], list[int]]:
+    product_ids = _form_list(form, "line_product_id")
+    qty_values = _form_list(form, "line_qty")
+    cost_values = _form_list(form, "line_unit_cost_invoiced")
+    gr_line_values = _form_list(form, "line_goods_receipt_line_id")
+    po_line_values = _form_list(form, "line_purchase_order_line_id")
+    note_values = _form_list(form, "line_note")
+    row_count = max(len(product_ids), len(qty_values), len(cost_values), len(gr_line_values), len(po_line_values), len(note_values), 6)
+    errors: dict[str, str] = {}
+    lines: list[dict[str, object]] = []
+    extra_product_ids: list[int] = []
+    for idx in range(row_count):
+        product_id = _to_int(product_ids[idx] if idx < len(product_ids) else "", 0)
+        qty_raw = qty_values[idx] if idx < len(qty_values) else ""
+        cost_raw = cost_values[idx] if idx < len(cost_values) else ""
+        goods_receipt_line_id = _to_int(gr_line_values[idx] if idx < len(gr_line_values) else "", 0)
+        purchase_order_line_id = _to_int(po_line_values[idx] if idx < len(po_line_values) else "", 0)
+        note = (note_values[idx] if idx < len(note_values) else "").strip()
+        try:
+            qty = int(qty_raw or 0)
+        except Exception:
+            qty = 0
+        if product_id > 0:
+            extra_product_ids.append(product_id)
+        if product_id <= 0 and qty <= 0 and not cost_raw.strip() and goods_receipt_line_id <= 0 and purchase_order_line_id <= 0 and not note:
+            continue
+        if product_id <= 0 and goods_receipt_line_id:
+            gr_line = db.get(GoodsReceiptLine, goods_receipt_line_id)
+            product_id = int(gr_line.product_id) if gr_line else 0
+        if product_id <= 0 and purchase_order_line_id:
+            po_line = db.get(PurchaseOrderLine, purchase_order_line_id)
+            product_id = int(po_line.product_id) if po_line else 0
+        if product_id <= 0 or not db.get(Product, product_id):
+            errors[f"line_{idx}"] = f"Position {idx + 1}: Produkt fehlt."
+            continue
+        if qty <= 0:
+            errors[f"line_{idx}"] = f"Position {idx + 1}: Menge muss größer 0 sein."
+            continue
+        try:
+            unit_cost_invoiced = _parse_eur_to_cents(cost_raw, f"Position {idx + 1} EK")
+        except ValueError as exc:
+            errors[f"line_{idx}"] = str(exc)
+            continue
+        line_total = int(unit_cost_invoiced * qty) if unit_cost_invoiced is not None else None
+        lines.append(
+            {
+                "product_id": product_id,
+                "qty": qty,
+                "unit_cost_invoiced": unit_cost_invoiced,
+                "line_total": line_total,
+                "goods_receipt_line_id": goods_receipt_line_id or None,
+                "purchase_order_line_id": purchase_order_line_id or None,
+                "note": note or None,
+            }
+        )
+    if not lines:
+        errors["lines"] = "Mindestens eine Rechnungszeile ist erforderlich."
+    return lines, errors, extra_product_ids
+
+
+def _einkauf_order_line_rows_from_request(form) -> list[dict[str, str]]:
+    product_ids = _form_list(form, "line_product_id")
+    qty_values = _form_list(form, "line_qty_ordered")
+    price_values = _form_list(form, "line_unit_price_expected")
+    supplier_product_nos = _form_list(form, "line_supplier_product_no")
+    note_values = _form_list(form, "line_note")
+    row_count = max(len(product_ids), len(qty_values), len(price_values), len(supplier_product_nos), len(note_values), 6)
+    out = []
+    for idx in range(row_count):
+        out.append(
+            {
+                "product_id": product_ids[idx] if idx < len(product_ids) else "",
+                "qty_ordered": qty_values[idx] if idx < len(qty_values) else "",
+                "unit_price_expected": price_values[idx] if idx < len(price_values) else "",
+                "supplier_product_no": supplier_product_nos[idx] if idx < len(supplier_product_nos) else "",
+                "note": note_values[idx] if idx < len(note_values) else "",
+            }
+        )
+    return out
+
+
+def _einkauf_receipt_line_rows_from_request(form) -> list[dict[str, str]]:
+    product_ids = _form_list(form, "line_product_id")
+    qty_values = _form_list(form, "line_qty_received")
+    cost_values = _form_list(form, "line_unit_cost_received")
+    condition_values = _form_list(form, "line_condition_code")
+    po_line_values = _form_list(form, "line_purchase_order_line_id")
+    note_values = _form_list(form, "line_note")
+    row_count = max(len(product_ids), len(qty_values), len(cost_values), len(condition_values), len(po_line_values), len(note_values), 6)
+    out = []
+    for idx in range(row_count):
+        out.append(
+            {
+                "product_id": product_ids[idx] if idx < len(product_ids) else "",
+                "qty_received": qty_values[idx] if idx < len(qty_values) else "",
+                "unit_cost_received": cost_values[idx] if idx < len(cost_values) else "",
+                "condition_code": condition_values[idx] if idx < len(condition_values) else "A_WARE",
+                "purchase_order_line_id": po_line_values[idx] if idx < len(po_line_values) else "",
+                "note": note_values[idx] if idx < len(note_values) else "",
+            }
+        )
+    return out
+
+
+def _einkauf_invoice_line_rows_from_request(form) -> list[dict[str, str]]:
+    product_ids = _form_list(form, "line_product_id")
+    qty_values = _form_list(form, "line_qty")
+    cost_values = _form_list(form, "line_unit_cost_invoiced")
+    gr_line_values = _form_list(form, "line_goods_receipt_line_id")
+    po_line_values = _form_list(form, "line_purchase_order_line_id")
+    note_values = _form_list(form, "line_note")
+    row_count = max(len(product_ids), len(qty_values), len(cost_values), len(gr_line_values), len(po_line_values), len(note_values), 6)
+    out = []
+    for idx in range(row_count):
+        out.append(
+            {
+                "product_id": product_ids[idx] if idx < len(product_ids) else "",
+                "qty": qty_values[idx] if idx < len(qty_values) else "",
+                "unit_cost_invoiced": cost_values[idx] if idx < len(cost_values) else "",
+                "goods_receipt_line_id": gr_line_values[idx] if idx < len(gr_line_values) else "",
+                "purchase_order_line_id": po_line_values[idx] if idx < len(po_line_values) else "",
+                "note": note_values[idx] if idx < len(note_values) else "",
+            }
+        )
+    return out
+
+
+def _einkauf_order_line_rows_from_model(lines: list[PurchaseOrderLine]) -> list[dict[str, str]]:
+    out = []
+    for line in lines:
+        price = getattr(line, "unit_price_expected", None)
+        if price is None:
+            price = line.expected_cost_cents
+        out.append(
+            {
+                "product_id": str(line.product_id or ""),
+                "qty_ordered": str(getattr(line, "qty_ordered", None) or line.qty or ""),
+                "unit_price_expected": _format_eur(price).replace(" €", "") if price is not None else "",
+                "supplier_product_no": str(getattr(line, "supplier_product_no", "") or ""),
+                "note": str(line.note or ""),
+            }
+        )
+    while len(out) < 6:
+        out.append({"product_id": "", "qty_ordered": "", "unit_price_expected": "", "supplier_product_no": "", "note": ""})
+    return out
+
+
+def _einkauf_receipt_line_rows_from_model(lines: list[GoodsReceiptLine]) -> list[dict[str, str]]:
+    out = []
+    for line in lines:
+        out.append(
+            {
+                "product_id": str(line.product_id or ""),
+                "qty_received": str(line.qty_received or ""),
+                "unit_cost_received": _format_eur(line.unit_cost_received).replace(" €", "") if line.unit_cost_received is not None else "",
+                "condition_code": str(line.condition_code or "A_WARE"),
+                "purchase_order_line_id": str(line.purchase_order_line_id or ""),
+                "note": str(line.note or ""),
+            }
+        )
+    while len(out) < 6:
+        out.append({"product_id": "", "qty_received": "", "unit_cost_received": "", "condition_code": "A_WARE", "purchase_order_line_id": "", "note": ""})
+    return out
+
+
+def _einkauf_invoice_line_rows_from_model(lines: list[PurchaseInvoiceLine]) -> list[dict[str, str]]:
+    out = []
+    for line in lines:
+        out.append(
+            {
+                "product_id": str(line.product_id or ""),
+                "qty": str(line.qty or ""),
+                "unit_cost_invoiced": _format_eur(line.unit_cost_invoiced).replace(" €", "") if line.unit_cost_invoiced is not None else "",
+                "goods_receipt_line_id": str(line.goods_receipt_line_id or ""),
+                "purchase_order_line_id": str(line.purchase_order_line_id or ""),
+                "note": str(line.note or ""),
+            }
+        )
+    while len(out) < 6:
+        out.append({"product_id": "", "qty": "", "unit_cost_invoiced": "", "goods_receipt_line_id": "", "purchase_order_line_id": "", "note": ""})
+    return out
+
+
+def _update_purchase_order_status_from_lines(db: Session, order: PurchaseOrder) -> None:
+    lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == int(order.id)).all()
+    ordered_qty = sum(int(getattr(line, "qty_ordered", None) or line.qty or 0) for line in lines)
+    received_qty = sum(int(getattr(line, "qty_received", 0) or 0) for line in lines)
+    if received_qty <= 0:
+        if (order.status or "").strip().lower() not in ("sent", "confirmed", "cancelled", "closed"):
+            order.status = "draft"
+    elif received_qty < ordered_qty:
+        order.status = "partially_received"
+    else:
+        order.status = "received"
+    db.add(order)
+
+
+def _invoice_three_way_rows(db: Session, lines: list[PurchaseInvoiceLine]) -> list[dict[str, object]]:
+    product_ids = sorted({int(line.product_id or 0) for line in lines if int(line.product_id or 0) > 0})
+    products = {int(row.id): row for row in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+    out = []
+    for line in lines:
+        po_line = db.get(PurchaseOrderLine, int(line.purchase_order_line_id or 0)) if line.purchase_order_line_id else None
+        gr_line = db.get(GoodsReceiptLine, int(line.goods_receipt_line_id or 0)) if line.goods_receipt_line_id else None
+        product = products.get(int(line.product_id or 0))
+        expected_cost = getattr(po_line, "unit_price_expected", None) if po_line else None
+        if expected_cost is None and po_line is not None:
+            expected_cost = po_line.expected_cost_cents
+        received_cost = gr_line.unit_cost_received if gr_line else None
+        invoiced_cost = line.unit_cost_invoiced
+        deviation = None
+        if invoiced_cost is not None:
+            baseline = received_cost if received_cost is not None else expected_cost
+            if baseline is not None:
+                deviation = int(invoiced_cost) - int(baseline)
+        status_label = "fehlt"
+        if po_line and gr_line and line.unit_cost_invoiced is not None:
+            status_label = "Preis ok" if deviation in (None, 0) else "Preis abweichend"
+        elif po_line and gr_line:
+            status_label = "Rechnung fehlt"
+        elif po_line or gr_line:
+            status_label = "Teilweise verknüpft"
+        out.append(
+            {
+                "product_label": _mobile_display_name(product) if product else f"Produkt {line.product_id}",
+                "qty": int(line.qty or 0),
+                "expected_cost": expected_cost,
+                "received_cost": received_cost,
+                "invoiced_cost": invoiced_cost,
+                "deviation": deviation,
+                "status_label": status_label,
+            }
+        )
+    return out
+
+
+def _dashboard_purchase_stats(db: Session) -> dict[str, int]:
+    condition_rows = calculate_condition_progress(db)
+    db.flush()
+    price_deviations = (
+        db.query(PurchaseInvoiceLine)
+        .join(GoodsReceiptLine, GoodsReceiptLine.id == PurchaseInvoiceLine.goods_receipt_line_id, isouter=True)
+        .filter(
+            PurchaseInvoiceLine.unit_cost_invoiced.isnot(None),
+            GoodsReceiptLine.unit_cost_received.isnot(None),
+            PurchaseInvoiceLine.unit_cost_invoiced != GoodsReceiptLine.unit_cost_received,
+        )
+        .count()
+    )
+    unmatched_invoices = (
+        db.query(PurchaseInvoice)
+        .filter(
+            or_(
+                PurchaseInvoice.status == "draft",
+                exists().where(
+                    and_(
+                        PurchaseInvoiceLine.purchase_invoice_id == PurchaseInvoice.id,
+                        PurchaseInvoiceLine.goods_receipt_line_id.is_(None),
+                        PurchaseInvoiceLine.purchase_order_line_id.is_(None),
+                    )
+                ),
+            )
+        )
+        .count()
+    )
+    return {
+        "open_orders": db.query(PurchaseOrder).filter(PurchaseOrder.status.in_(("draft", "sent", "confirmed", "partially_received"))).count(),
+        "open_receipts": db.query(GoodsReceipt).filter(GoodsReceipt.status.in_(("open", "posted"))).count(),
+        "unmatched_invoices": unmatched_invoices,
+        "price_deviations": price_deviations,
+        "risky_conditions": len([row for row in condition_rows if int(row.get("missing_value") or 0) > 0]),
+        "new_documents": db.query(DocumentInboxItem).filter(DocumentInboxItem.status == "new").count(),
+    }
+
+
+def _paperless_mode_label(mode: str | None) -> str:
+    mapping = {
+        "poll_api": "Abruf per API",
+        "manual_link_only": "Nur manuelle Verknüpfung",
+        "consume_outbound_only": "Nur Ausgang archivieren",
+    }
+    return mapping.get(str(mode or "").strip(), "Abruf per API")
+
+
+def _document_inbox_status_label(status: str | None) -> str:
+    mapping = {
+        "new": "Neu",
+        "matched": "Zugeordnet",
+        "ignored": "Ignoriert",
+    }
+    key = str(status or "").strip().lower()
+    return mapping.get(key, status or "")
+
+
+def _mail_thread_status_label(status: str | None) -> str:
+    mapping = {
+        "open": "Offen",
+        "waiting": "Wartet",
+        "closed": "Geschlossen",
+    }
+    key = str(status or "").strip().lower()
+    return mapping.get(key, status or "")
+
+
+def _mail_assignment_status_label(status: str | None) -> str:
+    mapping = {
+        "unassigned": "Nicht zugeordnet",
+        "suggested": "Vorgeschlagen",
+        "assigned": "Zugeordnet",
+    }
+    key = str(status or "").strip().lower()
+    return mapping.get(key, status or "")
+
+
+def _sync_job_direction_label(direction: str | None) -> str:
+    mapping = {
+        "push": "Senden",
+        "pull": "Abrufen",
+    }
+    key = str(direction or "").strip().lower()
+    return mapping.get(key, direction or "")
+
+
+def _sync_job_entity_label(entity_type: str | None) -> str:
+    mapping = {
+        "material": "Material",
+        "relation": "Kontakt",
+        "project": "Projekt",
+        "object": "Objekt",
+        "customer_object": "Kundenobjekt",
+        "workorder": "Arbeitsauftrag",
+        "timeline": "Timeline",
+        "document": "Dokument",
+    }
+    key = str(entity_type or "").strip().lower()
+    return mapping.get(key, entity_type or "")
+
+
+def _sync_job_status_label(status: str | None) -> str:
+    mapping = {
+        "queued": "Wartet",
+        "running": "Läuft",
+        "done": "Erfolgreich",
+        "failed": "Fehlgeschlagen",
+    }
+    key = str(status or "").strip().lower()
+    return mapping.get(key, status or "")
+
+
+def _upsert_document_inbox_item(db: Session, payload: dict) -> DocumentInboxItem | None:
+    document_id = str(payload.get("id") or payload.get("document_id") or "").strip()
+    if not document_id:
+        return None
+    row = db.query(DocumentInboxItem).filter(DocumentInboxItem.paperless_document_id == document_id).one_or_none()
+    created_date = None
+    created_raw = str(payload.get("created_date") or payload.get("created") or "").strip()
+    if created_raw:
+        try:
+            created_date = dt.datetime.fromisoformat(created_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            created_date = None
+    if not row:
+        row = DocumentInboxItem(
+            paperless_document_id=document_id,
+            status="new",
+            created_at=_utcnow_naive(),
+        )
+    row.title = str(payload.get("title") or payload.get("original_file_name") or "").strip() or row.title
+    row.correspondent = str(payload.get("correspondent_name") or payload.get("correspondent") or "").strip() or row.correspondent
+    row.document_type = str(payload.get("document_type_name") or payload.get("document_type") or "").strip() or row.document_type
+    row.created_date = created_date or row.created_date
+    row.metadata_json = json.dumps(payload, ensure_ascii=False)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _link_inbox_item_to_object(
+    db: Session,
+    *,
+    item: DocumentInboxItem,
+    object_type: str,
+    object_id: int,
+    paperless_title: str | None = None,
+) -> None:
+    _ensure_paperless_link(
+        db,
+        object_type=object_type,
+        object_id=int(object_id),
+        paperless_document_id=item.paperless_document_id,
+        paperless_title=paperless_title or item.title,
+    )
+    item.status = "matched"
+    item.suggested_object_type = str(object_type)
+    item.suggested_object_id = int(object_id)
+    db.add(item)
+    _document_timeline_add(
+        db,
+        object_type=str(object_type),
+        object_id=int(object_id),
+        title=f"Dokument zugeordnet: {item.title or item.paperless_document_id}",
+        paperless_document_id=item.paperless_document_id,
+        external_ref=f"paperless:{item.paperless_document_id}:{object_type}:{int(object_id)}",
+    )
+
+
+def _paperless_export_and_link(
+    db: Session,
+    *,
+    settings: dict[str, str | bool],
+    object_type: str,
+    object_id: int,
+    title: str,
+    lines: list[str],
+) -> str:
+    export_path = _build_plaintext_export(title, lines)
+    result = paperless_upload_document(
+        export_path,
+        settings,
+        title=title,
+        mime="text/plain",
+    )
+    document_id = str(result.get("document_id") or "").strip()
+    if not document_id:
+        raise ValueError("Paperless hat keine Dokument-ID zurückgegeben.")
+    _ensure_paperless_link(
+        db,
+        object_type=object_type,
+        object_id=int(object_id),
+        paperless_document_id=document_id,
+        paperless_title=title,
+    )
+    return document_id
 
 
 # ---------------------------
 # Einkauf: Bestellungen
 # ---------------------------
 
-@app.get("/purchase/orders", response_class=HTMLResponse)
-def purchase_orders_list(
+@app.get("/einkauf", response_class=HTMLResponse)
+@app.get("/einkauf/dashboard", response_class=HTMLResponse)
+def einkauf_dashboard(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    condition_rows = calculate_condition_progress(db)
+    inbox_rows = (
+        db.query(DocumentInboxItem)
+        .order_by(DocumentInboxItem.created_date.desc(), DocumentInboxItem.id.desc())
+        .limit(20)
+        .all()
+    )
+    suppliers = {int(row.id): row for row in db.query(Supplier).all()}
+    return templates.TemplateResponse(
+        "einkauf/dashboard.html",
+        _ctx(
+            request,
+            user=user,
+            stats=_dashboard_purchase_stats(db),
+            condition_rows=condition_rows,
+            suppliers=suppliers,
+            inbox_rows=inbox_rows,
+        ),
+    )
+
+
+@app.get("/einkauf/bestellungen", response_class=HTMLResponse)
+def einkauf_orders_list(
     request: Request,
     user=Depends(require_admin),
+    supplier_id: int = 0,
     status: str = "",
     q: str = "",
     db: Session = Depends(db_session),
 ):
     query = db.query(PurchaseOrder)
-    status = (status or "").strip().lower()
-    if status in ("draft", "sent", "confirmed", "received"):
-        query = query.filter(PurchaseOrder.status == status)
-    q = (q or "").strip()
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(PurchaseOrder.po_number.ilike(like), PurchaseOrder.note.ilike(like)))
-    rows = query.order_by(PurchaseOrder.id.desc()).limit(300).all()
-    suppliers = {s.id: s for s in db.query(Supplier).all()}
-    line_counts_raw = (
-        db.query(PurchaseOrderLine.purchase_order_id, func.count(PurchaseOrderLine.id))
-        .group_by(PurchaseOrderLine.purchase_order_id)
+    if int(supplier_id or 0) > 0:
+        query = query.filter(PurchaseOrder.supplier_id == int(supplier_id))
+    normalized_status = (status or "").strip().lower()
+    if normalized_status:
+        query = query.filter(PurchaseOrder.status == normalized_status)
+    search = (q or "").strip()
+    if search:
+        like = f"%{search}%"
+        query = query.filter(
+            or_(
+                PurchaseOrder.order_no.ilike(like),
+                PurchaseOrder.po_number.ilike(like),
+                PurchaseOrder.note.ilike(like),
+            )
+        )
+    rows = query.order_by(func.coalesce(PurchaseOrder.order_date, PurchaseOrder.created_at).desc(), PurchaseOrder.id.desc()).limit(300).all()
+    suppliers = _active_suppliers(db)
+    supplier_map = {int(row.id): row for row in suppliers}
+    line_rows = (
+        db.query(PurchaseOrderLine)
+        .filter(PurchaseOrderLine.purchase_order_id.in_([int(row.id) for row in rows]))
         .all()
+        if rows
+        else []
     )
-    line_counts = {int(order_id): int(cnt) for order_id, cnt in line_counts_raw}
+    line_map: dict[int, list[PurchaseOrderLine]] = {}
+    for line in line_rows:
+        line_map.setdefault(int(line.purchase_order_id), []).append(line)
+    order_totals = {order_id: _purchase_order_sum_cents(items) for order_id, items in line_map.items()}
     return templates.TemplateResponse(
-        "purchase/orders_list.html",
+        "einkauf/orders_list.html",
         _ctx(
             request,
             user=user,
             rows=rows,
             suppliers=suppliers,
-            line_counts=line_counts,
-            status=status,
-            q=q,
+            supplier_map=supplier_map,
+            supplier_id=int(supplier_id or 0),
+            status=normalized_status,
+            q=search,
+            order_totals=order_totals,
             purchase_status_label=_purchase_status_label,
+            format_date=_format_date_local,
         ),
     )
 
 
-@app.post("/purchase/orders/from_product")
-async def purchase_order_from_product(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+@app.get("/einkauf/bestellungen/neu", response_class=HTMLResponse)
+def einkauf_order_new_get(
+    request: Request,
+    user=Depends(require_admin),
+    supplier_id: int = 0,
+    product_id: int = 0,
+    qty: int = 1,
+    expected_cost: str = "",
+    note: str = "",
+    db: Session = Depends(db_session),
+):
+    line_rows = [{"product_id": str(product_id or ""), "qty_ordered": str(max(1, int(qty or 1))), "unit_price_expected": expected_cost, "supplier_product_no": "", "note": note}]
+    while len(line_rows) < 6:
+        line_rows.append({"product_id": "", "qty_ordered": "", "unit_price_expected": "", "supplier_product_no": "", "note": ""})
+    return templates.TemplateResponse(
+        "einkauf/order_form.html",
+        _ctx(
+            request,
+            user=user,
+            page_title="Bestellung anlegen",
+            form_action="/einkauf/bestellungen/neu",
+            row=None,
+            suppliers=_active_suppliers(db),
+            suppliers_by_id={int(row.id): row for row in db.query(Supplier).all()},
+            products=_active_products_for_einkauf(db, [int(product_id or 0)] if int(product_id or 0) > 0 else []),
+            condition_sets=_supplier_condition_sets(db),
+            form_data={"supplier_id": str(int(supplier_id or 0)), "note": note},
+            form_errors={},
+            line_rows=line_rows,
+            order_date_value=dt.datetime.utcnow().strftime("%Y-%m-%d"),
+            wanted_date_value="",
+            first_error_field_id="order_supplier_id",
+        ),
+    )
+
+
+@app.post("/einkauf/bestellungen/aus-produkt")
+async def einkauf_order_from_product(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     form = await request.form()
     form_data = _extract_form_data(form)
     try:
         product_id = int(form.get("product_id") or 0)
     except Exception:
         product_id = 0
-    draft_key = f"draft:/purchase/orders/from_product:{int(product_id or 0)}"
+    draft_key = f"draft:/einkauf/bestellungen/aus-produkt:{int(product_id or 0)}"
     _draft_set(request, draft_key, form_data)
     try:
         supplier_id = int(form.get("supplier_id") or 0)
@@ -8362,77 +20583,296 @@ async def purchase_order_from_product(request: Request, user=Depends(require_adm
     except Exception:
         qty = 0
     product = db.get(Product, product_id) if product_id else None
-    if not product:
-        _flash(request, "Produkt fehlt.", "error")
-        return RedirectResponse("/purchase/orders", status_code=302)
-    if not bool(product.active):
-        _flash(request, "Archivierte Produkte können nicht neu bestellt werden.", "error")
-        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
     supplier = db.get(Supplier, supplier_id) if supplier_id else None
-    if not supplier or not supplier.active:
+    if not product or not bool(product.active):
+        _flash(request, "Produkt fehlt oder ist archiviert.", "error")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    if not supplier or not bool(supplier.active):
         _flash(request, "Lieferant fehlt oder ist inaktiv.", "error")
         return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
     if qty <= 0:
         _flash(request, "Menge muss größer 0 sein.", "error")
         return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
     try:
-        expected_cost_cents = _parse_eur_to_cents(form.get("expected_cost"), "Erwarteter EK (netto)")
+        expected_cost_cents = _parse_eur_to_cents(form.get("expected_cost"), "Erwarteter EK")
     except ValueError as exc:
         _flash(request, str(exc), "error")
         return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
 
+    order_no = _next_po_number(db)
+    condition_set = (
+        db.query(SupplierConditionSet)
+        .filter(SupplierConditionSet.supplier_id == int(supplier_id), SupplierConditionSet.active == True)
+        .order_by(SupplierConditionSet.valid_from.desc(), SupplierConditionSet.id.desc())
+        .first()
+    )
     order = PurchaseOrder(
-        supplier_id=supplier_id,
-        po_number=_next_po_number(db),
+        supplier_id=int(supplier_id),
+        order_no=order_no,
+        po_number=order_no,
+        order_date=_utcnow_naive(),
         status="draft",
+        condition_set_id=int(condition_set.id) if condition_set else None,
         note=(form.get("note") or "").strip() or None,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
     )
     db.add(order)
     db.flush()
-    db.add(
-        PurchaseOrderLine(
-            purchase_order_id=order.id,
-            product_id=product_id,
-            qty=qty,
-            expected_cost_cents=expected_cost_cents,
-            confirmed_cost_cents=None,
-        )
+    line = PurchaseOrderLine(
+        purchase_order_id=int(order.id),
+        product_id=int(product_id),
+        qty=int(qty),
+        qty_ordered=int(qty),
+        qty_received=0,
+        expected_cost_cents=expected_cost_cents,
+        confirmed_cost_cents=None,
+        unit_price_expected=expected_cost_cents,
+        supplier_product_no=(form.get("supplier_product_no") or "").strip() or None,
+        note=(form.get("note") or "").strip() or None,
+    )
+    db.add(line)
+    db.flush()
+    _record_purchase_price(
+        db,
+        product_id=int(product_id),
+        supplier_id=int(supplier_id),
+        source_type="order",
+        source_id=int(order.id),
+        effective_date=order.order_date or _utcnow_naive(),
+        qty=int(qty),
+        unit_cost=expected_cost_cents,
     )
     db.commit()
     _draft_clear(request, draft_key)
-    _flash(request, f"Bestellung {order.po_number} angelegt.", "info")
-    return RedirectResponse(f"/purchase/orders/{order.id}", status_code=302)
+    _flash(request, f"Bestellung {order_no} angelegt.", "info")
+    return RedirectResponse(f"/einkauf/bestellungen/{order.id}", status_code=302)
 
 
-@app.get("/purchase/orders/{order_id}", response_class=HTMLResponse)
-def purchase_order_detail(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+@app.post("/einkauf/bestellungen/neu")
+async def einkauf_order_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    supplier_id = _to_int(form.get("supplier_id"), 0)
+    if supplier_id <= 0 or not db.get(Supplier, supplier_id):
+        form_errors["supplier_id"] = "Lieferant ist erforderlich."
+    try:
+        order_date = _parse_date_input(form.get("order_date"))
+    except ValueError:
+        order_date = None
+        form_errors["order_date"] = "Ungültiges Bestelldatum."
+    try:
+        wanted_date = _parse_date_input(form.get("wanted_date"))
+    except ValueError:
+        wanted_date = None
+        form_errors["wanted_date"] = "Ungültiger Wunschtermin."
+    lines, line_errors, extra_product_ids = _parse_order_line_rows(db, form)
+    form_errors.update(line_errors)
+    if form_errors:
+        return templates.TemplateResponse(
+            "einkauf/order_form.html",
+            _ctx(
+                request,
+                user=user,
+                page_title="Bestellung anlegen",
+                form_action="/einkauf/bestellungen/neu",
+                row=None,
+                suppliers=_active_suppliers(db),
+                suppliers_by_id={int(row.id): row for row in db.query(Supplier).all()},
+                products=_active_products_for_einkauf(db, extra_product_ids),
+                condition_sets=_supplier_condition_sets(db),
+                form_data=form_data,
+                form_errors=form_errors,
+                line_rows=_einkauf_order_line_rows_from_request(form),
+                order_date_value=_coerce_date_value(form.get("order_date")) or dt.datetime.utcnow().strftime("%Y-%m-%d"),
+                wanted_date_value=_coerce_date_value(form.get("wanted_date")),
+                first_error_field_id="order_supplier_id",
+            ),
+        )
+
+    order_no = (form.get("order_no") or "").strip() or _next_po_number(db)
+    order = PurchaseOrder(
+        supplier_id=int(supplier_id),
+        order_no=order_no,
+        po_number=order_no,
+        order_date=order_date or _utcnow_naive(),
+        wanted_date=wanted_date,
+        status="draft",
+        condition_set_id=_to_int(form.get("condition_set_id"), 0) or None,
+        note=(form.get("note") or "").strip() or None,
+        paperless_document_id=(form.get("paperless_document_id") or "").strip() or None,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(order)
+    db.flush()
+    for entry in lines:
+        line = PurchaseOrderLine(
+            purchase_order_id=int(order.id),
+            product_id=int(entry["product_id"]),
+            qty=int(entry["qty_ordered"]),
+            qty_ordered=int(entry["qty_ordered"]),
+            qty_received=0,
+            expected_cost_cents=entry["unit_price_expected"],
+            confirmed_cost_cents=None,
+            unit_price_expected=entry["unit_price_expected"],
+            supplier_product_no=entry["supplier_product_no"],
+            note=entry["note"],
+        )
+        db.add(line)
+        _record_purchase_price(
+            db,
+            product_id=int(entry["product_id"]),
+            supplier_id=int(supplier_id),
+            source_type="order",
+            source_id=int(order.id),
+            effective_date=order.order_date or _utcnow_naive(),
+            qty=int(entry["qty_ordered"]),
+            unit_cost=entry["unit_price_expected"],
+        )
+    db.commit()
+    _flash(request, f"Bestellung {order_no} gespeichert.", "info")
+    return RedirectResponse(f"/einkauf/bestellungen/{order.id}", status_code=302)
+
+
+@app.get("/einkauf/bestellungen/{order_id}/bearbeiten", response_class=HTMLResponse)
+def einkauf_order_edit_get(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(PurchaseOrder, order_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == int(order_id)).order_by(PurchaseOrderLine.id.asc()).all()
+    return templates.TemplateResponse(
+        "einkauf/order_form.html",
+        _ctx(
+            request,
+            user=user,
+            page_title=f"Bestellung bearbeiten {row.order_no or row.po_number}",
+            form_action=f"/einkauf/bestellungen/{order_id}/bearbeiten",
+            row=row,
+            suppliers=_active_suppliers(db),
+            suppliers_by_id={int(item.id): item for item in db.query(Supplier).all()},
+            products=_active_products_for_einkauf(db, [int(line.product_id) for line in lines]),
+            condition_sets=_supplier_condition_sets(db),
+            form_data={},
+            form_errors={},
+            line_rows=_einkauf_order_line_rows_from_model(lines),
+            order_date_value=row.order_date.strftime("%Y-%m-%d") if row.order_date else "",
+            wanted_date_value=row.wanted_date.strftime("%Y-%m-%d") if row.wanted_date else "",
+            first_error_field_id="order_supplier_id",
+        ),
+    )
+
+
+@app.post("/einkauf/bestellungen/{order_id}/bearbeiten")
+async def einkauf_order_edit_post(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(PurchaseOrder, order_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    supplier_id = _to_int(form.get("supplier_id"), 0)
+    if supplier_id <= 0 or not db.get(Supplier, supplier_id):
+        form_errors["supplier_id"] = "Lieferant ist erforderlich."
+    try:
+        order_date = _parse_date_input(form.get("order_date"))
+    except ValueError:
+        order_date = None
+        form_errors["order_date"] = "Ungültiges Bestelldatum."
+    try:
+        wanted_date = _parse_date_input(form.get("wanted_date"))
+    except ValueError:
+        wanted_date = None
+        form_errors["wanted_date"] = "Ungültiger Wunschtermin."
+    lines, line_errors, extra_product_ids = _parse_order_line_rows(db, form)
+    form_errors.update(line_errors)
+    existing_lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == int(order_id)).order_by(PurchaseOrderLine.id.asc()).all()
+    if any(int(getattr(line, "qty_received", 0) or 0) > 0 for line in existing_lines):
+        if len(lines) != len(existing_lines):
+            form_errors["lines"] = "Positionen mit bereits gebuchten Mengen dürfen nicht strukturell geändert werden."
+        else:
+            for old, new in zip(existing_lines, lines):
+                if int(old.product_id) != int(new["product_id"]) or int(getattr(old, "qty_ordered", old.qty) or 0) != int(new["qty_ordered"]):
+                    form_errors["lines"] = "Produkt und Bestellmenge sind nach Wareneingang gesperrt."
+                    break
+    if form_errors:
+        return templates.TemplateResponse(
+            "einkauf/order_form.html",
+            _ctx(
+                request,
+                user=user,
+                page_title=f"Bestellung bearbeiten {row.order_no or row.po_number}",
+                form_action=f"/einkauf/bestellungen/{order_id}/bearbeiten",
+                row=row,
+                suppliers=_active_suppliers(db),
+                suppliers_by_id={int(item.id): item for item in db.query(Supplier).all()},
+                products=_active_products_for_einkauf(db, extra_product_ids or [int(line.product_id) for line in existing_lines]),
+                condition_sets=_supplier_condition_sets(db),
+                form_data=form_data,
+                form_errors=form_errors,
+                line_rows=_einkauf_order_line_rows_from_request(form),
+                order_date_value=_coerce_date_value(form.get("order_date")),
+                wanted_date_value=_coerce_date_value(form.get("wanted_date")),
+                first_error_field_id="order_supplier_id",
+            ),
+        )
+
+    row.supplier_id = int(supplier_id)
+    row.order_no = (form.get("order_no") or "").strip() or row.order_no or row.po_number or _next_po_number(db)
+    row.po_number = row.order_no
+    row.order_date = order_date or row.order_date or _utcnow_naive()
+    row.wanted_date = wanted_date
+    row.condition_set_id = _to_int(form.get("condition_set_id"), 0) or None
+    row.note = (form.get("note") or "").strip() or None
+    row.paperless_document_id = (form.get("paperless_document_id") or "").strip() or None
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+
+    if not any(int(getattr(line, "qty_received", 0) or 0) > 0 for line in existing_lines):
+        for old in existing_lines:
+            db.delete(old)
+        db.flush()
+        for entry in lines:
+            db.add(
+                PurchaseOrderLine(
+                    purchase_order_id=int(row.id),
+                    product_id=int(entry["product_id"]),
+                    qty=int(entry["qty_ordered"]),
+                    qty_ordered=int(entry["qty_ordered"]),
+                    qty_received=0,
+                    expected_cost_cents=entry["unit_price_expected"],
+                    confirmed_cost_cents=None,
+                    unit_price_expected=entry["unit_price_expected"],
+                    supplier_product_no=entry["supplier_product_no"],
+                    note=entry["note"],
+                )
+            )
+    else:
+        for old, new in zip(existing_lines, lines):
+            old.unit_price_expected = new["unit_price_expected"]
+            old.expected_cost_cents = new["unit_price_expected"]
+            old.supplier_product_no = new["supplier_product_no"]
+            old.note = new["note"]
+            db.add(old)
+
+    db.commit()
+    _flash(request, "Bestellung aktualisiert.", "info")
+    return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
+
+
+@app.get("/einkauf/bestellungen/{order_id}", response_class=HTMLResponse)
+def einkauf_order_detail(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     order = db.get(PurchaseOrder, order_id)
     if not order:
         raise HTTPException(status_code=404)
-    lines = (
-        db.query(PurchaseOrderLine)
-        .filter(PurchaseOrderLine.purchase_order_id == order_id)
-        .order_by(PurchaseOrderLine.id.asc())
-        .all()
-    )
-    product_ids = sorted({int(line.product_id) for line in lines})
-    products = {p.id: p for p in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
-    supplier = db.get(Supplier, order.supplier_id) if order.supplier_id else None
-    linked_messages = []
-    if order.po_number:
-        like = f"%{order.po_number}%"
-        linked_messages = (
-            db.query(EmailMessage)
-            .filter(or_(EmailMessage.subject.ilike(like), EmailMessage.snippet.ilike(like), EmailMessage.body_text.ilike(like)))
-            .order_by(EmailMessage.id.desc())
-            .limit(80)
-            .all()
-        )
-    warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
-    owners = db.query(Owner).filter(Owner.active == True).order_by(Owner.name.asc()).all()
-    condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == int(order_id)).order_by(PurchaseOrderLine.id.asc()).all()
+    product_ids = [int(line.product_id) for line in lines]
+    products = {int(row.id): row for row in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+    supplier = db.get(Supplier, int(order.supplier_id)) if order.supplier_id else None
+    paperless_settings = _paperless_settings(db, include_secret=False)
     return templates.TemplateResponse(
-        "purchase/order_detail.html",
+        "einkauf/order_detail.html",
         _ctx(
             request,
             user=user,
@@ -8440,16 +20880,1357 @@ def purchase_order_detail(order_id: int, request: Request, user=Depends(require_
             lines=lines,
             products=products,
             supplier=supplier,
-            linked_messages=linked_messages,
-            warehouses=warehouses,
-            owners=owners,
-            condition_defs=condition_defs,
+            order_total=_purchase_order_sum_cents(lines),
+            paperless_links=_paperless_links_for_object(db, "purchase_order", int(order.id)),
+            unmatched_documents=_document_inbox_unmatched(db, limit=50),
             purchase_status_label=_purchase_status_label,
-            receive_form_data={},
-            receive_form_errors={},
+            paperless_base_url=str(paperless_settings.get("base_url") or "").strip(),
+            paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.post("/einkauf/bestellungen/{order_id}/status")
+async def einkauf_order_status(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    order = db.get(PurchaseOrder, order_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    status = (form.get("status") or "").strip().lower()
+    if status not in ("draft", "sent", "confirmed", "partially_received", "received", "closed", "cancelled"):
+        _flash(request, "Ungültiger Status.", "error")
+        return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
+    order.status = status
+    order.updated_at = _utcnow_naive()
+    if status == "sent" and not order.sent_at:
+        order.sent_at = _utcnow_naive()
+    if status == "confirmed" and not order.confirmed_at:
+        order.confirmed_at = _utcnow_naive()
+    db.add(order)
+    db.commit()
+    _flash(request, "Bestellstatus gespeichert.", "info")
+    return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
+
+
+@app.post("/einkauf/bestellungen/{order_id}/dokumente/link")
+async def einkauf_order_document_link(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    order = db.get(PurchaseOrder, order_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    inbox_id = _to_int(form.get("document_inbox_id"), 0)
+    direct_id = (form.get("paperless_document_id") or "").strip()
+    if inbox_id > 0:
+        item = db.get(DocumentInboxItem, inbox_id)
+        if item:
+            _link_inbox_item_to_object(db, item=item, object_type="purchase_order", object_id=int(order_id))
+            if not order.paperless_document_id:
+                order.paperless_document_id = item.paperless_document_id
+            db.add(order)
+            db.commit()
+            _flash(request, "Dokument verknüpft.", "info")
+            return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
+    if direct_id:
+        _ensure_paperless_link(db, object_type="purchase_order", object_id=int(order_id), paperless_document_id=direct_id)
+        if not order.paperless_document_id:
+            order.paperless_document_id = direct_id
+        db.add(order)
+        db.commit()
+        _flash(request, "Dokument-ID verknüpft.", "info")
+        return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
+    _flash(request, "Bitte ein Dokument auswählen.", "error")
+    return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
+
+
+@app.post("/einkauf/bestellungen/{order_id}/dokumente/export")
+def einkauf_order_document_export(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    order = db.get(PurchaseOrder, order_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    settings = _paperless_settings(db, include_secret=True)
+    lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == int(order_id)).order_by(PurchaseOrderLine.id.asc()).all()
+    product_map = {int(row.id): row for row in db.query(Product).filter(Product.id.in_([int(line.product_id) for line in lines])).all()} if lines else {}
+    try:
+        document_id = _paperless_export_and_link(
+            db,
+            settings=settings,
+            object_type="purchase_order",
+            object_id=int(order_id),
+            title=f"Bestellung {order.order_no or order.po_number}",
+            lines=[
+                f"Bestellung: {order.order_no or order.po_number}",
+                f"Lieferant: {(db.get(Supplier, int(order.supplier_id)).name if order.supplier_id and db.get(Supplier, int(order.supplier_id)) else '-')}",
+                f"Datum: {_format_date_local(order.order_date or order.created_at)}",
+            ]
+            + [
+                f"- {product_map.get(int(line.product_id)).name if product_map.get(int(line.product_id)) else line.product_id}: {int(getattr(line, 'qty_ordered', None) or line.qty or 0)} x {(_format_eur(line.unit_price_expected if line.unit_price_expected is not None else line.expected_cost_cents) if (line.unit_price_expected is not None or line.expected_cost_cents is not None) else '-')}"
+                for line in lines
+            ],
+        )
+        order.paperless_document_id = document_id
+        db.add(order)
+        db.commit()
+        _flash(request, f"Zusammenfassung an Paperless gesendet ({document_id}).", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Paperless-Export fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
+
+
+@app.get("/einkauf/konditionen/import", response_class=HTMLResponse)
+def einkauf_condition_import_start(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "einkauf/agreement_import_start.html",
+        _ctx(
+            request,
+            user=user,
+            supplier_row=_agreement_supplier_candidate(db),
+            manufacturer_row=_agreement_brand_candidate(db, AGREEMENT_SEG_BRAND),
+            paperless_ready=bool(paperless_settings.get("enabled")) and bool(str(paperless_settings.get("base_url") or "").strip()),
+        ),
+    )
+
+
+@app.post("/einkauf/konditionen/import/upload")
+async def einkauf_condition_import_upload(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    upload = form.get("agreement_pdf")
+    filename = str(getattr(upload, "filename", "") or "").strip()
+    if not filename or not hasattr(upload, "read"):
+        _flash(request, "Bitte eine PDF-Datei auswählen.", "error")
+        return RedirectResponse("/einkauf/konditionen/import", status_code=302)
+    if Path(filename).suffix.lower() != ".pdf":
+        _flash(request, "Nur PDF-Dateien sind erlaubt.", "error")
+        return RedirectResponse("/einkauf/konditionen/import", status_code=302)
+    payload = await upload.read()
+    if not payload:
+        _flash(request, "Die hochgeladene Datei ist leer.", "error")
+        return RedirectResponse("/einkauf/konditionen/import", status_code=302)
+
+    supplier_row = _agreement_supplier_candidate(db)
+    draft = agreement_create_draft(
+        db,
+        supplier_id=int(supplier_row.id) if supplier_row else None,
+        supplier_key=AGREEMENT_SEG_SUPPLIER_KEY,
+        source_type="upload",
+        source_filename=filename or "source.pdf",
+    )
+    agreement_save_upload_source(draft, filename=filename or "source.pdf", payload=payload)
+    try:
+        draft.raw_text = agreement_extract_pdf_text(draft.source_file_path or "")
+    except Exception as exc:
+        draft.raw_text = None
+        _flash(request, f"PDF-Text konnte nicht direkt gelesen werden: {exc}", "warn")
+    agreement_parse_draft(db, draft, force_seg=False)
+    db.commit()
+    return RedirectResponse(f"/einkauf/konditionen/import/{draft.id}/review", status_code=302)
+
+
+@app.get("/einkauf/konditionen/import/paperless", response_class=HTMLResponse)
+def einkauf_condition_import_paperless_pick(
+    request: Request,
+    user=Depends(require_admin),
+    q: str = "",
+    db: Session = Depends(db_session),
+):
+    settings = _paperless_settings(db, include_secret=True)
+    rows: list[dict] = []
+    more_count = 0
+    error_message = ""
+    if bool(settings.get("enabled")) and bool(settings.get("token")):
+        try:
+            ranked_rows = _agreement_rank_documents(paperless_list_documents(settings, limit=120, query=(q or "").strip() or None), query=q or "")
+            more_count = max(0, len(ranked_rows) - 12)
+            rows = []
+            for row in ranked_rows[:12]:
+                payload = dict(row)
+                payload["smart_tags"] = _agreement_document_tags(payload)
+                rows.append(payload)
+        except Exception as exc:
+            error_message = str(exc)
+    else:
+        error_message = "Paperless ist nicht vollständig konfiguriert."
+    return templates.TemplateResponse(
+        "einkauf/agreement_import_paperless_pick.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            more_count=more_count,
+            q=(q or "").strip(),
+            error_message=error_message,
+            supplier_row=_agreement_supplier_candidate(db),
+            manufacturer_row=_agreement_brand_candidate(db, AGREEMENT_SEG_BRAND),
+        ),
+    )
+
+
+@app.post("/einkauf/konditionen/import/paperless")
+async def einkauf_condition_import_paperless_select(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    document_id = (form.get("paperless_document_id") or "").strip()
+    if not document_id:
+        _flash(request, "Bitte ein Paperless-Dokument auswählen.", "error")
+        return RedirectResponse("/einkauf/konditionen/import/paperless", status_code=302)
+    settings = _paperless_settings(db, include_secret=True)
+    if not (bool(settings.get("enabled")) and bool(settings.get("token"))):
+        _flash(request, "Paperless ist nicht vollständig konfiguriert.", "error")
+        return RedirectResponse("/einkauf/konditionen/import", status_code=302)
+    supplier_row = _agreement_supplier_candidate(db)
+    draft = agreement_create_draft(
+        db,
+        supplier_id=int(supplier_row.id) if supplier_row else None,
+        supplier_key=AGREEMENT_SEG_SUPPLIER_KEY,
+        source_type="paperless",
+        paperless_document_id=document_id,
+    )
+    try:
+        agreement_load_paperless_source(draft, settings=settings, document_id=document_id)
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Paperless-Dokument konnte nicht gelesen werden: {exc}", "error")
+        return RedirectResponse("/einkauf/konditionen/import/paperless", status_code=302)
+    if not draft.raw_text:
+        _flash(request, "Paperless liefert keinen nutzbaren Text. Bitte OCR im Dokument prüfen.", "warn")
+    agreement_parse_draft(db, draft, force_seg=False)
+    db.commit()
+    return RedirectResponse(f"/einkauf/konditionen/import/{draft.id}/review", status_code=302)
+
+
+@app.get("/einkauf/konditionen/import/{draft_id}/quelle")
+def einkauf_condition_import_source_file(draft_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    draft = db.get(AgreementImportDraft, draft_id)
+    if not draft or not draft.source_file_path:
+        raise HTTPException(status_code=404)
+    path = Path(str(draft.source_file_path))
+    if not path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type="application/pdf", filename=draft.source_filename or path.name)
+
+
+@app.get("/einkauf/konditionen/import/{draft_id}/review", response_class=HTMLResponse)
+def einkauf_condition_import_review_get(
+    draft_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    force_seg: int = 0,
+    db: Session = Depends(db_session),
+):
+    draft = db.get(AgreementImportDraft, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404)
+    forced = int(force_seg or 0) > 0
+    extracted = agreement_draft_extracted_payload(draft)
+    validation = agreement_draft_validation_payload(draft)
+    if not extracted or (forced and bool(validation.get("guardrail_blocked"))):
+        extracted, validation = agreement_parse_draft(db, draft, force_seg=forced)
+        db.commit()
+    return templates.TemplateResponse(
+        "einkauf/agreement_review_seg.html",
+        _ctx(
+            request,
+            user=user,
+            **_agreement_review_context(db, draft, extracted, validation),
+        ),
+    )
+
+
+@app.post("/einkauf/konditionen/import/{draft_id}/review")
+async def einkauf_condition_import_review_post(draft_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    draft = db.get(AgreementImportDraft, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    action = (form.get("action") or "import").strip() or "import"
+    force_seg = _agreement_is_checked(form.get("force_seg"))
+    if action == "reparse":
+        if draft.source_type == "upload" and draft.source_file_path and Path(str(draft.source_file_path)).is_file():
+            try:
+                draft.raw_text = agreement_extract_pdf_text(draft.source_file_path)
+            except Exception as exc:
+                _flash(request, f"Dokument konnte nicht neu gelesen werden: {exc}", "warn")
+        elif draft.source_type == "paperless" and draft.paperless_document_id:
+            settings = _paperless_settings(db, include_secret=True)
+            try:
+                agreement_load_paperless_source(draft, settings=settings, document_id=draft.paperless_document_id)
+            except Exception as exc:
+                _flash(request, f"Paperless-Dokument konnte nicht neu gelesen werden: {exc}", "warn")
+        extracted, validation = agreement_parse_draft(db, draft, force_seg=force_seg)
+        db.commit()
+        return RedirectResponse(f"/einkauf/konditionen/import/{draft.id}/review?force_seg={1 if force_seg else 0}", status_code=302)
+
+    existing_extracted = agreement_draft_extracted_payload(draft)
+    form_values = {
+        "brand": (form.get("brand") or "").strip(),
+        "customer_no": (form.get("customer_no") or "").strip(),
+        "agreement_version": (form.get("agreement_version") or "").strip(),
+        "valid_from": (form.get("valid_from") or "").strip(),
+        "valid_to": (form.get("valid_to") or "").strip(),
+        "target_solo": (form.get("target_solo") or "").strip(),
+        "target_einbau": (form.get("target_einbau") or "").strip(),
+        "target_gesamt": (form.get("target_gesamt") or "").strip(),
+        "base_percent": (form.get("base_percent") or "").strip(),
+        "basis_label": (form.get("basis_label") or "").strip(),
+        "skonto_days": (form.get("skonto_days") or "").strip(),
+        "skonto_percent": (form.get("skonto_percent") or "").strip(),
+        "net_days": (form.get("net_days") or "").strip(),
+        "concentration_bonus_percent": (form.get("concentration_bonus_percent") or "").strip(),
+        "duplicate_mode": (form.get("duplicate_mode") or "").strip(),
+        "force_seg": "1" if force_seg else "",
+        "create_supplier_if_missing": "1" if _agreement_is_checked(form.get("create_supplier_if_missing")) else "",
+        "create_brand_if_missing": "1" if _agreement_is_checked(form.get("create_brand_if_missing")) else "",
+    }
+    annual_rows = _agreement_rows_from_form(form, "annual", mode="percent")
+    achievement_rows = _agreement_rows_from_form(form, "achievement", mode="amount")
+    tier_rows = _agreement_rows_from_form(form, "tier", mode="percent")
+    extracted, form_errors = _agreement_review_payload_from_form(form, existing_extracted)
+    validation = agreement_draft_validation_payload(draft)
+    if not form_errors:
+        validation = agreement_save_review_payload(db, draft, extracted, force_seg=force_seg)
+    if action == "save" and not form_errors:
+        db.commit()
+        _flash(request, "Prüfstand gespeichert.", "info")
+        return RedirectResponse(f"/einkauf/konditionen/import/{draft.id}/review?force_seg={1 if force_seg else 0}", status_code=302)
+
+    duplicate_candidate = _agreement_duplicate_condition_set(
+        db,
+        supplier_id=int(draft.supplier_id or (_agreement_supplier_candidate(db).id if _agreement_supplier_candidate(db) else 0)),
+        agreement_version=str(extracted.get("agreement_version") or "").strip() or None,
+        valid_from=str(extracted.get("valid_from") or "").strip() or None,
+    )
+    duplicate_mode = form_values.get("duplicate_mode") or ("update" if duplicate_candidate else "duplicate")
+    form_values["duplicate_mode"] = duplicate_mode
+    if validation.get("guardrail_blocked"):
+        form_errors["guardrail"] = "Diese Importmaske ist nur für SEG Hausgeräte Jahresvereinbarungen gedacht."
+    if validation.get("missing_fields"):
+        form_errors.setdefault("missing_fields", "Bitte die markierten Pflichtfelder vervollständigen.")
+    if duplicate_candidate and duplicate_mode not in ("update", "duplicate"):
+        form_errors["duplicate_mode"] = "Bitte vorhandenen Vertrag aktualisieren oder bewusst duplizieren."
+
+    if form_errors:
+        db.rollback()
+        return templates.TemplateResponse(
+            "einkauf/agreement_review_seg.html",
+            _ctx(
+                request,
+                user=user,
+                **_agreement_review_context(
+                    db,
+                    draft,
+                    extracted,
+                    validation,
+                    form_values=form_values,
+                    annual_rows=annual_rows,
+                    achievement_rows=achievement_rows,
+                    tier_rows=tier_rows,
+                    form_errors=form_errors,
+                ),
+            ),
+        )
+
+    try:
+        row, warnings = _agreement_import_condition_set(
+            db,
+            draft=draft,
+            extracted=extracted,
+            duplicate_mode=duplicate_mode,
+            create_supplier_if_missing=_agreement_is_checked(form.get("create_supplier_if_missing")),
+            create_brand_if_missing=_agreement_is_checked(form.get("create_brand_if_missing")),
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        form_errors["__all__"] = str(exc)
+        return templates.TemplateResponse(
+            "einkauf/agreement_review_seg.html",
+            _ctx(
+                request,
+                user=user,
+                **_agreement_review_context(
+                    db,
+                    draft,
+                    extracted,
+                    validation,
+                    form_values=form_values,
+                    annual_rows=annual_rows,
+                    achievement_rows=achievement_rows,
+                    tier_rows=tier_rows,
+                    form_errors=form_errors,
+                ),
+            ),
+        )
+    _flash(request, "SEG Jahresvereinbarung übernommen.", "info")
+    for warning in warnings:
+        _flash(request, warning, "warn")
+    return RedirectResponse(f"/einkauf/konditionen/{row.id}", status_code=302)
+
+
+@app.get("/einkauf/konditionen/{condition_set_id}", response_class=HTMLResponse)
+def einkauf_condition_detail(condition_set_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(SupplierConditionSet, condition_set_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    supplier = db.get(Supplier, int(row.supplier_id)) if row.supplier_id else None
+    manufacturer = db.get(Manufacturer, int(row.manufacturer_id)) if row.manufacturer_id else None
+    device_kind = db.get(DeviceKind, int(row.device_kind_id)) if row.device_kind_id else None
+    targets = (
+        db.query(SupplierConditionTarget)
+        .filter(SupplierConditionTarget.condition_set_id == int(condition_set_id))
+        .order_by(SupplierConditionTarget.target_type.asc(), SupplierConditionTarget.id.asc())
+        .all()
+    )
+    flat_bonuses = (
+        db.query(SupplierConditionFlatBonus)
+        .filter(SupplierConditionFlatBonus.condition_set_id == int(condition_set_id))
+        .order_by(SupplierConditionFlatBonus.id.asc())
+        .all()
+    )
+    bonus_tiers = (
+        db.query(SupplierConditionBonusTier)
+        .filter(SupplierConditionBonusTier.condition_set_id == int(condition_set_id))
+        .order_by(SupplierConditionBonusTier.bonus_kind.asc(), SupplierConditionBonusTier.sort_order.asc(), SupplierConditionBonusTier.id.asc())
+        .all()
+    )
+    draft_rows = (
+        db.query(AgreementImportDraft)
+        .filter(AgreementImportDraft.condition_set_id == int(condition_set_id))
+        .order_by(func.coalesce(AgreementImportDraft.updated_at, AgreementImportDraft.created_at).desc(), AgreementImportDraft.id.desc())
+        .all()
+    )
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "einkauf/condition_set_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            supplier=supplier,
+            manufacturer=manufacturer,
+            device_kind=device_kind,
+            targets=targets,
+            flat_bonuses=flat_bonuses,
+            bonus_tiers=bonus_tiers,
+            draft_rows=draft_rows,
+            paperless_links=_paperless_links_for_object(db, "supplier_condition_set", int(condition_set_id)),
+            paperless_base_url=str(paperless_settings.get("base_url") or "").strip(),
+            paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.get("/einkauf/konditionen", response_class=HTMLResponse)
+def einkauf_conditions(request: Request, user=Depends(require_admin), supplier_id: int = 0, edit_id: int = 0, db: Session = Depends(db_session)):
+    rows = _supplier_condition_sets(db, int(supplier_id or 0) or None)
+    progress_rows = calculate_condition_progress(db)
+    progress_by_id = {int(item["condition_set"].id): item["progress"] for item in progress_rows}
+    edit_row = db.get(SupplierConditionSet, int(edit_id)) if int(edit_id or 0) > 0 else None
+    return templates.TemplateResponse(
+        "einkauf/konditionen.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            suppliers=_active_suppliers(db),
+            suppliers_by_id={int(row.id): row for row in db.query(Supplier).all()},
+            manufacturers=db.query(Manufacturer).order_by(Manufacturer.name.asc()).all(),
+            device_kinds=db.query(DeviceKind).order_by(DeviceKind.name.asc()).all(),
+            progress_by_id=progress_by_id,
+            supplier_id=int(supplier_id or 0),
+            edit_row=edit_row,
+            form_data={},
+            form_errors={},
+        ),
+    )
+
+
+@app.post("/einkauf/konditionen")
+async def einkauf_conditions_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_errors: dict[str, str] = {}
+    condition_set_id = _to_int(form.get("condition_set_id"), 0)
+    existing_row = db.get(SupplierConditionSet, int(condition_set_id)) if condition_set_id else None
+    supplier_id = _to_int(form.get("supplier_id"), 0)
+    if supplier_id <= 0 or not db.get(Supplier, supplier_id):
+        form_errors["supplier_id"] = "Lieferant ist erforderlich."
+    name = (form.get("name") or "").strip()
+    if not name:
+        form_errors["name"] = "Name ist erforderlich."
+    try:
+        valid_from = _parse_date_input(form.get("valid_from"))
+    except ValueError:
+        valid_from = None
+        form_errors["valid_from"] = "Ungültiges Datum."
+    try:
+        valid_to = _parse_date_input(form.get("valid_to"))
+    except ValueError:
+        valid_to = None
+        form_errors["valid_to"] = "Ungültiges Datum."
+    try:
+        skonto_percent = _parse_percent_value(form.get("skonto_percent"), "Skonto")
+        basic_discount_percent = _parse_percent_value(form.get("basic_discount_percent"), "Grundrabatt")
+        extra_discount_percent = _parse_percent_value(form.get("extra_discount_percent"), "Zusatzrabatt")
+        bonus_percent = _parse_percent_value(form.get("bonus_percent"), "Bonus")
+        freight_free_from = _parse_eur_to_cents(form.get("freight_free_from"), "Frachtfrei ab")
+        min_order_value = _parse_eur_to_cents(form.get("min_order_value"), "Mindestbestellwert")
+        bonus_target_value = _parse_eur_to_cents(form.get("bonus_target_value"), "Bonusziel")
+    except ValueError as exc:
+        form_errors["__all__"] = str(exc)
+        skonto_percent = basic_discount_percent = extra_discount_percent = bonus_percent = None
+        freight_free_from = min_order_value = bonus_target_value = None
+    if form_errors:
+        rows = _supplier_condition_sets(db)
+        progress_rows = calculate_condition_progress(db)
+        progress_by_id = {int(item["condition_set"].id): item["progress"] for item in progress_rows}
+        return templates.TemplateResponse(
+            "einkauf/konditionen.html",
+            _ctx(
+                request,
+                user=user,
+                rows=rows,
+                suppliers=_active_suppliers(db),
+                suppliers_by_id={int(row.id): row for row in db.query(Supplier).all()},
+                manufacturers=db.query(Manufacturer).order_by(Manufacturer.name.asc()).all(),
+                device_kinds=db.query(DeviceKind).order_by(DeviceKind.name.asc()).all(),
+                progress_by_id=progress_by_id,
+                supplier_id=0,
+                edit_row=existing_row,
+                form_data=_extract_form_data(form),
+                form_errors=form_errors,
+            ),
+        )
+    row = existing_row or SupplierConditionSet(created_at=_utcnow_naive())
+    row.supplier_id = int(supplier_id)
+    row.name = name
+    row.valid_from = valid_from
+    row.valid_to = valid_to
+    row.payment_term_days = _to_int(form.get("payment_term_days"), 0) or None
+    row.skonto_percent = skonto_percent
+    row.basic_discount_percent = basic_discount_percent
+    row.extra_discount_percent = extra_discount_percent
+    row.freight_free_from = freight_free_from
+    row.min_order_value = min_order_value
+    row.bonus_target_value = bonus_target_value
+    row.bonus_percent = bonus_percent
+    row.applies_to = (form.get("applies_to") or "all").strip() or "all"
+    row.manufacturer_id = _to_int(form.get("manufacturer_id"), 0) or None
+    row.device_kind_id = _to_int(form.get("device_kind_id"), 0) or None
+    row.active = form.get("active") == "on"
+    db.add(row)
+    db.commit()
+    _flash(request, "Konditionssatz gespeichert.", "info")
+    return RedirectResponse(f"/einkauf/konditionen?supplier_id={supplier_id}", status_code=302)
+
+
+@app.get("/einkauf/konditionsziele", response_class=HTMLResponse)
+def einkauf_condition_progress(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = calculate_condition_progress(db)
+    return templates.TemplateResponse(
+        "einkauf/condition_progress.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            suppliers={int(row.id): row for row in db.query(Supplier).all()},
+        ),
+    )
+
+
+@app.get("/einkauf/dokumente", response_class=HTMLResponse)
+def einkauf_document_inbox(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _paperless_settings(db, include_secret=False)
+    rows = (
+        db.query(DocumentInboxItem)
+        .order_by(DocumentInboxItem.status.asc(), DocumentInboxItem.created_date.desc(), DocumentInboxItem.id.desc())
+        .limit(300)
+        .all()
+    )
+    return templates.TemplateResponse(
+        "einkauf/document_inbox.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            paperless_mode_label=_paperless_mode_label(str(settings.get("mode") or "poll_api")),
+        ),
+    )
+
+
+@app.post("/einkauf/dokumente/abrufen")
+def einkauf_document_inbox_fetch(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _paperless_settings(db, include_secret=True)
+    mode = str(settings.get("mode") or "poll_api").strip()
+    if mode != "poll_api":
+        _flash(request, "Paperless-Abruf ist im aktuellen Modus deaktiviert.", "warn")
+        return RedirectResponse("/einkauf/dokumente", status_code=302)
+    try:
+        rows = paperless_list_recent_supplier_documents(settings, limit=50)
+        for payload in rows:
+            _upsert_document_inbox_item(db, payload)
+        db.commit()
+        _flash(request, f"{len(rows)} Dokument(e) aus Paperless geprüft.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Paperless-Abruf fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/einkauf/dokumente", status_code=302)
+
+
+@app.get("/einkauf/dokumente/{item_id:int}", response_class=HTMLResponse)
+def einkauf_document_match(item_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    item = db.get(DocumentInboxItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404)
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    ai_document_result = ai_classify_document(
+        db,
+        settings=_openai_settings(db, include_secret=True),
+        input_payload={
+            "paperless_document_id": str(item.paperless_document_id or ""),
+            "title": str(item.title or ""),
+            "correspondent": str(item.correspondent or ""),
+            "document_type": str(item.document_type or ""),
+            "metadata": str(item.metadata_json or ""),
+        },
+        related_object_id=int(item.id),
+    )
+    return templates.TemplateResponse(
+        "einkauf/document_match.html",
+        _ctx(
+            request,
+            user=user,
+            item=item,
+            purchase_orders=db.query(PurchaseOrder).order_by(PurchaseOrder.id.desc()).limit(100).all(),
+            goods_receipts=db.query(GoodsReceipt).order_by(GoodsReceipt.id.desc()).limit(100).all(),
+            purchase_invoices=db.query(PurchaseInvoice).order_by(PurchaseInvoice.id.desc()).limit(100).all(),
+            suppliers=_active_suppliers(db),
+            paperless_url=paperless_build_document_url(paperless_settings, item.paperless_document_id),
+            ai_document_result=ai_document_result,
+            ai_document_review=ai_find_review_item(db, int(ai_document_result["log"].id)) if ai_document_result else None,
+        ),
+    )
+
+
+@app.post("/einkauf/dokumente/{item_id:int}")
+async def einkauf_document_match_post(item_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    item = db.get(DocumentInboxItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    object_type = (form.get("object_type") or "").strip()
+    if object_type == "ignored":
+        item.status = "ignored"
+        db.add(item)
+        db.commit()
+        _flash(request, "Dokument ignoriert.", "info")
+        return RedirectResponse("/einkauf/dokumente", status_code=302)
+    object_id = 0
+    if object_type == "purchase_order":
+        object_id = _to_int(form.get("purchase_order_id"), 0)
+    elif object_type == "goods_receipt":
+        object_id = _to_int(form.get("goods_receipt_id"), 0)
+    elif object_type == "purchase_invoice":
+        object_id = _to_int(form.get("purchase_invoice_id"), 0)
+    elif object_type == "supplier":
+        object_id = _to_int(form.get("supplier_id"), 0)
+    if object_id <= 0:
+        _flash(request, "Bitte ein Zielobjekt auswählen.", "error")
+        return RedirectResponse(f"/einkauf/dokumente/{item_id}", status_code=302)
+    _link_inbox_item_to_object(db, item=item, object_type=object_type, object_id=int(object_id))
+    db.commit()
+    _flash(request, "Dokument zugeordnet.", "info")
+    return RedirectResponse("/einkauf/dokumente", status_code=302)
+
+
+@app.get("/system/sync-log", response_class=HTMLResponse)
+def system_sync_log(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = db.query(ExternalSyncJob).order_by(func.coalesce(ExternalSyncJob.started_at, ExternalSyncJob.id).desc()).limit(300).all()
+    return templates.TemplateResponse("system/sync_log.html", _ctx(request, user=user, rows=rows))
+
+
+@app.get("/einkauf/wareneingaenge", response_class=HTMLResponse)
+def einkauf_receipts_list(
+    request: Request,
+    user=Depends(require_admin),
+    supplier_id: int = 0,
+    status: str = "",
+    q: str = "",
+    db: Session = Depends(db_session),
+):
+    query = db.query(GoodsReceipt)
+    if int(supplier_id or 0) > 0:
+        query = query.filter(GoodsReceipt.supplier_id == int(supplier_id))
+    normalized_status = (status or "").strip().lower()
+    if normalized_status:
+        query = query.filter(GoodsReceipt.status == normalized_status)
+    search = (q or "").strip()
+    if search:
+        like = f"%{search}%"
+        query = query.filter(or_(GoodsReceipt.receipt_no.ilike(like), GoodsReceipt.delivery_note_no.ilike(like)))
+    rows = query.order_by(func.coalesce(GoodsReceipt.receipt_date, GoodsReceipt.created_at).desc(), GoodsReceipt.id.desc()).limit(300).all()
+    supplier_rows = _active_suppliers(db)
+    supplier_map = {int(row.id): row for row in supplier_rows}
+    line_rows = (
+        db.query(GoodsReceiptLine)
+        .filter(GoodsReceiptLine.goods_receipt_id.in_([int(row.id) for row in rows]))
+        .all()
+        if rows
+        else []
+    )
+    line_map: dict[int, list[GoodsReceiptLine]] = {}
+    for line in line_rows:
+        line_map.setdefault(int(line.goods_receipt_id), []).append(line)
+    receipt_totals = {receipt_id: _goods_receipt_sum_cents(items) for receipt_id, items in line_map.items()}
+    return templates.TemplateResponse(
+        "einkauf/receipts_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            suppliers=supplier_rows,
+            supplier_map=supplier_map,
+            supplier_id=int(supplier_id or 0),
+            status=normalized_status,
+            q=search,
+            receipt_totals=receipt_totals,
+            goods_receipt_status_label=_goods_receipt_status_label,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.get("/einkauf/wareneingaenge/neu", response_class=HTMLResponse)
+def einkauf_receipt_new_get(
+    request: Request,
+    user=Depends(require_admin),
+    purchase_order_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    selected_purchase_order_id = int(purchase_order_id or 0)
+    selected_supplier_id = 0
+    selected_warehouse_id = _to_int(_system_setting_get(db, RECEIPT_DEFAULT_WAREHOUSE_ID, "0"), 0)
+    line_rows = []
+    extra_product_ids: list[int] = []
+    if selected_purchase_order_id > 0:
+        order = db.get(PurchaseOrder, selected_purchase_order_id)
+        if order:
+            selected_supplier_id = int(order.supplier_id or 0)
+            po_lines = (
+                db.query(PurchaseOrderLine)
+                .filter(PurchaseOrderLine.purchase_order_id == int(selected_purchase_order_id))
+                .order_by(PurchaseOrderLine.id.asc())
+                .all()
+            )
+            for line in po_lines:
+                open_qty = max(0, int(getattr(line, "qty_ordered", None) or line.qty or 0) - int(getattr(line, "qty_received", 0) or 0))
+                if open_qty <= 0:
+                    continue
+                extra_product_ids.append(int(line.product_id))
+                line_rows.append(
+                    {
+                        "product_id": str(line.product_id or ""),
+                        "qty_received": str(open_qty),
+                        "unit_cost_received": _format_eur(line.unit_price_expected if line.unit_price_expected is not None else line.expected_cost_cents).replace(" €", "") if (line.unit_price_expected is not None or line.expected_cost_cents is not None) else "",
+                        "condition_code": _default_condition_code(),
+                        "purchase_order_line_id": str(line.id),
+                        "note": "",
+                    }
+                )
+    while len(line_rows) < 6:
+        line_rows.append({"product_id": "", "qty_received": "", "unit_cost_received": "", "condition_code": _default_condition_code(), "purchase_order_line_id": "", "note": ""})
+    return templates.TemplateResponse(
+        "einkauf/receipt_form.html",
+        _ctx(
+            request,
+            user=user,
+            page_title="Wareneingang buchen",
+            form_action="/einkauf/wareneingaenge/neu",
+            row=None,
+            suppliers=_active_suppliers(db),
+            purchase_orders=db.query(PurchaseOrder).filter(PurchaseOrder.status.in_(("draft", "sent", "confirmed", "partially_received"))).order_by(PurchaseOrder.id.desc()).limit(200).all(),
+            warehouses=db.query(Warehouse).order_by(Warehouse.name.asc()).all(),
+            products=_active_products_for_einkauf(db, extra_product_ids),
+            condition_defs=_get_condition_defs(db, active_only=True, include_fallback=True),
+            po_line_options=_purchase_order_line_options(db, supplier_id=selected_supplier_id or None, purchase_order_id=selected_purchase_order_id or None),
+            form_data={},
+            form_errors={},
+            line_rows=line_rows,
+            selected_purchase_order_id=selected_purchase_order_id,
+            selected_supplier_id=selected_supplier_id,
+            selected_warehouse_id=selected_warehouse_id,
+            receipt_date_value=dt.datetime.utcnow().strftime("%Y-%m-%d"),
             first_error_field_id="",
         ),
     )
+
+
+@app.post("/einkauf/wareneingaenge/neu")
+async def einkauf_receipt_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    purchase_order_id = _to_int(form.get("purchase_order_id"), 0)
+    order = db.get(PurchaseOrder, purchase_order_id) if purchase_order_id else None
+    supplier_id = (_to_int(form.get("supplier_id"), 0) or int(order.supplier_id or 0)) if order else _to_int(form.get("supplier_id"), 0)
+    warehouse_id = _to_int(form.get("warehouse_id"), 0)
+    if supplier_id <= 0 or not db.get(Supplier, supplier_id):
+        form_errors["supplier_id"] = "Lieferant ist erforderlich."
+    if warehouse_id <= 0 or not db.get(Warehouse, warehouse_id):
+        form_errors["warehouse_id"] = "Lager ist erforderlich."
+    try:
+        receipt_date = _parse_date_input(form.get("receipt_date"))
+    except ValueError:
+        receipt_date = None
+        form_errors["receipt_date"] = "Ungültiges Datum."
+    lines, line_errors, extra_product_ids = _parse_receipt_line_rows(db, form)
+    form_errors.update(line_errors)
+    if form_errors:
+        return templates.TemplateResponse(
+            "einkauf/receipt_form.html",
+            _ctx(
+                request,
+                user=user,
+                page_title="Wareneingang buchen",
+                form_action="/einkauf/wareneingaenge/neu",
+                row=None,
+                suppliers=_active_suppliers(db),
+                purchase_orders=db.query(PurchaseOrder).filter(PurchaseOrder.status.in_(("draft", "sent", "confirmed", "partially_received"))).order_by(PurchaseOrder.id.desc()).limit(200).all(),
+                warehouses=db.query(Warehouse).order_by(Warehouse.name.asc()).all(),
+                products=_active_products_for_einkauf(db, extra_product_ids),
+                condition_defs=_get_condition_defs(db, active_only=True, include_fallback=True),
+                po_line_options=_purchase_order_line_options(db, supplier_id=supplier_id or None, purchase_order_id=purchase_order_id or None),
+                form_data=form_data,
+                form_errors=form_errors,
+                line_rows=_einkauf_receipt_line_rows_from_request(form),
+                selected_purchase_order_id=purchase_order_id,
+                selected_supplier_id=supplier_id,
+                selected_warehouse_id=warehouse_id,
+                receipt_date_value=_coerce_date_value(form.get("receipt_date")) or dt.datetime.utcnow().strftime("%Y-%m-%d"),
+                first_error_field_id="",
+            ),
+        )
+
+    receipt = GoodsReceipt(
+        supplier_id=int(supplier_id),
+        purchase_order_id=int(purchase_order_id) if purchase_order_id else None,
+        receipt_no=_next_receipt_number(db),
+        receipt_date=receipt_date or _utcnow_naive(),
+        warehouse_id=int(warehouse_id),
+        delivery_note_no=(form.get("delivery_note_no") or "").strip() or None,
+        paperless_document_id=(form.get("paperless_document_id") or "").strip() or None,
+        status="posted",
+        created_at=_utcnow_naive(),
+    )
+    db.add(receipt)
+    db.flush()
+    try:
+        for entry in lines:
+            line = GoodsReceiptLine(
+                goods_receipt_id=int(receipt.id),
+                purchase_order_line_id=entry["purchase_order_line_id"],
+                product_id=int(entry["product_id"]),
+                qty_received=int(entry["qty_received"]),
+                unit_cost_received=entry["unit_cost_received"],
+                condition_code=str(entry["condition_code"]),
+                note=entry["note"],
+            )
+            db.add(line)
+            db.flush()
+            tx = InventoryTransaction(
+                tx_type="receipt",
+                product_id=int(entry["product_id"]),
+                warehouse_from_id=None,
+                warehouse_to_id=int(warehouse_id),
+                bin_from_id=None,
+                bin_to_id=None,
+                owner_id=None,
+                supplier_id=int(supplier_id),
+                delivery_note_no=receipt.delivery_note_no,
+                unit_cost=entry["unit_cost_received"],
+                condition=str(entry["condition_code"]),
+                quantity=int(entry["qty_received"]),
+                serial_number=None,
+                reference=receipt.receipt_no or f"WE-{receipt.id}",
+                note=f"Wareneingang {receipt.receipt_no or receipt.id}",
+            )
+            apply_transaction(db, tx, actor_user_id=user.id)
+            _record_purchase_price(
+                db,
+                product_id=int(entry["product_id"]),
+                supplier_id=int(supplier_id),
+                source_type="receipt",
+                source_id=int(receipt.id),
+                effective_date=receipt.receipt_date or _utcnow_naive(),
+                qty=int(entry["qty_received"]),
+                unit_cost=entry["unit_cost_received"],
+            )
+            if entry["purchase_order_line_id"]:
+                po_line = db.get(PurchaseOrderLine, int(entry["purchase_order_line_id"]))
+                if po_line:
+                    po_line.qty_received = int(getattr(po_line, "qty_received", 0) or 0) + int(entry["qty_received"])
+                    db.add(po_line)
+        if order:
+            _update_purchase_order_status_from_lines(db, order)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Wareneingang fehlgeschlagen: {exc}", "error")
+        return RedirectResponse("/einkauf/wareneingaenge/neu", status_code=302)
+    _flash(request, f"Wareneingang {receipt.receipt_no} gebucht.", "info")
+    return RedirectResponse(f"/einkauf/wareneingaenge/{receipt.id}", status_code=302)
+
+
+@app.get("/einkauf/wareneingaenge/{receipt_id}", response_class=HTMLResponse)
+def einkauf_receipt_detail(receipt_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(GoodsReceipt, receipt_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    lines = db.query(GoodsReceiptLine).filter(GoodsReceiptLine.goods_receipt_id == int(receipt_id)).order_by(GoodsReceiptLine.id.asc()).all()
+    product_ids = [int(line.product_id) for line in lines]
+    products = {int(item.id): item for item in db.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "einkauf/receipt_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            lines=lines,
+            products=products,
+            supplier=db.get(Supplier, int(row.supplier_id)),
+            warehouse=db.get(Warehouse, int(row.warehouse_id)),
+            purchase_order=db.get(PurchaseOrder, int(row.purchase_order_id)) if row.purchase_order_id else None,
+            receipt_total=_goods_receipt_sum_cents(lines),
+            condition_labels=_condition_label_map(db),
+            goods_receipt_status_label=_goods_receipt_status_label,
+            format_date=_format_date_local,
+            unmatched_documents=_document_inbox_unmatched(db, limit=50),
+            paperless_links=_paperless_links_for_object(db, "goods_receipt", int(row.id)),
+            paperless_base_url=str(paperless_settings.get("base_url") or "").strip(),
+            paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+        ),
+    )
+
+
+@app.post("/einkauf/wareneingaenge/{receipt_id}/dokumente/link")
+async def einkauf_receipt_document_link(receipt_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(GoodsReceipt, receipt_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    inbox_id = _to_int(form.get("document_inbox_id"), 0)
+    direct_id = (form.get("paperless_document_id") or "").strip()
+    if inbox_id > 0:
+        item = db.get(DocumentInboxItem, inbox_id)
+        if item:
+            _link_inbox_item_to_object(db, item=item, object_type="goods_receipt", object_id=int(receipt_id))
+            if not row.paperless_document_id:
+                row.paperless_document_id = item.paperless_document_id
+            db.add(row)
+            db.commit()
+            _flash(request, "Dokument verknüpft.", "info")
+            return RedirectResponse(f"/einkauf/wareneingaenge/{receipt_id}", status_code=302)
+    if direct_id:
+        _ensure_paperless_link(db, object_type="goods_receipt", object_id=int(receipt_id), paperless_document_id=direct_id)
+        row.paperless_document_id = row.paperless_document_id or direct_id
+        db.add(row)
+        db.commit()
+        _flash(request, "Dokument-ID verknüpft.", "info")
+        return RedirectResponse(f"/einkauf/wareneingaenge/{receipt_id}", status_code=302)
+    _flash(request, "Bitte ein Dokument auswählen.", "error")
+    return RedirectResponse(f"/einkauf/wareneingaenge/{receipt_id}", status_code=302)
+
+
+@app.post("/einkauf/wareneingaenge/{receipt_id}/dokumente/export")
+def einkauf_receipt_document_export(receipt_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(GoodsReceipt, receipt_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    settings = _paperless_settings(db, include_secret=True)
+    lines = db.query(GoodsReceiptLine).filter(GoodsReceiptLine.goods_receipt_id == int(receipt_id)).order_by(GoodsReceiptLine.id.asc()).all()
+    products = {int(item.id): item for item in db.query(Product).filter(Product.id.in_([int(line.product_id) for line in lines])).all()} if lines else {}
+    try:
+        document_id = _paperless_export_and_link(
+            db,
+            settings=settings,
+            object_type="goods_receipt",
+            object_id=int(receipt_id),
+            title=f"Wareneingang {row.receipt_no or ('WE-' + str(row.id))}",
+            lines=[
+                f"Wareneingang: {row.receipt_no or ('WE-' + str(row.id))}",
+                f"Lieferant: {(db.get(Supplier, int(row.supplier_id)).name if row.supplier_id and db.get(Supplier, int(row.supplier_id)) else '-')}",
+                f"Datum: {_format_date_local(row.receipt_date or row.created_at)}",
+            ]
+            + [
+                f"- {products.get(int(line.product_id)).name if products.get(int(line.product_id)) else line.product_id}: {int(line.qty_received or 0)} x {(_format_eur(line.unit_cost_received) if line.unit_cost_received is not None else '-')}"
+                for line in lines
+            ],
+        )
+        row.paperless_document_id = document_id
+        db.add(row)
+        db.commit()
+        _flash(request, f"Zusammenfassung an Paperless gesendet ({document_id}).", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Paperless-Export fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/einkauf/wareneingaenge/{receipt_id}", status_code=302)
+
+
+@app.get("/einkauf/rechnungen", response_class=HTMLResponse)
+def einkauf_invoices_list(
+    request: Request,
+    user=Depends(require_admin),
+    supplier_id: int = 0,
+    status: str = "",
+    q: str = "",
+    db: Session = Depends(db_session),
+):
+    query = db.query(PurchaseInvoice)
+    if int(supplier_id or 0) > 0:
+        query = query.filter(PurchaseInvoice.supplier_id == int(supplier_id))
+    normalized_status = (status or "").strip().lower()
+    if normalized_status:
+        query = query.filter(PurchaseInvoice.status == normalized_status)
+    search = (q or "").strip()
+    if search:
+        query = query.filter(PurchaseInvoice.invoice_no.ilike(f"%{search}%"))
+    rows = query.order_by(func.coalesce(PurchaseInvoice.invoice_date, PurchaseInvoice.created_at).desc(), PurchaseInvoice.id.desc()).limit(300).all()
+    suppliers = _active_suppliers(db)
+    return templates.TemplateResponse(
+        "einkauf/invoices_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            suppliers=suppliers,
+            supplier_map={int(row.id): row for row in suppliers},
+            supplier_id=int(supplier_id or 0),
+            status=normalized_status,
+            q=search,
+            purchase_invoice_status_label=_purchase_invoice_status_label,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.get("/einkauf/rechnungen/neu", response_class=HTMLResponse)
+def einkauf_invoice_new_get(
+    request: Request,
+    user=Depends(require_admin),
+    goods_receipt_id: int = 0,
+    purchase_order_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    selected_supplier_id = 0
+    line_rows: list[dict[str, str]] = []
+    extra_product_ids: list[int] = []
+    if int(goods_receipt_id or 0) > 0:
+        receipt = db.get(GoodsReceipt, goods_receipt_id)
+        if receipt:
+            selected_supplier_id = int(receipt.supplier_id or 0)
+            for line in db.query(GoodsReceiptLine).filter(GoodsReceiptLine.goods_receipt_id == int(goods_receipt_id)).order_by(GoodsReceiptLine.id.asc()).all():
+                extra_product_ids.append(int(line.product_id))
+                line_rows.append(
+                    {
+                        "product_id": str(line.product_id or ""),
+                        "qty": str(line.qty_received or ""),
+                        "unit_cost_invoiced": _format_eur(line.unit_cost_received).replace(" €", "") if line.unit_cost_received is not None else "",
+                        "goods_receipt_line_id": str(line.id),
+                        "purchase_order_line_id": str(line.purchase_order_line_id or ""),
+                        "note": "",
+                    }
+                )
+    elif int(purchase_order_id or 0) > 0:
+        order = db.get(PurchaseOrder, purchase_order_id)
+        if order:
+            selected_supplier_id = int(order.supplier_id or 0)
+            for line in db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == int(purchase_order_id)).order_by(PurchaseOrderLine.id.asc()).all():
+                extra_product_ids.append(int(line.product_id))
+                line_rows.append(
+                    {
+                        "product_id": str(line.product_id or ""),
+                        "qty": str(getattr(line, "qty_received", 0) or getattr(line, "qty_ordered", None) or line.qty or ""),
+                        "unit_cost_invoiced": _format_eur(line.unit_price_expected if line.unit_price_expected is not None else line.expected_cost_cents).replace(" €", "") if (line.unit_price_expected is not None or line.expected_cost_cents is not None) else "",
+                        "goods_receipt_line_id": "",
+                        "purchase_order_line_id": str(line.id),
+                        "note": "",
+                    }
+                )
+    while len(line_rows) < 6:
+        line_rows.append({"product_id": "", "qty": "", "unit_cost_invoiced": "", "goods_receipt_line_id": "", "purchase_order_line_id": "", "note": ""})
+    return templates.TemplateResponse(
+        "einkauf/invoice_form.html",
+        _ctx(
+            request,
+            user=user,
+            page_title="Eingangsrechnung erfassen",
+            form_action="/einkauf/rechnungen/neu",
+            row=None,
+            suppliers=_active_suppliers(db),
+            products=_active_products_for_einkauf(db, extra_product_ids),
+            selected_supplier_id=selected_supplier_id,
+            goods_receipt_line_options=_goods_receipt_line_options(db, supplier_id=selected_supplier_id or None, goods_receipt_id=int(goods_receipt_id or 0) or None),
+            purchase_order_line_options=_purchase_order_line_options(db, supplier_id=selected_supplier_id or None, purchase_order_id=int(purchase_order_id or 0) or None),
+            form_data={},
+            form_errors={},
+            line_rows=line_rows,
+            invoice_date_value=dt.datetime.utcnow().strftime("%Y-%m-%d"),
+            due_date_value="",
+            net_total_value="",
+            tax_total_value="",
+            gross_total_value="",
+            first_error_field_id="",
+        ),
+    )
+
+
+@app.post("/einkauf/rechnungen/neu")
+async def einkauf_invoice_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    supplier_id = _to_int(form.get("supplier_id"), 0)
+    if supplier_id <= 0 or not db.get(Supplier, supplier_id):
+        form_errors["supplier_id"] = "Lieferant ist erforderlich."
+    invoice_no = (form.get("invoice_no") or "").strip()
+    if not invoice_no:
+        form_errors["invoice_no"] = "Rechnungsnummer ist erforderlich."
+    try:
+        invoice_date = _parse_date_input(form.get("invoice_date"))
+    except ValueError:
+        invoice_date = None
+        form_errors["invoice_date"] = "Ungültiges Rechnungsdatum."
+    try:
+        due_date = _parse_date_input(form.get("due_date"))
+    except ValueError:
+        due_date = None
+        form_errors["due_date"] = "Ungültiges Fälligkeitsdatum."
+    try:
+        net_total = _parse_eur_to_cents(form.get("net_total"), "Netto")
+        tax_total = _parse_eur_to_cents(form.get("tax_total"), "Steuer")
+        gross_total = _parse_eur_to_cents(form.get("gross_total"), "Brutto")
+    except ValueError as exc:
+        net_total = tax_total = gross_total = None
+        form_errors["__all__"] = str(exc)
+    lines, line_errors, extra_product_ids = _parse_invoice_line_rows(db, form)
+    form_errors.update(line_errors)
+    if form_errors:
+        return templates.TemplateResponse(
+            "einkauf/invoice_form.html",
+            _ctx(
+                request,
+                user=user,
+                page_title="Eingangsrechnung erfassen",
+                form_action="/einkauf/rechnungen/neu",
+                row=None,
+                suppliers=_active_suppliers(db),
+                products=_active_products_for_einkauf(db, extra_product_ids),
+                selected_supplier_id=supplier_id,
+                goods_receipt_line_options=_goods_receipt_line_options(db, supplier_id=supplier_id or None),
+                purchase_order_line_options=_purchase_order_line_options(db, supplier_id=supplier_id or None),
+                form_data=form_data,
+                form_errors=form_errors,
+                line_rows=_einkauf_invoice_line_rows_from_request(form),
+                invoice_date_value=_coerce_date_value(form.get("invoice_date")) or dt.datetime.utcnow().strftime("%Y-%m-%d"),
+                due_date_value=_coerce_date_value(form.get("due_date")),
+                net_total_value=form.get("net_total") or "",
+                tax_total_value=form.get("tax_total") or "",
+                gross_total_value=form.get("gross_total") or "",
+                first_error_field_id="",
+            ),
+        )
+
+    invoice = PurchaseInvoice(
+        supplier_id=int(supplier_id),
+        invoice_no=invoice_no,
+        invoice_date=invoice_date or _utcnow_naive(),
+        due_date=due_date,
+        paperless_document_id=(form.get("paperless_document_id") or "").strip() or None,
+        status=(form.get("status") or "draft").strip() or "draft",
+        net_total=net_total,
+        tax_total=tax_total,
+        gross_total=gross_total,
+        created_at=_utcnow_naive(),
+    )
+    db.add(invoice)
+    db.flush()
+    try:
+        all_linked = True
+        for entry in lines:
+            line = PurchaseInvoiceLine(
+                purchase_invoice_id=int(invoice.id),
+                goods_receipt_line_id=entry["goods_receipt_line_id"],
+                purchase_order_line_id=entry["purchase_order_line_id"],
+                product_id=int(entry["product_id"]),
+                qty=int(entry["qty"]),
+                unit_cost_invoiced=entry["unit_cost_invoiced"],
+                line_total=entry["line_total"],
+                note=entry["note"],
+            )
+            db.add(line)
+            gr_line = db.get(GoodsReceiptLine, int(entry["goods_receipt_line_id"])) if entry["goods_receipt_line_id"] else None
+            if not entry["goods_receipt_line_id"] and not entry["purchase_order_line_id"]:
+                all_linked = False
+            if entry["unit_cost_invoiced"] is not None:
+                if not gr_line or gr_line.unit_cost_received != entry["unit_cost_invoiced"]:
+                    _record_purchase_price(
+                        db,
+                        product_id=int(entry["product_id"]),
+                        supplier_id=int(supplier_id),
+                        source_type="invoice",
+                        source_id=int(invoice.id),
+                        effective_date=invoice.invoice_date or _utcnow_naive(),
+                        qty=int(entry["qty"]),
+                        unit_cost=entry["unit_cost_invoiced"],
+                    )
+        if all_linked and lines:
+            invoice.status = "matched"
+            db.add(invoice)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Rechnung konnte nicht gespeichert werden: {exc}", "error")
+        return RedirectResponse("/einkauf/rechnungen/neu", status_code=302)
+    _flash(request, f"Rechnung {invoice.invoice_no} gespeichert.", "info")
+    return RedirectResponse(f"/einkauf/rechnungen/{invoice.id}", status_code=302)
+
+
+@app.get("/einkauf/rechnungen/{invoice_id}", response_class=HTMLResponse)
+def einkauf_invoice_detail(invoice_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(PurchaseInvoice, invoice_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    lines = db.query(PurchaseInvoiceLine).filter(PurchaseInvoiceLine.purchase_invoice_id == int(invoice_id)).order_by(PurchaseInvoiceLine.id.asc()).all()
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "einkauf/invoice_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            supplier=db.get(Supplier, int(row.supplier_id)),
+            three_way_rows=_invoice_three_way_rows(db, lines),
+            purchase_invoice_status_label=_purchase_invoice_status_label,
+            format_date=_format_date_local,
+            unmatched_documents=_document_inbox_unmatched(db, limit=50),
+            paperless_links=_paperless_links_for_object(db, "purchase_invoice", int(row.id)),
+            paperless_base_url=str(paperless_settings.get("base_url") or "").strip(),
+            paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+        ),
+    )
+
+
+@app.post("/einkauf/rechnungen/{invoice_id}/status")
+async def einkauf_invoice_status(invoice_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(PurchaseInvoice, invoice_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    status = (form.get("status") or "").strip().lower()
+    if status not in ("draft", "matched", "approved", "booked", "paid", "disputed"):
+        _flash(request, "Ungültiger Status.", "error")
+        return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
+    row.status = status
+    db.add(row)
+    db.commit()
+    _flash(request, "Rechnungsstatus gespeichert.", "info")
+    return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
+
+
+@app.post("/einkauf/rechnungen/{invoice_id}/dokumente/link")
+async def einkauf_invoice_document_link(invoice_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(PurchaseInvoice, invoice_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    inbox_id = _to_int(form.get("document_inbox_id"), 0)
+    direct_id = (form.get("paperless_document_id") or "").strip()
+    if inbox_id > 0:
+        item = db.get(DocumentInboxItem, inbox_id)
+        if item:
+            _link_inbox_item_to_object(db, item=item, object_type="purchase_invoice", object_id=int(invoice_id))
+            row.paperless_document_id = row.paperless_document_id or item.paperless_document_id
+            db.add(row)
+            db.commit()
+            _flash(request, "Dokument verknüpft.", "info")
+            return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
+    if direct_id:
+        _ensure_paperless_link(db, object_type="purchase_invoice", object_id=int(invoice_id), paperless_document_id=direct_id)
+        row.paperless_document_id = row.paperless_document_id or direct_id
+        db.add(row)
+        db.commit()
+        _flash(request, "Dokument-ID verknüpft.", "info")
+        return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
+    _flash(request, "Bitte ein Dokument auswählen.", "error")
+    return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
+
+
+@app.post("/einkauf/rechnungen/{invoice_id}/dokumente/export")
+def einkauf_invoice_document_export(invoice_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(PurchaseInvoice, invoice_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    settings = _paperless_settings(db, include_secret=True)
+    lines = db.query(PurchaseInvoiceLine).filter(PurchaseInvoiceLine.purchase_invoice_id == int(invoice_id)).order_by(PurchaseInvoiceLine.id.asc()).all()
+    products = {int(item.id): item for item in db.query(Product).filter(Product.id.in_([int(line.product_id) for line in lines if line.product_id])).all()} if lines else {}
+    try:
+        document_id = _paperless_export_and_link(
+            db,
+            settings=settings,
+            object_type="purchase_invoice",
+            object_id=int(invoice_id),
+            title=f"Eingangsrechnung {row.invoice_no}",
+            lines=[
+                f"Rechnung: {row.invoice_no}",
+                f"Lieferant: {(db.get(Supplier, int(row.supplier_id)).name if row.supplier_id and db.get(Supplier, int(row.supplier_id)) else '-')}",
+                f"Datum: {_format_date_local(row.invoice_date or row.created_at)}",
+                f"Brutto: {_format_eur(row.gross_total) if row.gross_total is not None else '-'}",
+            ]
+            + [
+                f"- {products.get(int(line.product_id)).name if products.get(int(line.product_id)) else line.product_id}: {int(line.qty or 0)} x {(_format_eur(line.unit_cost_invoiced) if line.unit_cost_invoiced is not None else '-')}"
+                for line in lines
+            ],
+        )
+        row.paperless_document_id = document_id
+        db.add(row)
+        db.commit()
+        _flash(request, f"Zusammenfassung an Paperless gesendet ({document_id}).", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Paperless-Export fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
+
+
+@app.get("/purchase/orders", response_class=HTMLResponse)
+def purchase_orders_list(
+    request: Request,
+    user=Depends(require_admin),
+    status: str = "",
+    q: str = "",
+    db: Session = Depends(db_session),
+):
+    _ = user, db
+    params = {}
+    if (status or "").strip():
+        params["status"] = (status or "").strip()
+    if (q or "").strip():
+        params["q"] = (q or "").strip()
+    target = "/einkauf/bestellungen"
+    if params:
+        target = f"{target}?{urlencode(params)}"
+    return RedirectResponse(target, status_code=302)
+
+
+@app.post("/purchase/orders/from_product")
+async def purchase_order_from_product(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    return await einkauf_order_from_product(request=request, user=user, db=db)
+
+
+@app.get("/purchase/orders/{order_id}", response_class=HTMLResponse)
+def purchase_order_detail(order_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ = request, user, db
+    return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
 
 
 @app.post("/purchase/orders/{order_id}/send")
@@ -8664,35 +22445,8 @@ def purchase_inbox(
     q: str = "PO-",
     db: Session = Depends(db_session),
 ):
-    query = db.query(EmailMessage)
-    q = (q or "").strip()
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(EmailMessage.subject.ilike(like), EmailMessage.snippet.ilike(like), EmailMessage.body_text.ilike(like)))
-    rows = query.order_by(EmailMessage.id.desc()).limit(300).all()
-
-    row_data = []
-    po_numbers: list[str] = []
-    for row in rows:
-        text = " ".join(
-            [
-                str(row.subject or ""),
-                str(row.snippet or ""),
-                str(row.body_text or ""),
-            ]
-        )
-        pos = _extract_po_numbers(text)
-        row_data.append({"msg": row, "po_numbers": pos})
-        for po in pos:
-            if po not in po_numbers:
-                po_numbers.append(po)
-    orders = {}
-    if po_numbers:
-        orders = {o.po_number: o for o in db.query(PurchaseOrder).filter(PurchaseOrder.po_number.in_(po_numbers)).all()}
-    return templates.TemplateResponse(
-        "purchase/order_inbox.html",
-        _ctx(request, user=user, rows=row_data, orders_by_po=orders, q=q),
-    )
+    _ = request, user, q, db
+    return RedirectResponse("/einkauf/dokumente", status_code=302)
 
 
 # ---------------------------
@@ -9885,19 +23639,32 @@ NAV_AUDIT_IGNORE_PREFIXES = (
     "/docs",
     "/redoc",
     "/openapi.json",
+    "/m/",
+    "/purchase/",
 )
 NAV_AUDIT_IGNORE_EXACT = {
     "/",
     "/login",
     "/logout",
+    "/m",
     "/schnell",
+    "/suche",
+    "/einkauf/dashboard",
+    "/einkauf/konditionen/import/paperless",
+    "/einkauf/voucher/vorbereiten",
+    "/finanzen/zahlungen/vorbereiten",
+    "/system/verfahrensrichtlinie/bearbeiten",
 }
+NAV_AUDIT_IGNORE_SUFFIXES = ("/neu",)
 
 
 def _is_nav_audit_ignored(path: str) -> bool:
     value = str(path or "").strip() or "/"
     if value in NAV_AUDIT_IGNORE_EXACT:
         return True
+    for suffix in NAV_AUDIT_IGNORE_SUFFIXES:
+        if value.endswith(suffix):
+            return True
     for prefix in NAV_AUDIT_IGNORE_PREFIXES:
         if value.startswith(prefix):
             return True
@@ -9995,6 +23762,1755 @@ def _receipt_defaults(db: Session) -> dict[str, int | str | bool]:
         "quantity": int(quantity),
         "lock_warehouse": bool(lock_warehouse),
     }
+
+
+def _paperless_secret_path() -> Path:
+    dirs = ensure_dirs()
+    return dirs["secrets"] / "paperless_api_token.enc"
+
+
+def _read_paperless_token() -> str:
+    p = _paperless_secret_path()
+    if not p.is_file():
+        return ""
+    try:
+        token = (p.read_text(encoding="utf-8") or "").strip()
+        if not token:
+            return ""
+        return get_fernet().decrypt(token.encode("utf-8")).decode("utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _write_paperless_token(token: str) -> None:
+    value = (token or "").strip()
+    if not value:
+        return
+    p = _paperless_secret_path()
+    enc = get_fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+    p.write_text(enc, encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except Exception:
+        pass
+
+
+def _paperless_settings(db: Session, include_secret: bool = False) -> dict[str, str | bool]:
+    enabled = _bool_from_setting(_system_setting_get(db, PAPERLESS_SETTING_ENABLED, "0"), default=False)
+    base_url = (_system_setting_get(db, PAPERLESS_SETTING_BASE_URL, "") or "").strip()
+    tags = (_system_setting_get(db, PAPERLESS_SETTING_TAGS, "") or "").strip()
+    doc_type = (_system_setting_get(db, PAPERLESS_SETTING_DOCUMENT_TYPE, "") or "").strip()
+    correspondent = (_system_setting_get(db, PAPERLESS_SETTING_CORRESPONDENT, "") or "").strip()
+    mode = (_system_setting_get(db, PAPERLESS_SETTING_MODE, "poll_api") or "poll_api").strip() or "poll_api"
+    if mode not in ("poll_api", "manual_link_only", "consume_outbound_only"):
+        mode = "poll_api"
+    token = _read_paperless_token()
+    return {
+        "enabled": bool(enabled),
+        "base_url": base_url,
+        "tags": tags,
+        "document_type": doc_type,
+        "correspondent": correspondent,
+        "mode": mode,
+        "token_set": bool(token),
+        "token": token if include_secret else "",
+    }
+
+
+def _paperless_headers(settings: dict[str, str | bool], *, with_json: bool = True) -> dict[str, str]:
+    token = str(settings.get("token") or "").strip()
+    if not token:
+        raise ValueError("Paperless-Token fehlt.")
+    headers = {"Authorization": f"Token {token}"}
+    if with_json:
+        headers["Accept"] = "application/json"
+    return headers
+
+
+def _paperless_url(base_url: str, path: str) -> str:
+    return f"{str(base_url or '').rstrip('/')}/{str(path or '').lstrip('/')}"
+
+
+def _paperless_request_json(
+    settings: dict[str, str | bool],
+    *,
+    method: str,
+    path: str,
+    query: dict[str, str] | None = None,
+    payload: dict | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict | list | str:
+    return paperless_request_json(
+        settings,
+        method=method,
+        path=path,
+        query=query,
+        payload=payload,
+        extra_headers=extra_headers,
+    )
+
+
+def _encode_multipart(document_field: str, filename: str, mime: str, payload: bytes, fields: dict[str, str]) -> tuple[bytes, str]:
+    boundary = f"----kda-{uuid.uuid4().hex}"
+    body = bytearray()
+    for key, value in fields.items():
+        text = (value or "").strip()
+        if not text:
+            continue
+        body.extend(f"--{boundary}\\r\\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name=\"{key}\"\\r\\n\\r\\n'.encode("utf-8"))
+        body.extend(text.encode("utf-8"))
+        body.extend(b"\\r\\n")
+    body.extend(f"--{boundary}\\r\\n".encode("utf-8"))
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name=\"{document_field}\"; filename=\"{_safe_filename(filename, "dokument")}\"\\r\\n'
+            f"Content-Type: {mime or 'application/octet-stream'}\\r\\n\\r\\n"
+        ).encode("utf-8")
+    )
+    body.extend(payload)
+    body.extend(b"\\r\\n")
+    body.extend(f"--{boundary}--\\r\\n".encode("utf-8"))
+    return bytes(body), f"multipart/form-data; boundary={boundary}"
+
+
+def _paperless_upload_document(
+    *,
+    settings: dict[str, str | bool],
+    filename: str,
+    mime: str,
+    payload: bytes,
+) -> dict[str, str]:
+    temp_path = _build_plaintext_export(filename, [payload.decode("utf-8", errors="replace")]) if mime == "text/plain" else None
+    if temp_path is None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="kda_paperless_"))
+        temp_path = temp_dir / _safe_filename(filename, "dokument")
+        temp_path.write_bytes(payload)
+    return paperless_upload_document(
+        temp_path,
+        settings,
+        title=_safe_filename(filename, "dokument"),
+        mime=mime,
+    )
+
+
+def _outsmart_secret_path() -> Path:
+    dirs = ensure_dirs()
+    return dirs["secrets"] / "outsmart_tokens.enc"
+
+
+def _read_outsmart_secrets() -> dict[str, str]:
+    p = _outsmart_secret_path()
+    if not p.is_file():
+        return {"bearer": "", "token": "", "software_token": ""}
+    try:
+        enc = (p.read_text(encoding="utf-8") or "").strip()
+        if not enc:
+            return {"bearer": "", "token": "", "software_token": ""}
+        raw = get_fernet().decrypt(enc.encode("utf-8")).decode("utf-8")
+        data = json.loads(raw or "{}")
+        return {
+            "bearer": str(data.get("bearer") or "").strip(),
+            "token": str(data.get("token") or "").strip(),
+            "software_token": str(data.get("software_token") or "").strip(),
+        }
+    except Exception:
+        return {"bearer": "", "token": "", "software_token": ""}
+
+
+def _write_outsmart_secrets(*, bearer: str | None, token: str | None, software_token: str | None) -> None:
+    current = _read_outsmart_secrets()
+    if bearer is not None and (bearer or "").strip():
+        current["bearer"] = str(bearer or "").strip()
+    if token is not None and (token or "").strip():
+        current["token"] = str(token or "").strip()
+    if software_token is not None and (software_token or "").strip():
+        current["software_token"] = str(software_token or "").strip()
+    encoded = get_fernet().encrypt(json.dumps(current, ensure_ascii=False).encode("utf-8")).decode("utf-8")
+    p = _outsmart_secret_path()
+    p.write_text(encoded, encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except Exception:
+        pass
+
+
+def _outsmart_settings(db: Session, include_secret: bool = False) -> dict[str, str | bool]:
+    enabled = _bool_from_setting(_system_setting_get(db, OUTSMART_SETTING_ENABLED, "0"), default=False)
+    base_url = (_system_setting_get(db, OUTSMART_SETTING_HOST, "https://app.out-smart.com/openapi/8") or "").strip()
+    if not base_url:
+        base_url = "https://app.out-smart.com/openapi/8"
+    secrets = _read_outsmart_secrets()
+    last_sync_at = (_system_setting_get(db, OUTSMART_SETTING_LAST_SYNC_AT, "") or "").strip()
+    return {
+        "enabled": bool(enabled),
+        "base_url": base_url,
+        "host": base_url,
+        "last_sync_at": last_sync_at,
+        "bearer_set": bool(secrets.get("bearer")),
+        "token_set": bool(secrets.get("token")),
+        "software_token_set": bool(secrets.get("software_token")),
+        "bearer": secrets.get("bearer") if include_secret else "",
+        "token": secrets.get("token") if include_secret else "",
+        "software_token": secrets.get("software_token") if include_secret else "",
+    }
+
+
+def _outsmart_set_last_sync_at(db: Session, value: dt.datetime | None = None) -> None:
+    stamp = (value or _utcnow_naive()).isoformat()
+    _system_setting_set(db, OUTSMART_SETTING_LAST_SYNC_AT, stamp)
+
+
+def _sevdesk_secret_path() -> Path:
+    dirs = ensure_dirs()
+    return dirs["secrets"] / "sevdesk_api_token.enc"
+
+
+def _read_sevdesk_token() -> str:
+    p = _sevdesk_secret_path()
+    if not p.is_file():
+        return ""
+    try:
+        token = (p.read_text(encoding="utf-8") or "").strip()
+        if not token:
+            return ""
+        return get_fernet().decrypt(token.encode("utf-8")).decode("utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _write_sevdesk_token(token: str) -> None:
+    value = (token or "").strip()
+    if not value:
+        return
+    p = _sevdesk_secret_path()
+    enc = get_fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+    p.write_text(enc, encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except Exception:
+        pass
+
+
+def _sevdesk_settings(db: Session, include_secret: bool = False) -> dict[str, str | bool]:
+    enabled = _bool_from_setting(_system_setting_get(db, SEVDESK_SETTING_ENABLED, "0"), default=False)
+    base_url = (_system_setting_get(db, SEVDESK_SETTING_BASE_URL, "https://my.sevdesk.de/api/v1") or "https://my.sevdesk.de/api/v1").strip()
+    token = _read_sevdesk_token()
+    bookkeeping_system_version = (_system_setting_get(db, SEVDESK_SETTING_BOOKKEEPING_SYSTEM_VERSION, "") or "").strip()
+    default_contact_person_id = (_system_setting_get(db, SEVDESK_SETTING_DEFAULT_CONTACT_PERSON_ID, "") or "").strip()
+    default_tax_rule_id = (_system_setting_get(db, SEVDESK_SETTING_DEFAULT_TAX_RULE_ID, "") or "").strip()
+    default_currency = (_system_setting_get(db, SEVDESK_SETTING_DEFAULT_CURRENCY, "EUR") or "EUR").strip() or "EUR"
+    export_config_json = (_system_setting_get(db, SEVDESK_SETTING_EXPORT_CONFIG_JSON, "{}") or "{}").strip() or "{}"
+    return {
+        "enabled": bool(enabled),
+        "base_url": base_url,
+        "api_token_set": bool(token),
+        "api_token": token if include_secret else "",
+        "bookkeeping_system_version": bookkeeping_system_version,
+        "default_contact_person_id": default_contact_person_id,
+        "default_tax_rule_id": default_tax_rule_id,
+        "default_currency": default_currency,
+        "export_config_json": export_config_json,
+    }
+
+
+def _sevdesk_export_config(db: Session) -> dict[str, object]:
+    return _json_dict(_system_setting_get(db, SEVDESK_SETTING_EXPORT_CONFIG_JSON, "{}"))
+
+
+def _sevdesk_export_jobs(db: Session) -> list[dict[str, object]]:
+    raw = _system_setting_get(db, SEVDESK_SETTING_EXPORT_JOBS_JSON, "[]")
+    try:
+        payload = json.loads(raw or "[]")
+    except Exception:
+        return []
+    return [row for row in payload if isinstance(row, dict)]
+
+
+AI_TASK_LABELS = {
+    "email_classification": "Mail-Klassifikation",
+    "document_classification": "Dokument-Klassifikation",
+    "incoming_invoice_extract": "Belegdaten extrahieren",
+    "voucher_accounting_suggestion": "Voucher-Kontierung",
+    "offer_draft_prepare": "Angebotsvorschlag",
+    "invoice_draft_prepare": "Rechnungsvorschlag",
+    "customer_merge_candidate": "Dublettenpruefung",
+    "role_assignment_suggestion": "Rollenpruefung",
+}
+
+
+def _openai_secret_path() -> Path:
+    dirs = ensure_dirs()
+    return dirs["secrets"] / "openai_api_key.enc"
+
+
+def _read_openai_api_key() -> str:
+    p = _openai_secret_path()
+    if not p.is_file():
+        return ""
+    try:
+        token = (p.read_text(encoding="utf-8") or "").strip()
+        if not token:
+            return ""
+        return get_fernet().decrypt(token.encode("utf-8")).decode("utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _write_openai_api_key(api_key: str) -> None:
+    value = (api_key or "").strip()
+    if not value:
+        return
+    p = _openai_secret_path()
+    enc = get_fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+    p.write_text(enc, encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except Exception:
+        pass
+
+
+def _openai_settings(db: Session, include_secret: bool = False) -> dict[str, str | bool | int]:
+    api_key = _read_openai_api_key()
+    return {
+        "enabled": _bool_from_setting(_system_setting_get(db, OPENAI_SETTING_ENABLED, "0"), default=False),
+        "api_key_set": bool(api_key),
+        "api_key": api_key if include_secret else "",
+        "model_default": (_system_setting_get(db, OPENAI_SETTING_MODEL_DEFAULT, "gpt-5-mini") or "gpt-5-mini").strip() or "gpt-5-mini",
+        "model_fast": (_system_setting_get(db, OPENAI_SETTING_MODEL_FAST, "gpt-5-mini") or "gpt-5-mini").strip() or "gpt-5-mini",
+        "model_reasoning": (_system_setting_get(db, OPENAI_SETTING_MODEL_REASONING, "gpt-5") or "gpt-5").strip() or "gpt-5",
+        "timeout_seconds": _int_from_setting(_system_setting_get(db, OPENAI_SETTING_TIMEOUT, "45"), default=45, minimum=5),
+        "retry_count": _int_from_setting(_system_setting_get(db, OPENAI_SETTING_RETRY, "1"), default=1, minimum=0),
+        "max_tokens": _int_from_setting(_system_setting_get(db, OPENAI_SETTING_MAX_TOKENS, "1500"), default=1500, minimum=300),
+    }
+
+
+def _ai_task_label(task_name: str) -> str:
+    key = str(task_name or "").strip()
+    return AI_TASK_LABELS.get(key, key.replace("_", " ").title() or "-")
+
+
+def _ai_risk_label(risk_class: str) -> str:
+    mapping = {"gruen": "Gruen", "gelb": "Gelb", "rot": "Rot"}
+    return mapping.get(str(risk_class or "").strip().lower(), "-")
+
+
+def _ai_status_label(status: str) -> str:
+    mapping = {
+        "suggested": "Vorschlag",
+        "review": "Freigabe offen",
+        "approved": "Freigegeben",
+        "rejected": "Abgelehnt",
+        "overridden": "Override",
+    }
+    return mapping.get(str(status or "").strip().lower(), str(status or "-"))
+
+
+def _ai_review_status_label(status: str) -> str:
+    mapping = {
+        "open": "Offen",
+        "done": "Erledigt",
+        "approved": "Freigegeben",
+        "rejected": "Abgelehnt",
+        "overridden": "Override",
+    }
+    return mapping.get(str(status or "").strip().lower(), str(status or "-"))
+
+
+def _supervisor_severity_label(severity: str) -> str:
+    mapping = {"niedrig": "Niedrig", "mittel": "Mittel", "hoch": "Hoch"}
+    return mapping.get(str(severity or "").strip().lower(), str(severity or "-"))
+
+
+def _ai_object_url(object_type: str | None, object_id: int | None) -> str:
+    kind = str(object_type or "").strip()
+    obj_id = int(object_id or 0)
+    if obj_id <= 0:
+        return ""
+    mapping = {
+        "mail_thread": f"/mail/threads/{obj_id}",
+        "document_inbox_item": f"/einkauf/dokumente/{obj_id}",
+        "incoming_voucher_draft": f"/einkauf/voucher/{obj_id}",
+        "offer_draft": f"/crm/angebote/{obj_id}",
+        "invoice_draft": f"/crm/rechnungen/{obj_id}",
+        "master_customer": f"/crm/kunden/{obj_id}",
+        "crm_case": f"/crm/vorgaenge/{obj_id}",
+        "goods_receipt": f"/einkauf/wareneingaenge/{obj_id}",
+        "outsmart_workorder": f"/outsmart/arbeitsauftraege/{obj_id}",
+        "dunning_case": f"/crm/mahnfaelle/{obj_id}",
+    }
+    return mapping.get(kind, "")
+
+
+def _dashboard_ai_stats(db: Session) -> dict[str, object]:
+    open_reviews = db.query(AiReviewQueueItem).filter(AiReviewQueueItem.status == "open").count()
+    critical_findings = db.query(SupervisorFinding).filter(SupervisorFinding.status == "open", SupervisorFinding.severity == "hoch").count()
+    latest_logs = db.query(AiDecisionLog).order_by(AiDecisionLog.created_at.desc(), AiDecisionLog.id.desc()).limit(6).all()
+    recent = []
+    for row in latest_logs:
+        recent.append(
+            {
+                "row": row,
+                "label": _ai_task_label(str(row.task_name or "")),
+                "object_url": _ai_object_url(row.related_object_type, row.related_object_id),
+            }
+        )
+    return {"open_reviews": open_reviews, "critical_findings": critical_findings, "recent": recent}
+
+
+def _procedure_guideline_defaults() -> list[dict[str, str]]:
+    return [
+        {"section_key": "systemrollen", "title": "Systemrollen", "content_markdown": "Hauptsystem = fachlicher Master\\nOutSmart = Einsatz- und Termin-Master\\nsevDesk = Angebots-, Rechnungs-, Voucher- und Zahlungs-Master\\nPaperless = DMS- und OCR-Master\\nOpenAI = Vorschlags-, Klassifikations- und Monitoring-Schicht"},
+        {"section_key": "stammdatenfuehrerschaft", "title": "Stammdatenfuehrerschaft", "content_markdown": "Kunden, Vorgaenge und Lagerobjekte werden lokal gefuehrt. Externe Identitaeten bleiben verknuepft, aber nicht fuehrend."},
+        {"section_key": "dokumentenfluss", "title": "Dokumentenfluss", "content_markdown": "Paperless ist Archiv-Master. Lokale Objekte verweisen auf Paperless-Dokumente. Unklare Dokumente landen im Dokumenteneingang."},
+        {"section_key": "kommunikationsfluss", "title": "Kommunikationsfluss", "content_markdown": "Mails werden lokal abgeholt, Threads lokal zugeordnet und bei Bedarf mit CRM und Reparatur verknuepft."},
+        {"section_key": "buchungsfluss", "title": "Buchungsfluss", "content_markdown": "Voucher, Rechnungen und Zahlungen werden lokal vorbereitet und fachlich kontrolliert, bevor sie nach sevDesk gehen."},
+        {"section_key": "angebots_rechnungsfluss", "title": "Angebots- und Rechnungsfluss", "content_markdown": "Angebote und Rechnungen werden lokal vorbereitet, fachlich geprueft und erst danach in sevDesk angelegt oder versendet."},
+        {"section_key": "ki_regeln", "title": "KI-Regeln und Risikoklassen", "content_markdown": "Gruen = Vorschlaege ohne harte Wirkung. Gelb = fachliche Vorschlaege mit Pruefpflicht. Rot = keine automatische Ausfuehrung; nur nach expliziter Freigabe."},
+        {"section_key": "audit_logging", "title": "Audit, Logging und Freigaben", "content_markdown": "Jede KI-Entscheidung landet im KI-Log. Gelbe und rote Entscheidungen erscheinen in der KI-Freigabe."},
+        {"section_key": "ausnahmen", "title": "Ausnahmebehandlung", "content_markdown": "Unsichere Felder bleiben leer. Fachseiten muessen immer manuell korrigierbar bleiben. Externe Ausfaelle duerfen nur Vorschlaege verhindern, nicht Kernprozesse blockieren."},
+    ]
+
+
+def _ensure_procedure_guideline_sections(db: Session) -> None:
+    defaults = _procedure_guideline_defaults()
+    existing_keys = {
+        str(row.section_key or "")
+        for row in db.query(ProcedureGuidelineSection.section_key).filter(ProcedureGuidelineSection.active == True).all()
+    }
+    changed = False
+    for item in defaults:
+        if item["section_key"] in existing_keys:
+            continue
+        db.add(
+            ProcedureGuidelineSection(
+                section_key=item["section_key"],
+                title=item["title"],
+                content_markdown=item["content_markdown"],
+                version=1,
+                active=True,
+                updated_at=_utcnow_naive(),
+                updated_by_user_id=None,
+            )
+        )
+        changed = True
+    if changed:
+        db.flush()
+
+
+def _active_procedure_guideline_sections(db: Session) -> list[ProcedureGuidelineSection]:
+    _ensure_procedure_guideline_sections(db)
+    return (
+        db.query(ProcedureGuidelineSection)
+        .filter(ProcedureGuidelineSection.active == True)
+        .order_by(ProcedureGuidelineSection.id.asc())
+        .all()
+    )
+
+
+def _ai_eval_defaults() -> list[dict[str, str | bool]]:
+    return [
+        {
+            "task_name": "email_classification",
+            "input_json": json.dumps({"subject": "Rechnung RE-1001", "body_text": "Bitte pruefen", "from_email": "kunde@example.com"}, ensure_ascii=False),
+            "expected_json": json.dumps({"intent": "buchhaltung"}, ensure_ascii=False),
+            "active": True,
+        },
+        {
+            "task_name": "document_classification",
+            "input_json": json.dumps({"title": "Lieferschein LS-22", "correspondent": "Miele"}, ensure_ascii=False),
+            "expected_json": json.dumps({"doc_kind": "wareneingang"}, ensure_ascii=False),
+            "active": True,
+        },
+        {
+            "task_name": "incoming_invoice_extract",
+            "input_json": json.dumps({"text": "Rechnung Nr. INV-77 01.03.2026 100,00 19,00 119,00", "supplier_name": "Miele"}, ensure_ascii=False),
+            "expected_json": json.dumps({"invoice_no": "INV-77"}, ensure_ascii=False),
+            "active": True,
+        },
+        {
+            "task_name": "voucher_accounting_suggestion",
+            "input_json": json.dumps({"description": "Versandkosten fuer Bestellung PO-1", "supplier_name": "Miele"}, ensure_ascii=False),
+            "expected_json": json.dumps({"suggested_account_datev": "3800"}, ensure_ascii=False),
+            "active": True,
+        },
+        {
+            "task_name": "customer_merge_candidate",
+            "input_json": json.dumps({"master_id": 1, "candidate_id": 2, "master_name": "Adler GmbH", "candidate_name": "Adler GmbH", "master_email": "info@adler.de", "candidate_email": "info@adler.de"}, ensure_ascii=False),
+            "expected_json": json.dumps({"risk_level": "gelb"}, ensure_ascii=False),
+            "active": True,
+        },
+        {
+            "task_name": "role_assignment_suggestion",
+            "input_json": json.dumps({"available_customers": [{"id": 1}], "available_locations": [{"id": 2}]}, ensure_ascii=False),
+            "expected_json": json.dumps({"probable_ordering_party": 1, "probable_service_location": 2}, ensure_ascii=False),
+            "active": True,
+        },
+    ]
+
+
+def _ensure_ai_eval_cases(db: Session) -> None:
+    changed = False
+    for item in _ai_eval_defaults():
+        exists = (
+            db.query(AiEvalCase)
+            .filter(AiEvalCase.task_name == str(item["task_name"]), AiEvalCase.input_json == str(item["input_json"]))
+            .first()
+        )
+        if exists is not None:
+            continue
+        db.add(
+            AiEvalCase(
+                task_name=str(item["task_name"]),
+                input_json=str(item["input_json"]),
+                expected_json=str(item["expected_json"]),
+                active=bool(item["active"]),
+                created_at=_utcnow_naive(),
+            )
+        )
+        changed = True
+    if changed:
+        db.flush()
+
+
+def _ai_run_eval_task(db: Session, settings: dict[str, object], task_name: str, input_payload: dict[str, object]) -> dict[str, object]:
+    task = str(task_name or "").strip()
+    if task == "email_classification":
+        return ai_classify_email_thread(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
+    if task == "document_classification":
+        return ai_classify_document(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
+    if task == "incoming_invoice_extract":
+        return ai_extract_incoming_invoice(db, settings=settings, input_payload=input_payload, related_object_type="ai_eval", force_refresh=True)["output"]
+    if task == "voucher_accounting_suggestion":
+        return ai_suggest_voucher_accounting(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
+    if task == "customer_merge_candidate":
+        return ai_evaluate_merge_candidate(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
+    if task == "role_assignment_suggestion":
+        return ai_suggest_role_assignment(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
+    raise ValueError("Unbekannter KI-Eval-Task.")
+
+
+def _ai_eval_matches(expected_payload: dict[str, object], result_payload: dict[str, object]) -> bool:
+    for key, expected_value in expected_payload.items():
+        result_value = result_payload.get(key)
+        if isinstance(expected_value, dict):
+            if not isinstance(result_value, dict):
+                return False
+            if not _ai_eval_matches(expected_value, result_value):
+                return False
+            continue
+        if expected_value != result_value:
+            return False
+    return True
+
+
+def _sevdesk_store_export_job(db: Session, row: dict[str, object]) -> None:
+    items = _sevdesk_export_jobs(db)
+    items.insert(0, row)
+    _system_setting_set(db, SEVDESK_SETTING_EXPORT_JOBS_JSON, json.dumps(items[:20], ensure_ascii=False))
+
+
+def _outsmart_extract_rows(payload) -> list[dict]:
+    from .services.outsmart_service import _extract_rows
+
+    return _extract_rows(payload)
+
+
+def _outsmart_request(
+    *,
+    settings: dict[str, str | bool],
+    endpoint: str,
+    method: str = "GET",
+    query: dict[str, str] | None = None,
+    payload: dict | None = None,
+):
+    return outsmart_request_json(
+        settings,
+        endpoint=endpoint,
+        method=method,
+        query=query,
+        payload=payload,
+    )
+
+
+
+def _outsmart_list_json(raw: str | None) -> list[dict | str]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _outsmart_first_row(payload) -> dict:
+    rows = _outsmart_extract_rows(payload)
+    return rows[0] if rows else (payload if isinstance(payload, dict) else {})
+
+
+def _outsmart_pick(payload, keys: tuple[str, ...]) -> str:
+    return _crm_clean_text(_outsmart_first_value(payload, keys))
+
+
+def _outsmart_pick_url(payload, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = _normalize_absolute_url(_outsmart_first_value(payload, (key,)))
+        if value:
+            return value
+    return None
+
+
+def _outsmart_parse_datetime(raw: str | None) -> dt.datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    if text.endswith("Z"):
+        candidates.append(text[:-1] + "+00:00")
+    for value in candidates:
+        try:
+            return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            pass
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d.%m.%Y %H:%M",
+        "%d.%m.%Y",
+        "%Y-%m-%d",
+    ):
+        try:
+            return dt.datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _outsmart_relation_key(payload: dict) -> str:
+    return _outsmart_pick(
+        payload,
+        (
+            "DebtorNo",
+            "debtor_no",
+            "RelationNo",
+            "relation_no",
+            "CustomerNo",
+            "customer_no",
+            "Code",
+            "code",
+        ),
+    )
+
+
+def _outsmart_project_key(payload: dict) -> str:
+    return _outsmart_pick(
+        payload,
+        (
+            "ProjectNo",
+            "project_no",
+            "ProjectNr",
+            "project_nr",
+            "ExternProjectNr",
+            "extern_project_nr",
+            "Code",
+            "code",
+        ),
+    )
+
+
+def _outsmart_object_key(payload: dict) -> str:
+    return _outsmart_pick(
+        payload,
+        (
+            "ObjectCode",
+            "object_code",
+            "ObjectNo",
+            "object_no",
+            "Code",
+            "code",
+            "SerialNo",
+            "serial_no",
+        ),
+    )
+
+
+def _outsmart_workorder_key(payload: dict) -> str:
+    return _outsmart_pick(
+        payload,
+        (
+            "WorkorderNo",
+            "workorder_no",
+            "ReferenceNo",
+            "reference_no",
+            "WorkOrderNumber",
+            "workorder_number",
+        ),
+    )
+
+
+def _outsmart_row_id(payload: dict) -> str:
+    return _outsmart_pick(payload, ("RowId", "row_id", "Id", "id", "RowID"))
+
+
+def _outsmart_status_to_case_status(raw: str | None) -> str:
+    key = _crm_normalize_key(raw)
+    mapping = {
+        "compleet": "completed",
+        "completed": "completed",
+        "gepland": "planned",
+        "planned": "planned",
+        "open": "open",
+        "nieuw": "open",
+        "inbehandeling": "in_progress",
+        "in_progress": "in_progress",
+        "gesloten": "closed",
+        "closed": "closed",
+        "cancelled": "cancelled",
+        "geannuleerd": "cancelled",
+    }
+    return mapping.get(key, "open")
+
+
+def _crm_customer_from_outsmart_identity(db: Session, payload: dict) -> MasterCustomer | None:
+    candidates = [
+        _outsmart_relation_key(payload),
+        _outsmart_pick(payload, ("RelationNo", "relation_no")),
+        _outsmart_pick(payload, ("DebtorNo", "debtor_no")),
+        _outsmart_pick(payload, ("CustomerNo", "customer_no")),
+        _outsmart_row_id(payload),
+    ]
+    keys = [value for value in candidates if value]
+    if not keys:
+        return None
+    identity = (
+        db.query(ExternalIdentity)
+        .filter(ExternalIdentity.system_name == "outsmart", ExternalIdentity.external_key.in_(keys))
+        .order_by(ExternalIdentity.is_primary.desc(), ExternalIdentity.id.asc())
+        .first()
+    )
+    if identity:
+        return db.get(MasterCustomer, int(identity.master_customer_id or 0))
+    link = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == "outsmart",
+            ExternalLink.object_type == "master_customer",
+            or_(ExternalLink.external_key.in_(keys), ExternalLink.external_row_id.in_(keys)),
+        )
+        .order_by(ExternalLink.id.asc())
+        .first()
+    )
+    if link:
+        return db.get(MasterCustomer, int(link.object_id or 0))
+    return None
+
+
+def _crm_default_location_for_customer(db: Session, customer_id: int) -> ServiceLocation | None:
+    if int(customer_id or 0) <= 0:
+        return None
+    return (
+        db.query(ServiceLocation)
+        .filter(ServiceLocation.master_customer_id == int(customer_id), ServiceLocation.active == True)
+        .order_by(ServiceLocation.id.asc())
+        .first()
+    )
+
+
+def _crm_case_by_project_key(db: Session, project_key: str) -> CrmCase | None:
+    if not project_key:
+        return None
+    link = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == "outsmart",
+            ExternalLink.object_type == "crm_case_project",
+            or_(ExternalLink.external_key == project_key, ExternalLink.external_row_id == project_key),
+        )
+        .order_by(ExternalLink.id.asc())
+        .first()
+    )
+    if link:
+        row = db.get(CrmCase, int(link.object_id or 0))
+        if row:
+            return row
+    return db.query(CrmCase).filter(CrmCase.case_no == project_key).order_by(CrmCase.id.asc()).first()
+
+
+def _crm_customer_labels_map(db: Session, customer_ids: list[int]) -> dict[int, str]:
+    rows = db.query(MasterCustomer).filter(MasterCustomer.id.in_(customer_ids)).all() if customer_ids else []
+    party_ids = [int(row.party_id) for row in rows]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    _, default_map = _crm_party_address_maps(db, party_ids)
+    return {
+        int(row.id): _crm_customer_label(row, parties.get(int(row.party_id)), default_map.get(int(row.party_id)))
+        for row in rows
+    }
+
+
+def _crm_add_timeline_event(
+    db: Session,
+    *,
+    case_id: int | None = None,
+    master_customer_id: int | None = None,
+    service_location_id: int | None = None,
+    customer_object_id: int | None = None,
+    outsmart_workorder_id: int | None = None,
+    source_system: str,
+    event_type: str,
+    title: str,
+    body: str | None = None,
+    event_ts: dt.datetime | None = None,
+    external_ref: str | None = None,
+    meta: dict | None = None,
+) -> CrmTimelineEvent:
+    query = db.query(CrmTimelineEvent).filter(
+        CrmTimelineEvent.source_system == str(source_system),
+        CrmTimelineEvent.event_type == str(event_type),
+        CrmTimelineEvent.title == str(title),
+        CrmTimelineEvent.external_ref == (str(external_ref or "").strip() or None),
+    )
+    if case_id is None:
+        query = query.filter(CrmTimelineEvent.case_id.is_(None))
+    else:
+        query = query.filter(CrmTimelineEvent.case_id == int(case_id))
+    if outsmart_workorder_id is None:
+        query = query.filter(CrmTimelineEvent.outsmart_workorder_id.is_(None))
+    else:
+        query = query.filter(CrmTimelineEvent.outsmart_workorder_id == int(outsmart_workorder_id))
+    existing = query.order_by(CrmTimelineEvent.id.desc()).first()
+    if existing:
+        existing.body = str(body or "").strip() or None
+        existing.event_ts = event_ts or existing.event_ts
+        existing.meta_json = json.dumps(meta, ensure_ascii=False) if isinstance(meta, dict) and meta else existing.meta_json
+        db.add(existing)
+        db.flush()
+        return existing
+    row = CrmTimelineEvent(
+        case_id=int(case_id) if int(case_id or 0) > 0 else None,
+        master_customer_id=int(master_customer_id) if int(master_customer_id or 0) > 0 else None,
+        service_location_id=int(service_location_id) if int(service_location_id or 0) > 0 else None,
+        customer_object_id=int(customer_object_id) if int(customer_object_id or 0) > 0 else None,
+        outsmart_workorder_id=int(outsmart_workorder_id) if int(outsmart_workorder_id or 0) > 0 else None,
+        source_system=str(source_system),
+        event_type=str(event_type),
+        title=str(title),
+        body=str(body or "").strip() or None,
+        event_ts=event_ts or _utcnow_naive(),
+        external_ref=str(external_ref or "").strip() or None,
+        meta_json=json.dumps(meta, ensure_ascii=False) if isinstance(meta, dict) and meta else None,
+        created_at=_utcnow_naive(),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _crm_timeline_row_payload(db: Session, row: CrmTimelineEvent) -> dict[str, object]:
+    meta = _json_dict(row.meta_json)
+    detail_url = ""
+    detail_label = ""
+    paperless_url = ""
+    group_key = "event"
+    type_label = "Eintrag"
+    if int(row.outsmart_workorder_id or 0) > 0:
+        detail_url = f"/outsmart/arbeitsauftraege/{int(row.outsmart_workorder_id)}"
+        detail_label = "Arbeitsauftrag öffnen"
+        group_key = "event"
+        type_label = _sync_job_entity_label("workorder")
+    elif str(row.source_system or "").strip() == "mail":
+        match = re.match(r"mail:(\d+)", str(row.external_ref or "").strip())
+        message = db.get(EmailMessage, int(match.group(1))) if match else None
+        if message and int(message.thread_id or 0) > 0:
+            detail_url = f"/mail/threads/{int(message.thread_id)}#mail-message-{int(message.id)}"
+            detail_label = "Mail-Thread öffnen"
+        group_key = "mail"
+        type_label = "E-Mail"
+    elif str(row.source_system or "").strip() in ("paperless", "local_upload"):
+        if str(meta.get("paperless_document_id") or "").strip():
+            inbox_item = _document_inbox_item_from_paperless_id(db, str(meta.get("paperless_document_id") or ""))
+            if inbox_item:
+                detail_url = f"/crm/dokumente/{int(inbox_item.id)}"
+                detail_label = "Dokument öffnen"
+            paperless_url = paperless_build_document_url(_paperless_settings(db, include_secret=False), str(meta.get("paperless_document_id") or ""))
+        elif int(meta.get("attachment_id") or 0) > 0:
+            detail_url = f"/dokumente/lokal/{int(meta.get('attachment_id') or 0)}"
+            detail_label = "Datei herunterladen"
+        group_key = "document"
+        type_label = "Dokument"
+    elif str(row.source_system or "").strip() == "outsmart":
+        type_label = _sync_job_entity_label("workorder")
+    return {
+        "row": row,
+        "group_key": group_key,
+        "type_label": type_label,
+        "detail_url": detail_url,
+        "detail_label": detail_label,
+        "paperless_url": paperless_url,
+    }
+
+
+def _crm_timeline_rows_for_case(db: Session, case_id: int, limit: int = 40, timeline_filter: str = "all") -> list[dict[str, object]]:
+    query = db.query(CrmTimelineEvent).filter(CrmTimelineEvent.case_id == int(case_id))
+    rows = query.order_by(CrmTimelineEvent.event_ts.desc(), CrmTimelineEvent.id.desc()).limit(limit).all()
+    filter_key = str(timeline_filter or "all").strip().lower()
+    out = []
+    for row in rows:
+        payload = _crm_timeline_row_payload(db, row)
+        if filter_key == "mail" and payload["group_key"] != "mail":
+            continue
+        if filter_key == "document" and payload["group_key"] != "document":
+            continue
+        out.append(payload)
+    return out
+
+
+def _crm_timeline_rows_for_customer(db: Session, customer_id: int, limit: int = 20, timeline_filter: str = "all") -> list[dict[str, object]]:
+    query = db.query(CrmTimelineEvent).filter(CrmTimelineEvent.master_customer_id == int(customer_id))
+    rows = query.order_by(CrmTimelineEvent.event_ts.desc(), CrmTimelineEvent.id.desc()).limit(limit).all()
+    filter_key = str(timeline_filter or "all").strip().lower()
+    out = []
+    for row in rows:
+        payload = _crm_timeline_row_payload(db, row)
+        if filter_key == "mail" and payload["group_key"] != "mail":
+            continue
+        if filter_key == "document" and payload["group_key"] != "document":
+            continue
+        out.append(payload)
+    return out
+
+
+def _outsmart_customer_default_address(db: Session, customer: MasterCustomer | None) -> CrmAddress | None:
+    if not customer:
+        return None
+    _, default_map = _crm_party_address_maps(db, [int(customer.party_id)])
+    return default_map.get(int(customer.party_id))
+
+
+def _outsmart_upsert_relation_customer(db: Session, payload: dict) -> tuple[MasterCustomer | None, str]:
+    relation_key = _outsmart_relation_key(payload)
+    row_id = _outsmart_row_id(payload)
+    debtor_key = _outsmart_pick(payload, ("DebtorNo", "debtor_no"))
+    customer_no_key = _outsmart_pick(payload, ("CustomerNo", "customer_no"))
+    display_name = _outsmart_pick(payload, ("CompanyName", "company_name", "Name", "name", "RelationName", "relation_name", "DisplayName", "display_name"))
+    if not display_name and not relation_key:
+        return None, "skipped"
+    customer = _crm_customer_from_outsmart_identity(db, payload)
+    created = customer is None
+    if customer is None:
+        party = Party(
+            party_type="company",
+            display_name=display_name or relation_key,
+            active=True,
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+        db.add(party)
+        db.flush()
+        customer = MasterCustomer(
+            party_id=int(party.id),
+            customer_no_internal=_crm_next_customer_no(db),
+            status="active",
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+        db.add(customer)
+        db.flush()
+    party = db.get(Party, int(customer.party_id))
+    if not party:
+        return None, "skipped"
+    changed = created
+    if display_name and display_name != str(party.display_name or ""):
+        party.display_name = display_name
+        changed = True
+    email_value = _outsmart_pick(payload, ("Email", "email", "EmailAddress", "email_address", "Mail"))
+    phone_value = _outsmart_pick(payload, ("Phone", "phone", "Telephone", "telephone", "MobilePhone", "mobile_phone"))
+    street_value = _outsmart_pick(payload, ("Street", "street", "Address", "address", "Address1", "address1"))
+    house_no_value = _outsmart_pick(payload, ("HouseNo", "house_no"))
+    zip_value = _outsmart_pick(payload, ("ZipCode", "zip_code", "PostalCode", "postal_code", "Postcode"))
+    city_value = _outsmart_pick(payload, ("City", "city", "Place"))
+    country_value = _outsmart_pick(payload, ("CountryCode", "country_code", "Country", "country")) or "DE"
+    address = _outsmart_customer_default_address(db, customer)
+    if address is None and any((street_value, zip_value, city_value, email_value, phone_value)):
+        address = CrmAddress(party_id=int(party.id), label="Hauptadresse", is_default=True, active=True)
+        db.add(address)
+        db.flush()
+        _crm_clear_default_addresses(db, int(party.id), int(address.id))
+        changed = True
+    if address is not None:
+        new_values = {
+            "street": street_value or address.street,
+            "house_no": house_no_value or address.house_no,
+            "zip_code": zip_value or address.zip_code,
+            "city": city_value or address.city,
+            "country_code": country_value or address.country_code,
+            "email": email_value or address.email,
+            "phone": phone_value or address.phone,
+        }
+        for key, value in new_values.items():
+            if getattr(address, key) != value:
+                setattr(address, key, value)
+                changed = True
+        if not address.label:
+            address.label = "Hauptadresse"
+        db.add(address)
+    party.updated_at = _utcnow_naive()
+    customer.updated_at = _utcnow_naive()
+    db.add(party)
+    db.add(customer)
+    identities = [
+        ("debtor", debtor_key or relation_key, debtor_key or row_id, True),
+        ("relation", relation_key or debtor_key, row_id or relation_key, not debtor_key),
+        ("customerNumber", customer_no_key, customer_no_key, False),
+    ]
+    for external_type, external_key, external_id, primary_flag in identities:
+        key_value = str(external_key or "").strip()
+        if not key_value:
+            continue
+        row = (
+            db.query(ExternalIdentity)
+            .filter(
+                ExternalIdentity.system_name == "outsmart",
+                ExternalIdentity.external_type == external_type,
+                ExternalIdentity.external_key == key_value,
+            )
+            .one_or_none()
+        )
+        if row is None:
+            row = ExternalIdentity(
+                master_customer_id=int(customer.id),
+                system_name="outsmart",
+                external_type=external_type,
+                external_key=key_value,
+                external_id=str(external_id or "").strip() or None,
+                is_primary=bool(primary_flag),
+                created_at=_utcnow_naive(),
+            )
+            changed = True
+        else:
+            if int(row.master_customer_id or 0) != int(customer.id):
+                row.master_customer_id = int(customer.id)
+                changed = True
+            if str(row.external_id or "") != str(external_id or ""):
+                row.external_id = str(external_id or "").strip() or None
+                changed = True
+            if bool(primary_flag) and not bool(row.is_primary):
+                row.is_primary = True
+                changed = True
+        db.add(row)
+    deep_link = _outsmart_pick_url(payload, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(
+        _outsmart_settings(db, include_secret=False),
+        entity_type="relation",
+        row_id=row_id or None,
+        external_key=relation_key or debtor_key,
+    )
+    _upsert_external_link(
+        db,
+        system_name="outsmart",
+        object_type="master_customer",
+        object_id=int(customer.id),
+        external_key=debtor_key or relation_key or customer.customer_no_internal,
+        external_row_id=row_id or None,
+        deep_link_url=deep_link or None,
+    )
+    return customer, ("created" if created else "updated" if changed else "skipped")
+
+
+def _outsmart_upsert_project_case(db: Session, payload: dict) -> tuple[CrmCase | None, str]:
+    project_key = _outsmart_project_key(payload)
+    row_id = _outsmart_row_id(payload)
+    title = _outsmart_pick(payload, ("ProjectName", "project_name", "Name", "name", "Description", "description")) or project_key
+    if not title and not project_key:
+        return None, "skipped"
+    row = _crm_case_by_project_key(db, row_id or project_key)
+    created = row is None
+    if row is None:
+        case_no = project_key or _crm_next_case_no(db)
+        if db.query(CrmCase).filter(CrmCase.case_no == case_no).count() > 0:
+            case_no = _crm_next_case_no(db)
+        row = CrmCase(
+            case_no=case_no,
+            title=title or case_no,
+            status=_outsmart_status_to_case_status(_outsmart_pick(payload, ("Status", "status"))),
+            priority="normal",
+            source_system="outsmart",
+            note=_outsmart_pick(payload, ("Description", "description", "Remark", "remark")) or None,
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+        db.add(row)
+        db.flush()
+    changed = created
+    if title and row.title != title:
+        row.title = title
+        changed = True
+    status = _outsmart_status_to_case_status(_outsmart_pick(payload, ("Status", "status")))
+    if row.status != status:
+        row.status = status
+        changed = True
+    note_value = _outsmart_pick(payload, ("Description", "description", "Remark", "remark")) or None
+    if note_value and row.note != note_value:
+        row.note = note_value
+        changed = True
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    customer = _crm_customer_from_outsmart_identity(db, payload)
+    if customer:
+        address = _outsmart_customer_default_address(db, customer)
+        _crm_set_case_role(
+            db,
+            crm_case_id=int(row.id),
+            role_type=CRM_ROLE_ORDERING_PARTY,
+            master_customer_id=int(customer.id),
+            address_id=int(address.id) if address else None,
+        )
+        _crm_set_case_role(
+            db,
+            crm_case_id=int(row.id),
+            role_type=CRM_ROLE_INVOICE_RECIPIENT,
+            master_customer_id=int(customer.id),
+            address_id=int(address.id) if address else None,
+        )
+        location = _crm_default_location_for_customer(db, int(customer.id))
+        if location:
+            _crm_set_case_role(
+                db,
+                crm_case_id=int(row.id),
+                role_type=CRM_ROLE_SERVICE_LOCATION,
+                master_customer_id=int(customer.id),
+                service_location_id=int(location.id),
+                address_id=int(location.address_id or 0) or None,
+            )
+    deep_link = _outsmart_pick_url(payload, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(
+        _outsmart_settings(db, include_secret=False),
+        entity_type="project",
+        row_id=row_id or None,
+        external_key=project_key,
+    )
+    _upsert_external_link(
+        db,
+        system_name="outsmart",
+        object_type="crm_case_project",
+        object_id=int(row.id),
+        external_key=project_key or row.case_no,
+        external_row_id=row_id or None,
+        deep_link_url=deep_link or None,
+    )
+    return row, ("created" if created else "updated" if changed else "skipped")
+
+
+def _outsmart_upsert_customer_object(db: Session, payload: dict) -> tuple[CustomerObject | None, str]:
+    object_key = _outsmart_object_key(payload)
+    row_id = _outsmart_row_id(payload)
+    if not object_key and not row_id:
+        return None, "skipped"
+    row = None
+    if object_key:
+        row = db.query(CustomerObject).filter(CustomerObject.external_object_code == object_key).one_or_none()
+    if row is None and row_id:
+        row = db.query(CustomerObject).filter(CustomerObject.external_row_id == row_id).one_or_none()
+    created = row is None
+    customer = _crm_customer_from_outsmart_identity(db, payload)
+    location = _crm_default_location_for_customer(db, int(customer.id)) if customer else None
+    if row is None:
+        row = CustomerObject(
+            master_customer_id=int(customer.id) if customer else None,
+            service_location_id=int(location.id) if location else None,
+            external_object_code=object_key or row_id,
+            external_row_id=row_id or None,
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+    changed = created
+    values = {
+        "master_customer_id": int(customer.id) if customer else row.master_customer_id,
+        "service_location_id": int(location.id) if location else row.service_location_id,
+        "external_object_code": object_key or row.external_object_code,
+        "external_row_id": row_id or row.external_row_id,
+        "supplier_label": _outsmart_pick(payload, ("Supplier", "supplier", "SupplierName", "supplier_name")) or row.supplier_label,
+        "brand_label": _outsmart_pick(payload, ("Brand", "brand", "Manufacturer", "manufacturer")) or row.brand_label,
+        "model_label": _outsmart_pick(payload, ("Model", "model", "ModelName", "model_name")) or row.model_label,
+        "type_label": _outsmart_pick(payload, ("Type", "type", "TypeName", "type_name")) or row.type_label,
+        "serial_no": _outsmart_pick(payload, ("SerialNo", "serial_no", "SerialNumber", "serial_number")) or row.serial_no,
+        "image_url": _outsmart_pick_url(payload, ("ImageUrl", "image_url", "PhotoUrl", "photo_url")) or row.image_url,
+        "deep_link_url": _outsmart_pick_url(payload, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(_outsmart_settings(db, include_secret=False), entity_type="object", row_id=row_id or None, external_key=object_key),
+    }
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    warranty_until = _outsmart_parse_datetime(_outsmart_pick(payload, ("WarrantyUntil", "warranty_until", "WarrantyDate")))
+    installation_date = _outsmart_parse_datetime(_outsmart_pick(payload, ("InstallationDate", "installation_date", "DateInstalled")))
+    inspection_date = _outsmart_parse_datetime(_outsmart_pick(payload, ("InspectionDate", "inspection_date", "NextInspectionDate")))
+    for key, value in (("warranty_until", warranty_until), ("installation_date", installation_date), ("inspection_date", inspection_date)):
+        if value is not None and getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    freefields = payload.get("FreeFields") or payload.get("freefields") or payload.get("Freefields") or {}
+    object_parts = payload.get("ObjectParts") or payload.get("object_parts") or payload.get("Parts") or []
+    freefields_json = json.dumps(freefields, ensure_ascii=False) if freefields else None
+    object_parts_json = json.dumps(object_parts, ensure_ascii=False) if object_parts else None
+    if row.freefields_json != freefields_json:
+        row.freefields_json = freefields_json
+        changed = True
+    if row.object_parts_json != object_parts_json:
+        row.object_parts_json = object_parts_json
+        changed = True
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    db.flush()
+    _upsert_external_link(
+        db,
+        system_name="outsmart",
+        object_type="customer_object",
+        object_id=int(row.id),
+        external_key=row.external_object_code,
+        external_row_id=row.external_row_id,
+        deep_link_url=row.deep_link_url,
+    )
+    return row, ("created" if created else "updated" if changed else "skipped")
+
+
+def _outsmart_match_case_for_workorder(db: Session, payload: dict) -> CrmCase | None:
+    workorder_no = _outsmart_workorder_key(payload)
+    if workorder_no:
+        row = db.query(CrmCase).filter(CrmCase.case_no == workorder_no).one_or_none()
+        if row:
+            return row
+    project_key = _outsmart_project_key(payload)
+    if project_key:
+        row = _crm_case_by_project_key(db, project_key)
+        if row:
+            return row
+    return None
+
+
+def _outsmart_match_customer_object(db: Session, payload: dict) -> CustomerObject | None:
+    object_key = _outsmart_object_key(payload)
+    row_id = _outsmart_pick(payload, ("ObjectRowId", "object_row_id")) or _outsmart_row_id(payload)
+    if object_key:
+        row = db.query(CustomerObject).filter(CustomerObject.external_object_code == object_key).one_or_none()
+        if row:
+            return row
+    if row_id:
+        row = db.query(CustomerObject).filter(CustomerObject.external_row_id == row_id).one_or_none()
+        if row:
+            return row
+    return None
+
+
+def _outsmart_upsert_workorder_summary(db: Session, payload: dict) -> tuple[OutsmartWorkorder | None, str, bool]:
+    workorder_no = _outsmart_workorder_key(payload)
+    row_id = _outsmart_row_id(payload)
+    if not workorder_no and not row_id:
+        return None, "skipped", False
+    row = None
+    if workorder_no:
+        row = db.query(OutsmartWorkorder).filter(OutsmartWorkorder.workorder_no == workorder_no).one_or_none()
+    if row is None and row_id:
+        row = db.query(OutsmartWorkorder).filter(OutsmartWorkorder.external_row_id == row_id).one_or_none()
+    created = row is None
+    case_row = _outsmart_match_case_for_workorder(db, payload)
+    customer = _crm_customer_from_outsmart_identity(db, payload)
+    customer_object = _outsmart_match_customer_object(db, payload)
+    location = None
+    if case_row:
+        role_map = _crm_case_role_map(db, [int(case_row.id)]).get(int(case_row.id), {})
+        service_role = role_map.get(CRM_ROLE_SERVICE_LOCATION)
+        if service_role and int(service_role.service_location_id or 0) > 0:
+            location = db.get(ServiceLocation, int(service_role.service_location_id))
+    if location is None and customer_object and int(customer_object.service_location_id or 0) > 0:
+        location = db.get(ServiceLocation, int(customer_object.service_location_id))
+    if location is None and customer:
+        location = _crm_default_location_for_customer(db, int(customer.id))
+    if row is None:
+        row = OutsmartWorkorder(
+            workorder_no=workorder_no or row_id,
+            external_row_id=row_id or None,
+            case_id=int(case_row.id) if case_row else None,
+            master_customer_id=int(customer.id) if customer else None,
+            service_location_id=int(location.id) if location else None,
+            customer_object_id=int(customer_object.id) if customer_object else None,
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+    old_status = str(row.status or "")
+    old_start = row.scheduled_start.isoformat() if row.scheduled_start else ""
+    old_end = row.scheduled_end.isoformat() if row.scheduled_end else ""
+    values = {
+        "workorder_no": workorder_no or row.workorder_no,
+        "external_row_id": row_id or row.external_row_id,
+        "case_id": int(case_row.id) if case_row else row.case_id,
+        "master_customer_id": int(customer.id) if customer else row.master_customer_id,
+        "service_location_id": int(location.id) if location else row.service_location_id,
+        "customer_object_id": int(customer_object.id) if customer_object else row.customer_object_id,
+        "project_external_key": _outsmart_project_key(payload) or row.project_external_key,
+        "status": _outsmart_pick(payload, ("Status", "status", "StatusText", "status_text")) or row.status,
+        "employee_name": _outsmart_pick(payload, ("EmployeeName", "employee_name", "Employee", "employee", "MechanicName", "mechanic_name")) or row.employee_name,
+        "short_description": _outsmart_pick(payload, ("ShortWorkDescription", "short_work_description", "ShortDescription", "short_description")) or row.short_description,
+        "work_description": _outsmart_pick(payload, ("WorkDescription", "work_description", "Description", "description")) or row.work_description,
+        "internal_work_description": _outsmart_pick(payload, ("InternalWorkDescription", "internal_work_description", "InternalDescription")) or row.internal_work_description,
+        "pdf_url": _outsmart_pick_url(payload, ("PdfUrl", "pdf_url")) or row.pdf_url,
+        "word_url": _outsmart_pick_url(payload, ("WordUrl", "word_url")) or row.word_url,
+        "deep_link_url": _outsmart_pick_url(payload, ("DeepLinkUrl", "deep_link_url", "Url", "url")) or outsmart_build_deep_link(_outsmart_settings(db, include_secret=False), entity_type="workorder", row_id=row_id or None, external_key=workorder_no),
+    }
+    changed = created
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    start_value = _outsmart_parse_datetime(_outsmart_pick(payload, ("PlannedStart", "planned_start", "AppointmentStart", "appointment_start", "DateStart", "date_start")))
+    end_value = _outsmart_parse_datetime(_outsmart_pick(payload, ("PlannedEnd", "planned_end", "AppointmentEnd", "appointment_end", "DateEnd", "date_end")))
+    if start_value is not None and row.scheduled_start != start_value:
+        row.scheduled_start = start_value
+        changed = True
+    if end_value is not None and row.scheduled_end != end_value:
+        row.scheduled_end = end_value
+        changed = True
+    for field_name, payload_key in (
+        ("forms_json", payload.get("Forms") or payload.get("forms") or []),
+        ("photos_json", payload.get("Photos") or payload.get("photos") or []),
+        ("materials_json", payload.get("Materials") or payload.get("materials") or []),
+        ("workperiods_json", payload.get("WorkPeriods") or payload.get("workperiods") or payload.get("Workperiods") or []),
+        ("workobjects_json", payload.get("WorkObjects") or payload.get("workobjects") or []),
+        ("employees_json", payload.get("Employees") or payload.get("employees") or []),
+    ):
+        json_value = json.dumps(payload_key, ensure_ascii=False) if payload_key else None
+        if getattr(row, field_name) != json_value:
+            setattr(row, field_name, json_value)
+            changed = True
+    raw_json = json.dumps(payload, ensure_ascii=False) if payload else None
+    if row.raw_json != raw_json:
+        row.raw_json = raw_json
+        changed = True
+    row.last_synced_at = _utcnow_naive()
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    db.flush()
+    _upsert_external_link(
+        db,
+        system_name="outsmart",
+        object_type="outsmart_workorder",
+        object_id=int(row.id),
+        external_key=row.workorder_no,
+        external_row_id=row.external_row_id,
+        deep_link_url=row.deep_link_url,
+    )
+    if case_row:
+        _upsert_external_link(
+            db,
+            system_name="outsmart",
+            object_type="crm_case_workorder",
+            object_id=int(case_row.id),
+            external_key=row.workorder_no,
+            external_row_id=row.external_row_id,
+            deep_link_url=row.deep_link_url,
+        )
+    event_changed = created or old_status != str(row.status or "") or old_start != (row.scheduled_start.isoformat() if row.scheduled_start else "") or old_end != (row.scheduled_end.isoformat() if row.scheduled_end else "")
+    if event_changed:
+        schedule_text = ""
+        if row.scheduled_start or row.scheduled_end:
+            schedule_text = f"Termin: {_format_date_local(row.scheduled_start)}"
+            if row.scheduled_end:
+                schedule_text = f"{schedule_text} bis {_format_date_local(row.scheduled_end)}"
+        body_lines = [
+            f"Status: {row.status or '-'}",
+            schedule_text,
+            f"Mitarbeiter: {row.employee_name or '-'}",
+            f"Kurztext: {row.short_description or '-'}",
+        ]
+        _crm_add_timeline_event(
+            db,
+            case_id=int(case_row.id) if case_row else None,
+            master_customer_id=int(customer.id) if customer else None,
+            service_location_id=int(location.id) if location else None,
+            customer_object_id=int(customer_object.id) if customer_object else None,
+            outsmart_workorder_id=int(row.id),
+            source_system="outsmart",
+            event_type="workorder_update" if not created else "workorder_import",
+            title=f"OutSmart Arbeitsauftrag {row.workorder_no}",
+            body="\n".join([line for line in body_lines if line]),
+            event_ts=row.scheduled_start or _utcnow_naive(),
+            external_ref=row.external_row_id or row.workorder_no,
+            meta={"status": row.status, "deep_link_url": row.deep_link_url},
+        )
+    return row, ("created" if created else "updated" if changed else "skipped"), event_changed
+
+
+def _outsmart_import_relations_once(db: Session) -> dict[str, object]:
+    settings = _outsmart_settings(db, include_secret=True)
+    job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="relation", log_text="OutSmart Relations importieren")
+    summary = {"created": 0, "updated": 0, "skipped": 0, "errors": 0, "messages": []}
+    try:
+        rows = _outsmart_extract_rows(outsmart_fetch_relations(settings))
+        for payload in rows:
+            try:
+                _, state = _outsmart_upsert_relation_customer(db, payload)
+                summary[state] = int(summary.get(state, 0)) + 1
+            except Exception as exc:
+                summary["errors"] = int(summary.get("errors", 0)) + 1
+                summary["messages"].append(str(exc))
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _outsmart_set_last_sync_at(db)
+        return summary
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _outsmart_import_projects_once(db: Session) -> dict[str, object]:
+    settings = _outsmart_settings(db, include_secret=True)
+    job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="project", log_text="OutSmart Projekte importieren")
+    summary = {"created": 0, "updated": 0, "skipped": 0, "errors": 0, "messages": []}
+    try:
+        rows = _outsmart_extract_rows(outsmart_fetch_projects(settings))
+        for payload in rows:
+            try:
+                _, state = _outsmart_upsert_project_case(db, payload)
+                summary[state] = int(summary.get(state, 0)) + 1
+            except Exception as exc:
+                summary["errors"] = int(summary.get("errors", 0)) + 1
+                summary["messages"].append(str(exc))
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _outsmart_set_last_sync_at(db)
+        return summary
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _outsmart_import_objects_once(db: Session) -> dict[str, object]:
+    settings = _outsmart_settings(db, include_secret=True)
+    job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="customer_object", log_text="OutSmart Objekte importieren")
+    summary = {"created": 0, "updated": 0, "skipped": 0, "errors": 0, "messages": []}
+    try:
+        rows = _outsmart_extract_rows(outsmart_fetch_objects(settings))
+        for payload in rows:
+            try:
+                _, state = _outsmart_upsert_customer_object(db, payload)
+                summary[state] = int(summary.get(state, 0)) + 1
+            except Exception as exc:
+                summary["errors"] = int(summary.get("errors", 0)) + 1
+                summary["messages"].append(str(exc))
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _outsmart_set_last_sync_at(db)
+        return summary
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _outsmart_import_workorders_once(db: Session, *, status: str = "", fetch_details: bool = False) -> dict[str, object]:
+    settings = _outsmart_settings(db, include_secret=True)
+    job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="workorder", log_text="OutSmart Arbeitsaufträge importieren")
+    summary = {"created": 0, "updated": 0, "skipped": 0, "errors": 0, "events": 0, "messages": []}
+    try:
+        rows = _outsmart_extract_rows(outsmart_fetch_workorders(settings, status=status, update_status=False))
+        for payload in rows:
+            try:
+                row_id = _outsmart_row_id(payload)
+                detail_payload = payload
+                if fetch_details and row_id:
+                    detail_payload = _outsmart_first_row(outsmart_fetch_workorder(settings, row_id, update_status=False)) or payload
+                _, state, event_changed = _outsmart_upsert_workorder_summary(db, detail_payload)
+                summary[state] = int(summary.get(state, 0)) + 1
+                if event_changed:
+                    summary["events"] = int(summary.get("events", 0)) + 1
+            except Exception as exc:
+                summary["errors"] = int(summary.get("errors", 0)) + 1
+                summary["messages"].append(str(exc))
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _outsmart_set_last_sync_at(db)
+        return summary
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _outsmart_initial_import(db: Session, action: str) -> dict[str, dict[str, object]]:
+    normalized = _crm_normalize_key(action)
+    if normalized not in {"relations", "projects", "objects", "workorders", "all"}:
+        raise ValueError("Unbekannte OutSmart-Importaktion.")
+    summary: dict[str, dict[str, object]] = {}
+    if normalized in ("relations", "all"):
+        summary["relations"] = _outsmart_import_relations_once(db)
+    if normalized in ("projects", "all"):
+        summary["projects"] = _outsmart_import_projects_once(db)
+    if normalized in ("objects", "all"):
+        summary["objects"] = _outsmart_import_objects_once(db)
+    if normalized in ("workorders", "all"):
+        summary["workorders"] = _outsmart_import_workorders_once(db, status="", fetch_details=True)
+    return summary
+
+
+def _outsmart_delta_sync_once(db: Session, limit: int = 20) -> dict[str, int]:
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not bool(settings.get("token")) or not bool(settings.get("software_token")):
+        return {"fetched": 0, "updated": 0, "events": 0, "processed": 0, "errors": 0}
+    job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="workorder", log_text="OutSmart Delta-Sync")
+    fetched = 0
+    updated = 0
+    events = 0
+    processed = 0
+    errors = 0
+    try:
+        rows = _outsmart_extract_rows(outsmart_fetch_workorders(settings, status="Compleet", update_status=False))[: max(1, int(limit))]
+        fetched = len(rows)
+        for payload in rows:
+            row_id = _outsmart_row_id(payload)
+            workorder_no = _outsmart_workorder_key(payload)
+            try:
+                detail_payload = _outsmart_first_row(outsmart_fetch_workorder(settings, row_id or workorder_no, update_status=False)) if (row_id or workorder_no) else payload
+                _, state, event_changed = _outsmart_upsert_workorder_summary(db, detail_payload or payload)
+                if state in ("created", "updated"):
+                    updated += 1
+                if event_changed:
+                    events += 1
+                if row_id:
+                    try:
+                        outsmart_fetch_workorder(settings, row_id, update_status=True)
+                    except Exception:
+                        pass
+                processed += 1
+            except Exception:
+                errors += 1
+        _finish_sync_job(
+            db,
+            job,
+            status="done",
+            log_text=f"gelesen={fetched}, verarbeitet={processed}, aktualisiert={updated}, events={events}, fehler={errors}",
+        )
+        _outsmart_set_last_sync_at(db)
+        return {"fetched": fetched, "updated": updated, "events": events, "processed": processed, "errors": errors}
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _outsmart_relation_payload_for_customer(db: Session, customer: MasterCustomer, party: Party, address: CrmAddress | None) -> dict[str, object]:
+    link = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "outsmart", ExternalLink.object_type == "master_customer", ExternalLink.object_id == int(customer.id))
+        .one_or_none()
+    )
+    relation_no = str(link.external_key if link and link.external_key else customer.customer_no_internal)
+    return {
+        "RelationNo": relation_no,
+        "Name": str(party.display_name or customer.customer_no_internal),
+        "Email": str(address.email or "").strip() if address else "",
+        "Phone": str(address.phone or "").strip() if address else "",
+        "Street": str(address.street or "").strip() if address else "",
+        "HouseNo": str(address.house_no or "").strip() if address else "",
+        "ZipCode": str(address.zip_code or "").strip() if address else "",
+        "City": str(address.city or "").strip() if address else "",
+        "CountryCode": str(address.country_code or "DE").strip() if address else "DE",
+        "Remark": str(customer.note or party.note or "").strip(),
+    }
+
+
+def _outsmart_project_payload_for_case(db: Session, row: CrmCase) -> dict[str, object]:
+    role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
+    ordering = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
+    relation_link = None
+    if ordering:
+        relation_link = (
+            db.query(ExternalLink)
+            .filter(ExternalLink.system_name == "outsmart", ExternalLink.object_type == "master_customer", ExternalLink.object_id == int(ordering.id))
+            .one_or_none()
+        )
+    return {
+        "ProjectNo": row.case_no,
+        "ProjectName": row.title,
+        "ExternProjectNr": str(row.id),
+        "Description": str(row.note or "").strip(),
+        "RelationNo": str(relation_link.external_key if relation_link else (ordering.customer_no_internal if ordering else "")).strip(),
+        "Status": str(row.status or "").strip(),
+    }
+
+
+def _outsmart_workorder_payload_for_case(db: Session, row: CrmCase) -> dict[str, object]:
+    role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
+    ordering = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
+    invoice = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0)) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else None
+    service_location = db.get(ServiceLocation, int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0)) if role_map.get(CRM_ROLE_SERVICE_LOCATION) else None
+    ordering_address = db.get(CrmAddress, int(role_map.get(CRM_ROLE_ORDERING_PARTY).address_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
+    invoice_address = db.get(CrmAddress, int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).address_id or 0)) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else None
+    service_address = db.get(CrmAddress, int(service_location.address_id or 0)) if service_location and int(service_location.address_id or 0) > 0 else None
+    customer_link = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "outsmart", ExternalLink.object_type == "master_customer", ExternalLink.object_id == int(ordering.id))
+        .one_or_none()
+        if ordering
+        else None
+    )
+    project_link = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "outsmart", ExternalLink.object_type == "crm_case_project", ExternalLink.object_id == int(row.id))
+        .one_or_none()
+    )
+    lines = [
+        f"Vorgang: {row.case_no}",
+        f"Auftraggeber: {ordering.party.display_name if ordering and ordering.party else '-'}",
+        f"Leistungsort: {service_location.location_label if service_location else '-'}",
+        f"Rechnungsempfänger: {invoice.party.display_name if invoice and invoice.party else '-'}",
+        f"Notiz: {row.note or '-'}",
+    ]
+    payload = {
+        "WorkorderNo": row.case_no,
+        "ProjectNr": str(project_link.external_key if project_link and project_link.external_key else row.case_no),
+        "ExternProjectNr": str(row.id),
+        "TypeOfWork": "Service",
+        "ShortWorkDescription": row.title,
+        "WorkDescription": "\n".join(lines),
+        "InternalWorkDescription": str(row.note or "").strip(),
+        "RelationNo": str(customer_link.external_key if customer_link else (ordering.customer_no_internal if ordering else "")).strip(),
+        "CustomerName": str(service_location.location_label if service_location else (ordering.party.display_name if ordering and ordering.party else row.title)).strip(),
+        "CustomerStreet": str(service_address.street if service_address else ordering_address.street if ordering_address else "").strip(),
+        "CustomerHouseNo": str(service_address.house_no if service_address else ordering_address.house_no if ordering_address else "").strip(),
+        "CustomerZipCode": str(service_address.zip_code if service_address else ordering_address.zip_code if ordering_address else "").strip(),
+        "CustomerCity": str(service_address.city if service_address else ordering_address.city if ordering_address else "").strip(),
+        "CustomerInvoice": str(invoice.party.display_name if invoice and invoice.party else ordering.party.display_name if ordering and ordering.party else "").strip(),
+        "CustomerInvoiceStreet": str(invoice_address.street if invoice_address else "").strip(),
+        "CustomerInvoiceHouseNo": str(invoice_address.house_no if invoice_address else "").strip(),
+        "CustomerInvoiceZipCode": str(invoice_address.zip_code if invoice_address else "").strip(),
+        "CustomerInvoiceCity": str(invoice_address.city if invoice_address else "").strip(),
+    }
+    return payload
+
+
+def _outsmart_import_recent_jobs(db: Session, limit: int = 20) -> list[ExternalSyncJob]:
+    return (
+        db.query(ExternalSyncJob)
+        .filter(ExternalSyncJob.system_name == "outsmart")
+        .order_by(ExternalSyncJob.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def _customer_objects_for_customer(db: Session, customer_id: int, limit: int = 80) -> list[CustomerObject]:
+    return (
+        db.query(CustomerObject)
+        .filter(CustomerObject.master_customer_id == int(customer_id))
+        .order_by(CustomerObject.updated_at.desc(), CustomerObject.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def _customer_objects_for_case(db: Session, row: CrmCase, limit: int = 20) -> list[CustomerObject]:
+    role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
+    customer_ids = []
+    service_location_id = 0
+    if role_map.get(CRM_ROLE_ORDERING_PARTY) and int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0) > 0:
+        customer_ids.append(int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id))
+    if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) and int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0) > 0:
+        customer_ids.append(int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id))
+    if role_map.get(CRM_ROLE_SERVICE_LOCATION) and int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0) > 0:
+        service_location_id = int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id)
+    query = db.query(CustomerObject)
+    if service_location_id > 0:
+        query = query.filter(or_(CustomerObject.service_location_id == service_location_id, CustomerObject.master_customer_id.in_(customer_ids or [0])))
+    elif customer_ids:
+        query = query.filter(CustomerObject.master_customer_id.in_(customer_ids))
+    else:
+        return []
+    return query.order_by(CustomerObject.updated_at.desc(), CustomerObject.id.desc()).limit(limit).all()
+
+def _outsmart_sync_completed_once(db: Session, limit: int = 20) -> dict[str, int]:
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")):
+        return {"fetched": 0, "matched": 0, "updated": 0}
+    if not bool(settings.get("token")) or not bool(settings.get("software_token")):
+        return {"fetched": 0, "matched": 0, "updated": 0}
+    job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="workorder", log_text="Abgeschlossene Workorders abrufen")
+
+    fetched = 0
+    matched = 0
+    updated = 0
+    rows = outsmart_get_completed_workorders(settings, limit=max(1, int(limit)))
+    fetched = len(rows)
+
+    for row in rows[: max(1, int(limit))]:
+        work_no = str(
+            row.get("WorkorderNo")
+            or row.get("workorder_no")
+            or row.get("repair_no")
+            or row.get("reference")
+            or ""
+        ).strip()
+        row_id = str(row.get("row_id") or row.get("RowId") or row.get("id") or "").strip()
+        if not work_no:
+            continue
+        order = (
+            db.query(RepairOrder)
+            .filter(func.upper(func.coalesce(RepairOrder.repair_no, "")) == work_no.upper())
+            .one_or_none()
+        )
+        if not order:
+            continue
+        matched += 1
+        _upsert_external_link(
+            db,
+            system_name="outsmart",
+            object_type="repair_order",
+            object_id=int(order.id),
+            external_key=work_no,
+            external_row_id=row_id or None,
+        )
+
+        ref = row_id or work_no
+        exists = (
+            db.query(RepairEvent)
+            .filter(
+                RepairEvent.repair_order_id == int(order.id),
+                RepairEvent.event_type == "integration",
+                RepairEvent.title.like(f"%{ref}%"),
+            )
+            .count()
+            > 0
+        )
+        if exists:
+            continue
+
+        detail_payload = row
+        if row_id:
+            try:
+                detail_payload = outsmart_mark_workorder_processed(settings, row_id)
+            except Exception:
+                detail_payload = row
+
+        _repair_add_event(
+            db,
+            order,
+            "integration",
+            title=f"OutSmart Rückmeldung abgeschlossen: {ref}",
+            body="Workorder wurde als abgeschlossen gemeldet.",
+            meta={"outsmart": detail_payload},
+        )
+        if str(order.status or "").strip().upper() in (
+            REPAIR_STATUS_BEAUFTRAGT,
+            REPAIR_STATUS_IN_REPARATUR,
+            REPAIR_STATUS_ANGEFRAGT,
+            REPAIR_STATUS_WARTET,
+        ):
+            _repair_set_status(
+                db,
+                order,
+                REPAIR_STATUS_REPARIERT,
+                title="Status auf Repariert gesetzt (OutSmart)",
+                outcome=REPAIR_OUTCOME_REPARIERT,
+            )
+        db.add(order)
+        updated += 1
+
+    _finish_sync_job(
+        db,
+        job,
+        status="done",
+        log_text=f"gelesen={fetched}, zugeordnet={matched}, aktualisiert={updated}",
+    )
+    return {"fetched": fetched, "matched": matched, "updated": updated}
 
 
 def _loadbee_secret_path() -> Path:
@@ -10138,12 +25654,266 @@ async def system_loadbee_test_post(request: Request, user=Depends(require_admin)
     )
 
 
+@app.get("/system/integrationen/paperless", response_class=HTMLResponse)
+def system_integration_paperless_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _paperless_settings(db, include_secret=False)
+    settings["repair_auto_paperless"] = _bool_from_setting(_system_setting_get(db, REPAIR_AUTO_PAPERLESS, "0"), default=False)
+    settings["spare_auto_paperless"] = _bool_from_setting(_system_setting_get(db, SPARE_AUTO_PAPERLESS, "0"), default=False)
+    return templates.TemplateResponse(
+        "system/integration_paperless.html",
+        _ctx(
+            request,
+            user=user,
+            settings=settings,
+            form_data={},
+            form_errors={},
+        ),
+    )
+
+
+@app.post("/system/integrationen/paperless")
+async def system_integration_paperless_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    enabled = form.get("enabled") == "on"
+    base_url = (form.get("base_url") or "").strip()
+    tags = (form.get("tags") or "").strip()
+    document_type = (form.get("document_type") or "").strip()
+    correspondent = (form.get("correspondent") or "").strip()
+    mode = (form.get("mode") or "poll_api").strip() or "poll_api"
+    if mode not in ("poll_api", "manual_link_only", "consume_outbound_only"):
+        mode = "poll_api"
+    token = (form.get("token") or "").strip()
+    repair_auto = form.get("repair_auto_paperless") == "on"
+    spare_auto = form.get("spare_auto_paperless") == "on"
+
+    if enabled and not base_url:
+        form_errors["base_url"] = "Basis-URL ist erforderlich, wenn Paperless aktiv ist."
+
+    if form_errors:
+        settings = _paperless_settings(db, include_secret=False)
+        settings["repair_auto_paperless"] = repair_auto
+        settings["spare_auto_paperless"] = spare_auto
+        for msg in form_errors.values():
+            _flash(request, msg, "error")
+        return templates.TemplateResponse(
+            "system/integration_paperless.html",
+            _ctx(
+                request,
+                user=user,
+                settings=settings,
+                form_data=form_data,
+                form_errors=form_errors,
+            ),
+        )
+
+    _system_setting_set(db, PAPERLESS_SETTING_ENABLED, "1" if enabled else "0")
+    _system_setting_set(db, PAPERLESS_SETTING_BASE_URL, base_url)
+    _system_setting_set(db, PAPERLESS_SETTING_TAGS, tags)
+    _system_setting_set(db, PAPERLESS_SETTING_DOCUMENT_TYPE, document_type)
+    _system_setting_set(db, PAPERLESS_SETTING_CORRESPONDENT, correspondent)
+    _system_setting_set(db, PAPERLESS_SETTING_MODE, mode)
+    _system_setting_set(db, REPAIR_AUTO_PAPERLESS, "1" if repair_auto else "0")
+    _system_setting_set(db, SPARE_AUTO_PAPERLESS, "1" if spare_auto else "0")
+    if token:
+        _write_paperless_token(token)
+    db.commit()
+    _flash(request, "Paperless-Einstellungen gespeichert.", "info")
+    return RedirectResponse("/system/integrationen/paperless", status_code=302)
+
+
+@app.post("/system/integrationen/paperless/test")
+def system_integration_paperless_test(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _paperless_settings(db, include_secret=True)
+    if not settings.get("base_url") or not settings.get("token"):
+        _flash(request, "Bitte zuerst Basis-URL und Token konfigurieren.", "error")
+        return RedirectResponse("/system/integrationen/paperless", status_code=302)
+    try:
+        result = paperless_test_connection(settings)
+        count = 0
+        if isinstance(result, dict):
+            count = int(result.get("count") or 0)
+        _flash(request, f"Paperless-Verbindung ok. Dokumente gesamt: {count}.", "info")
+    except Exception as exc:
+        _flash(request, f"Paperless-Test fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/integrationen/paperless", status_code=302)
+
+
+@app.post("/system/integrationen/paperless/test_upload")
+def system_integration_paperless_test_upload(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _paperless_settings(db, include_secret=True)
+    if not settings.get("base_url") or not settings.get("token"):
+        _flash(request, "Bitte zuerst Basis-URL und Token konfigurieren.", "error")
+        return RedirectResponse("/system/integrationen/paperless", status_code=302)
+    try:
+        export_path = _build_plaintext_export(
+            f"paperless_test_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+            ["KDA Lager Test-Upload (Paperless)"],
+        )
+        result = paperless_upload_document(
+            export_path,
+            settings,
+            title=export_path.name,
+            mime="text/plain",
+        )
+        task_id = str(result.get("task_id") or "-")
+        doc_id = str(result.get("document_id") or "-")
+        _flash(request, f"Paperless-Testupload erfolgreich. Task: {task_id}, Dokument: {doc_id}.", "info")
+    except Exception as exc:
+        _flash(request, f"Paperless-Testupload fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/integrationen/paperless", status_code=302)
+
+
+@app.get("/system/integrationen/outsmart", response_class=HTMLResponse)
+def system_integration_outsmart_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _outsmart_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "system/integration_outsmart.html",
+        _ctx(
+            request,
+            user=user,
+            settings=settings,
+            form_data={},
+            form_errors={},
+            recent_jobs=_outsmart_import_recent_jobs(db, limit=8),
+        ),
+    )
+
+
+@app.post("/system/integrationen/outsmart")
+async def system_integration_outsmart_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+
+    enabled = form.get("enabled") == "on"
+    host = (form.get("host") or "").strip() or "https://app.out-smart.com/openapi/8"
+    bearer = (form.get("bearer") or "").strip()
+    token = (form.get("token") or "").strip()
+    software_token = (form.get("software_token") or "").strip()
+    if enabled and not host:
+        form_errors["host"] = "Host ist erforderlich, wenn OutSmart aktiv ist."
+
+    if form_errors:
+        settings = _outsmart_settings(db, include_secret=False)
+        for msg in form_errors.values():
+            _flash(request, msg, "error")
+        return templates.TemplateResponse(
+            "system/integration_outsmart.html",
+            _ctx(
+                request,
+                user=user,
+                settings=settings,
+                form_data=form_data,
+                form_errors=form_errors,
+                recent_jobs=_outsmart_import_recent_jobs(db, limit=8),
+            ),
+        )
+
+    _system_setting_set(db, OUTSMART_SETTING_ENABLED, "1" if enabled else "0")
+    _system_setting_set(db, OUTSMART_SETTING_HOST, host)
+    if bearer or token or software_token:
+        _write_outsmart_secrets(bearer=bearer if bearer else None, token=token if token else None, software_token=software_token if software_token else None)
+    db.commit()
+    _flash(request, "OutSmart-Einstellungen gespeichert.", "info")
+    return RedirectResponse("/system/integrationen/outsmart", status_code=302)
+
+
+@app.post("/system/integrationen/outsmart/test")
+def system_integration_outsmart_test(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _outsmart_settings(db, include_secret=True)
+    if not settings.get("token") or not settings.get("software_token"):
+        _flash(request, "Bitte zuerst token und software_token konfigurieren.", "error")
+        return RedirectResponse("/system/integrationen/outsmart", status_code=302)
+    try:
+        payload = outsmart_test_connection(settings)
+        rows = _outsmart_extract_rows(payload)
+        _flash(request, f"OutSmart-Verbindung ok. Abgerufene Workorders: {len(rows)}.", "info")
+    except Exception as exc:
+        _flash(request, f"OutSmart-Test fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/integrationen/outsmart", status_code=302)
+
+
+@app.post("/system/integrationen/outsmart/sync_now")
+def system_integration_outsmart_sync_now(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    try:
+        result = _outsmart_delta_sync_once(db, limit=30)
+        repair_result = _outsmart_sync_completed_once(db, limit=30)
+        db.commit()
+        _flash(
+            request,
+            (
+                "OutSmart-Sync: "
+                f"Delta gelesen={result.get('fetched', 0)}, verarbeitet={result.get('processed', 0)}, "
+                f"aktualisiert={result.get('updated', 0)}, Timeline={result.get('events', 0)}, "
+                f"Reparaturen zugeordnet={repair_result.get('matched', 0)}."
+            ),
+            "info",
+        )
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"OutSmart-Sync fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/integrationen/outsmart", status_code=302)
+
+
+@app.get("/system/integrationen/outsmart/import", response_class=HTMLResponse)
+def system_integration_outsmart_import_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _outsmart_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "system/outsmart_import.html",
+        _ctx(
+            request,
+            user=user,
+            settings=settings,
+            summary={},
+            recent_jobs=_outsmart_import_recent_jobs(db, limit=20),
+        ),
+    )
+
+
+@app.post("/system/integrationen/outsmart/import", response_class=HTMLResponse)
+async def system_integration_outsmart_import_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    action = _crm_normalize_key(form.get("action")) or "all"
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")):
+        _flash(request, "OutSmart ist deaktiviert.", "error")
+        return RedirectResponse("/system/integrationen/outsmart/import", status_code=302)
+    if not bool(settings.get("token")) or not bool(settings.get("software_token")):
+        _flash(request, "Bitte zuerst die OutSmart-Zugangsdaten vervollständigen.", "error")
+        return RedirectResponse("/system/integrationen/outsmart/import", status_code=302)
+    try:
+        summary = _outsmart_initial_import(db, action)
+        db.commit()
+        _flash(request, "OutSmart-Import abgeschlossen.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"OutSmart-Import fehlgeschlagen: {exc}", "error")
+        return RedirectResponse("/system/integrationen/outsmart/import", status_code=302)
+    return templates.TemplateResponse(
+        "system/outsmart_import.html",
+        _ctx(
+            request,
+            user=user,
+            settings=_outsmart_settings(db, include_secret=False),
+            summary=summary,
+            recent_jobs=_outsmart_import_recent_jobs(db, limit=20),
+            selected_action=action,
+        ),
+    )
+
+
 @app.get("/system/standards", response_class=HTMLResponse)
 def system_standards_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     defaults = _receipt_defaults(db)
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    email_accounts = db.query(EmailAccount).filter(EmailAccount.enabled == True).order_by(EmailAccount.is_default.desc(), EmailAccount.id.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
+    repair_wh = _repair_default_warehouse_id(db)
+    scrap_wh = _scrap_default_warehouse_id(db)
+    repair_mailbox_id = int((_repair_mailbox_account(db).id if _repair_mailbox_account(db) else 0) or 0)
     return templates.TemplateResponse(
         "system/standards.html",
         _ctx(
@@ -10151,8 +25921,14 @@ def system_standards_get(request: Request, user=Depends(require_admin), db: Sess
             user=user,
             warehouses=warehouses,
             suppliers=suppliers,
+            email_accounts=email_accounts,
             condition_defs=condition_defs,
             receipt_defaults=defaults,
+            repair_defaults={
+                "repair_warehouse_id": repair_wh,
+                "scrap_warehouse_id": scrap_wh,
+                "repair_mailbox_account_id": repair_mailbox_id,
+            },
             form_data={},
             form_errors={},
         ),
@@ -10166,6 +25942,7 @@ async def system_standards_post(request: Request, user=Depends(require_admin), d
     form_errors: dict[str, str] = {}
     warehouses = db.query(Warehouse).order_by(Warehouse.name.asc()).all()
     suppliers = db.query(Supplier).filter(Supplier.active == True).order_by(Supplier.name.asc()).all()
+    email_accounts = db.query(EmailAccount).filter(EmailAccount.enabled == True).order_by(EmailAccount.is_default.desc(), EmailAccount.id.asc()).all()
     condition_defs = _get_condition_defs(db, active_only=True, include_fallback=True)
 
     def render_with_errors():
@@ -10178,8 +25955,14 @@ async def system_standards_post(request: Request, user=Depends(require_admin), d
                 user=user,
                 warehouses=warehouses,
                 suppliers=suppliers,
+                email_accounts=email_accounts,
                 condition_defs=condition_defs,
                 receipt_defaults=_receipt_defaults(db),
+                repair_defaults={
+                    "repair_warehouse_id": _repair_default_warehouse_id(db),
+                    "scrap_warehouse_id": _scrap_default_warehouse_id(db),
+                    "repair_mailbox_account_id": int((_repair_mailbox_account(db).id if _repair_mailbox_account(db) else 0) or 0),
+                },
                 form_data=form_data,
                 form_errors=form_errors,
             ),
@@ -10204,6 +25987,17 @@ async def system_standards_post(request: Request, user=Depends(require_admin), d
         form_errors["quantity"] = "Standard-Menge muss mindestens 1 sein."
 
     lock_warehouse = form.get("lock_warehouse") == "on"
+    repair_warehouse_id = _to_int(form.get("repair_warehouse_id"), 0)
+    if not repair_warehouse_id or not db.get(Warehouse, repair_warehouse_id):
+        form_errors["repair_warehouse_id"] = "Reparatur-Lager ist erforderlich."
+    scrap_warehouse_id = _to_int(form.get("scrap_warehouse_id"), 0)
+    if not scrap_warehouse_id or not db.get(Warehouse, scrap_warehouse_id):
+        form_errors["scrap_warehouse_id"] = "Verschrottet-Lager ist erforderlich."
+    repair_mailbox_id = _to_int(form.get("repair_mailbox_account_id"), 0)
+    if repair_mailbox_id:
+        account = db.get(EmailAccount, repair_mailbox_id)
+        if not account or not bool(account.enabled):
+            form_errors["repair_mailbox_account_id"] = "Reparatur-Postfach ist ungültig oder inaktiv."
 
     if form_errors:
         return render_with_errors()
@@ -10213,6 +26007,9 @@ async def system_standards_post(request: Request, user=Depends(require_admin), d
     _system_setting_set(db, RECEIPT_DEFAULT_SUPPLIER_ID, str(int(supplier_id or 0)))
     _system_setting_set(db, RECEIPT_DEFAULT_QTY, str(int(quantity)))
     _system_setting_set(db, RECEIPT_LOCK_WAREHOUSE, "1" if lock_warehouse else "0")
+    _system_setting_set(db, REPAIR_DEFAULT_WAREHOUSE_ID, str(int(repair_warehouse_id)))
+    _system_setting_set(db, SCRAP_DEFAULT_WAREHOUSE_ID, str(int(scrap_warehouse_id)))
+    _system_setting_set(db, REPAIR_MAILBOX_ACCOUNT_ID, str(int(repair_mailbox_id or 0)))
     db.commit()
     _flash(request, "Standards gespeichert.", "info")
     return RedirectResponse("/system/standards", status_code=302)
@@ -10220,7 +26017,7 @@ async def system_standards_post(request: Request, user=Depends(require_admin), d
 
 @app.get("/system/nav-audit", response_class=HTMLResponse)
 def system_nav_audit(request: Request, user=Depends(require_admin)):
-    nav_paths = all_nav_paths()
+    nav_paths = sorted(path for path in all_nav_paths() if not _is_nav_audit_ignored(path))
     ui_paths = _collect_ui_get_routes()
     ui_path_set = set(ui_paths)
     missing_in_nav = [path for path in ui_paths if path not in nav_paths]
@@ -10278,6 +26075,7 @@ def _perform_hard_reset() -> dict[str, str]:
     _ensure_ui_preferences_schema()
     _ensure_system_settings_schema()
     _ensure_item_type_field_rules_schema()
+    _ensure_spare_part_capture_schema()
     _migrate_item_type_rules_for_device_kind_only()
     _migrate_legacy_condition_codes()
 
@@ -10769,6 +26567,3609 @@ def settings_email_message_get(message_id: int, request: Request, user=Depends(r
         raise HTTPException(status_code=404)
     account = db.get(EmailAccount, msg.account_id)
     return templates.TemplateResponse("settings/email_message.html", _ctx(request, user=user, msg=msg, account=account))
+
+
+@app.get("/mail/eingang", response_class=HTMLResponse)
+def mail_inbox_get(
+    request: Request,
+    user=Depends(require_user),
+    q: str = "",
+    status: str = "",
+    assignment: str = "",
+    db: Session = Depends(db_session),
+):
+    rows = _mail_thread_rows(db, q=q, status=status, assignment=assignment, limit=180)
+    return templates.TemplateResponse(
+        "mail/inbox.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            q=(q or "").strip(),
+            status=(status or "").strip().lower(),
+            assignment=(assignment or "").strip().lower(),
+        ),
+    )
+
+
+@app.post("/mail/abrufen")
+async def mail_fetch_post(request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    form = await request.form()
+    next_url = str(form.get("next") or "/mail/eingang").strip() or "/mail/eingang"
+    account_id = _to_int(form.get("account_id"), 0)
+    if account_id <= 0:
+        account = (
+            db.query(EmailAccount)
+            .filter(EmailAccount.enabled == True)
+            .order_by(EmailAccount.is_default.desc(), EmailAccount.id.asc())
+            .first()
+        )
+        account_id = int(account.id) if account else 0
+    if account_id <= 0:
+        _flash(request, "Kein aktives E-Mail-Konto für den Abruf gefunden.", "error")
+        return RedirectResponse(next_url, status_code=302)
+    try:
+        result = fetch_inbox_once(db, int(account_id), limit=50)
+        db.commit()
+        _flash(request, f"E-Mail-Abruf abgeschlossen: {result.get('created', 0)} neue Nachricht(en).", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"E-Mail-Abruf fehlgeschlagen: {friendly_mail_error(exc)}", "error")
+    return RedirectResponse(next_url, status_code=302)
+
+
+@app.get("/mail/unzugeordnet", response_class=HTMLResponse)
+def mail_unassigned_get(
+    request: Request,
+    user=Depends(require_user),
+    q: str = "",
+    db: Session = Depends(db_session),
+):
+    rows = _mail_thread_rows(db, q=q, status="", assignment="unassigned", limit=120)
+    return templates.TemplateResponse(
+        "mail/inbox_unassigned.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            q=(q or "").strip(),
+        ),
+    )
+
+
+@app.get("/mail/threads/{thread_id}", response_class=HTMLResponse)
+def mail_thread_detail(thread_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    thread = db.get(MailThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404)
+    messages = _mail_messages_for_thread(db, int(thread.id))
+    attachments_map = _mail_attachments_map(db, [int(row.id) for row in messages])
+    customer = db.get(MasterCustomer, int(thread.master_customer_id or 0)) if int(thread.master_customer_id or 0) > 0 else None
+    customer_party = db.get(Party, int(customer.party_id)) if customer else None
+    crm_case = db.get(CrmCase, int(thread.case_id or 0)) if int(thread.case_id or 0) > 0 else None
+    paperless_settings = _paperless_settings(db, include_secret=False)
+    suggestion_customer_ids: set[int] = set()
+    suggestion_case_ids: set[int] = set()
+    suggestion_reasons: list[str] = []
+    message_rows: list[dict[str, object]] = []
+    for row in messages:
+        attachment_rows = attachments_map.get(int(row.id), [])
+        suggestion = mail_suggest_assignments(
+            db,
+            from_email=str(row.from_email or ""),
+            to_emails=str(row.to_emails or ""),
+            cc_emails=str(row.cc_emails or ""),
+            subject=str(row.subject or ""),
+            body_text=str(row.body_text or row.snippet or ""),
+            in_reply_to=str(row.in_reply_to or ""),
+            references_header=str(row.references_header or ""),
+            attachment_names=[str(att.filename or "") for att in attachment_rows],
+        )
+        suggestion_customer_ids.update(int(value) for value in suggestion.get("customer_ids") or [] if int(value or 0) > 0)
+        suggestion_case_ids.update(int(value) for value in suggestion.get("case_ids") or [] if int(value or 0) > 0)
+        suggestion_reasons.extend(str(value) for value in suggestion.get("reasons") or [] if str(value or "").strip())
+        message_rows.append(
+            {
+                "row": row,
+                "attachments": [
+                    {
+                        "row": att,
+                        "paperless_url": paperless_build_document_url(paperless_settings, att.paperless_document_id)
+                        if str(att.paperless_document_id or "").strip() and str(paperless_settings.get("base_url") or "").strip()
+                        else "",
+                    }
+                    for att in attachment_rows
+                ],
+                "suggestion": suggestion,
+            }
+        )
+    if customer:
+        suggestion_customer_ids.add(int(customer.id))
+    if crm_case:
+        suggestion_case_ids.add(int(crm_case.id))
+    latest_message = messages[-1] if messages else None
+    last_message_row = message_rows[-1]["row"] if message_rows else None
+    ai_mail_result = None
+    reply_to = ""
+    if latest_message:
+        if str(latest_message.direction or "") == "in":
+            reply_to = str(latest_message.from_email or latest_message.from_text or "").strip()
+        else:
+            reply_to = str(latest_message.to_emails or "").split(",")[0].strip()
+    if not reply_to:
+        reply_to = _mail_default_recipient(db, customer, crm_case)
+    customer_options = _mail_customer_options(db)
+    case_options = _mail_case_options(db)
+    customer_label_map = {int(item["id"]): str(item["label"]) for item in customer_options}
+    case_label_map = {int(item["id"]): str(item["label"]) for item in case_options}
+    if latest_message is not None:
+        ai_input_payload = {
+            "thread_subject": _mail_thread_subject(thread, messages),
+            "subject": str(latest_message.subject or ""),
+            "body_text": str(latest_message.body_text or latest_message.snippet or ""),
+            "snippet": str(latest_message.snippet or ""),
+            "from_email": str(latest_message.from_email or ""),
+            "to_emails": str(latest_message.to_emails or ""),
+            "cc_emails": str(latest_message.cc_emails or ""),
+            "in_reply_to": str(latest_message.in_reply_to or ""),
+            "references_header": str(latest_message.references_header or ""),
+            "attachment_names": [str(att["row"].filename or "") for item in message_rows for att in item["attachments"]],
+        }
+        ai_mail_result = ai_classify_email_thread(
+            db,
+            settings=_openai_settings(db, include_secret=True),
+            input_payload=ai_input_payload,
+            related_object_id=int(thread.id),
+        )
+    return templates.TemplateResponse(
+        "mail/thread_detail.html",
+        _ctx(
+            request,
+            user=user,
+            thread=thread,
+            messages=message_rows,
+            customer=customer,
+            customer_party=customer_party,
+            crm_case=crm_case,
+            customer_options=customer_options,
+            case_options=case_options,
+            selected_customer_id=int(customer.id) if customer else 0,
+            selected_case_id=int(crm_case.id) if crm_case else 0,
+            suggestion_customer_ids=sorted(suggestion_customer_ids),
+            suggestion_case_ids=sorted(suggestion_case_ids),
+            suggestion_customer_labels={int(item["id"]): str(item["label"]) for item in customer_options if int(item.get("id") or 0) in suggestion_customer_ids},
+            suggestion_case_labels={int(item["id"]): str(item["label"]) for item in case_options if int(item.get("id") or 0) in suggestion_case_ids},
+            customer_label_map=customer_label_map,
+            case_label_map=case_label_map,
+            suggestion_reasons=list(dict.fromkeys([value for value in suggestion_reasons if value]))[:8],
+            thread_subject=_mail_thread_subject(thread, messages),
+            last_message_row=last_message_row,
+            reply_to=reply_to,
+            ai_mail_result=ai_mail_result,
+            ai_mail_review=ai_find_review_item(db, int(ai_mail_result["log"].id)) if ai_mail_result else None,
+            paperless_enabled=bool(paperless_settings.get("enabled")) and bool(str(paperless_settings.get("base_url") or "").strip()),
+            thread_paperless_links=(
+                _paperless_links_for_object(db, "case", int(crm_case.id))
+                if crm_case
+                else (_paperless_links_for_object(db, "customer", int(customer.id)) if customer else [])
+            ),
+            paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+        ),
+    )
+
+
+@app.post("/mail/threads/{thread_id}/zuweisen")
+async def mail_thread_assign_post(thread_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    thread = db.get(MailThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    customer_id = _to_int(form.get("customer_id"), 0)
+    case_id = _to_int(form.get("case_id"), 0)
+    if case_id > 0 and not db.get(CrmCase, case_id):
+        _flash(request, "Vorgang wurde nicht gefunden.", "error")
+        return RedirectResponse(f"/mail/threads/{thread_id}", status_code=302)
+    if customer_id > 0 and not db.get(MasterCustomer, customer_id):
+        _flash(request, "Kunde wurde nicht gefunden.", "error")
+        return RedirectResponse(f"/mail/threads/{thread_id}", status_code=302)
+    if customer_id <= 0 and case_id > 0:
+        role = (
+            db.query(RoleAssignment)
+            .filter(RoleAssignment.case_id == int(case_id), RoleAssignment.role_type == CRM_ROLE_ORDERING_PARTY)
+            .first()
+        )
+        customer_id = int(role.master_customer_id or 0) if role and int(role.master_customer_id or 0) > 0 else 0
+    thread.master_customer_id = customer_id or None
+    thread.case_id = case_id or None
+    thread.status = "open" if (customer_id or case_id) else thread.status
+    db.add(thread)
+    for row in db.query(EmailMessage).filter(EmailMessage.thread_id == int(thread.id)).all():
+        row.master_customer_id = customer_id or None
+        row.case_id = case_id or None
+        row.assignment_status = "assigned" if (customer_id or case_id) else "unassigned"
+        db.add(row)
+    if customer_id or case_id:
+        _crm_add_timeline_event(
+            db,
+            case_id=case_id or None,
+            master_customer_id=customer_id or None,
+            source_system="mail",
+            event_type="mail_assignment",
+            title=f"Mail-Thread zugeordnet: {_mail_thread_subject(thread, _mail_messages_for_thread(db, int(thread.id)))}",
+            body="Manuelle Zuordnung aus dem Mail-Hub.",
+            event_ts=_utcnow_naive(),
+            external_ref=f"mail-thread:{int(thread.id)}:assignment",
+            meta={"thread_id": int(thread.id)},
+        )
+    db.commit()
+    _flash(request, "Mail-Thread gespeichert.", "info")
+    return RedirectResponse(f"/mail/threads/{thread_id}", status_code=302)
+
+
+@app.post("/mail/threads/{thread_id}/status")
+async def mail_thread_status_post(thread_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    thread = db.get(MailThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    status = str(form.get("status") or "").strip().lower()
+    if status not in ("open", "waiting", "closed"):
+        _flash(request, "Ungültiger Thread-Status.", "error")
+        return RedirectResponse(f"/mail/threads/{thread_id}", status_code=302)
+    thread.status = status
+    db.add(thread)
+    if int(thread.master_customer_id or 0) > 0 or int(thread.case_id or 0) > 0:
+        _crm_add_timeline_event(
+            db,
+            case_id=int(thread.case_id or 0) or None,
+            master_customer_id=int(thread.master_customer_id or 0) or None,
+            source_system="mail",
+            event_type="mail_status",
+            title=f"Mail-Thread Status: {_mail_thread_status_label(status)}",
+            body=f"Thread #{int(thread.id)} wurde auf {_mail_thread_status_label(status)} gesetzt.",
+            event_ts=_utcnow_naive(),
+            external_ref=f"mail-thread:{int(thread.id)}:status:{status}",
+            meta={"thread_id": int(thread.id), "status": status},
+        )
+    db.commit()
+    _flash(request, "Thread-Status aktualisiert.", "info")
+    return RedirectResponse(f"/mail/threads/{thread_id}", status_code=302)
+
+
+@app.post("/mail/nachrichten/{message_id}/zuweisen")
+async def mail_message_assign_post(message_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    message = db.get(EmailMessage, message_id)
+    if not message:
+        raise HTTPException(status_code=404)
+    thread = db.get(MailThread, int(message.thread_id or 0)) if int(message.thread_id or 0) > 0 else None
+    form = await request.form()
+    customer_id = _to_int(form.get("customer_id"), 0)
+    case_id = _to_int(form.get("case_id"), 0)
+    apply_to_thread = form.get("apply_to_thread") == "1"
+    if case_id > 0 and not db.get(CrmCase, case_id):
+        _flash(request, "Vorgang wurde nicht gefunden.", "error")
+        return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else 0}#mail-message-{message_id}", status_code=302)
+    if customer_id > 0 and not db.get(MasterCustomer, customer_id):
+        _flash(request, "Kunde wurde nicht gefunden.", "error")
+        return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else 0}#mail-message-{message_id}", status_code=302)
+    if customer_id <= 0 and case_id > 0:
+        role = (
+            db.query(RoleAssignment)
+            .filter(RoleAssignment.case_id == int(case_id), RoleAssignment.role_type == CRM_ROLE_ORDERING_PARTY)
+            .first()
+        )
+        customer_id = int(role.master_customer_id or 0) if role and int(role.master_customer_id or 0) > 0 else 0
+    message.master_customer_id = customer_id or None
+    message.case_id = case_id or None
+    message.assignment_status = "assigned" if (customer_id or case_id) else "unassigned"
+    db.add(message)
+    if thread and apply_to_thread:
+        thread.master_customer_id = customer_id or None
+        thread.case_id = case_id or None
+        thread.status = "open" if (customer_id or case_id) else thread.status
+        db.add(thread)
+    if customer_id or case_id:
+        _crm_add_timeline_event(
+            db,
+            case_id=case_id or None,
+            master_customer_id=customer_id or None,
+            source_system="mail",
+            event_type="mail_assignment",
+            title=f"E-Mail zugeordnet: {message.subject or '(ohne Betreff)'}",
+            body=f"Nachricht #{int(message.id)} wurde manuell zugeordnet.",
+            event_ts=message.received_at or message.sent_at or _utcnow_naive(),
+            external_ref=f"mail:{int(message.id)}:assignment",
+            meta={"thread_id": int(thread.id) if thread else 0, "message_id": int(message.id)},
+        )
+    db.commit()
+    target_thread_id = int(thread.id) if thread else int(message.thread_id or 0)
+    return RedirectResponse(f"/mail/threads/{target_thread_id}#mail-message-{message_id}", status_code=302)
+
+
+@app.post("/mail/nachrichten/{message_id}/vorgang-neu")
+async def mail_message_new_case_post(message_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    message = db.get(EmailMessage, message_id)
+    if not message:
+        raise HTTPException(status_code=404)
+    thread = db.get(MailThread, int(message.thread_id or 0)) if int(message.thread_id or 0) > 0 else None
+    form = await request.form()
+    default_customer_id = int(message.master_customer_id or 0) or (int(thread.master_customer_id or 0) if thread else 0)
+    customer_id = _to_int(form.get("customer_id"), default_customer_id)
+    title = (form.get("title") or message.subject or "Vorgang aus E-Mail").strip()
+    customer = db.get(MasterCustomer, customer_id) if customer_id > 0 else None
+    if customer_id > 0 and customer is None:
+        _flash(request, "Kunde wurde nicht gefunden.", "error")
+        return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else 0}#mail-message-{message_id}", status_code=302)
+    if not title:
+        _flash(request, "Ein Titel ist erforderlich.", "error")
+        return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else 0}#mail-message-{message_id}", status_code=302)
+    row = CrmCase(
+        case_no=_crm_next_case_no(db),
+        title=title,
+        status="open",
+        priority="normal",
+        source_system="mail",
+        note=f"Angelegt aus E-Mail #{int(message.id)} von {message.from_email or message.from_text or '-'}",
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(row)
+    db.flush()
+    if customer:
+        _, default_map = _crm_party_address_maps(db, [int(customer.party_id)])
+        default_address = default_map.get(int(customer.party_id))
+        _crm_set_case_role(
+            db,
+            crm_case_id=int(row.id),
+            role_type=CRM_ROLE_ORDERING_PARTY,
+            master_customer_id=int(customer.id),
+            address_id=int(default_address.id) if default_address else None,
+        )
+        _crm_set_case_role(
+            db,
+            crm_case_id=int(row.id),
+            role_type=CRM_ROLE_INVOICE_RECIPIENT,
+            master_customer_id=int(customer.id),
+            address_id=int(default_address.id) if default_address else None,
+        )
+        location = _crm_first_service_location(db, int(customer.id))
+        if location:
+            _crm_set_case_role(
+                db,
+                crm_case_id=int(row.id),
+                role_type=CRM_ROLE_SERVICE_LOCATION,
+                master_customer_id=int(customer.id),
+                service_location_id=int(location.id),
+                address_id=int(location.address_id or 0) or None,
+            )
+    message.case_id = int(row.id)
+    if customer:
+        message.master_customer_id = int(customer.id)
+    message.assignment_status = "assigned"
+    db.add(message)
+    if thread:
+        thread.case_id = int(row.id)
+        if customer and int(thread.master_customer_id or 0) <= 0:
+            thread.master_customer_id = int(customer.id)
+        thread.status = "open"
+        db.add(thread)
+    _crm_add_timeline_event(
+        db,
+        case_id=int(row.id),
+        master_customer_id=int(customer.id) if customer else None,
+        source_system="mail",
+        event_type="mail_case_create",
+        title="Vorgang aus E-Mail angelegt",
+        body=f"Aus Nachricht #{int(message.id)} wurde {row.case_no} erstellt.",
+        event_ts=_utcnow_naive(),
+        external_ref=f"mail:{int(message.id)}:case:{int(row.id)}",
+        meta={"thread_id": int(thread.id) if thread else 0, "message_id": int(message.id)},
+    )
+    db.commit()
+    _flash(request, f"Vorgang {row.case_no} angelegt.", "info")
+    return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else int(message.thread_id or 0)}#mail-message-{message_id}", status_code=302)
+
+
+@app.get("/mail/verfassen", response_class=HTMLResponse)
+def mail_compose_get(
+    request: Request,
+    user=Depends(require_user),
+    thread_id: int = 0,
+    customer_id: int = 0,
+    case_id: int = 0,
+    purchase_invoice_id: int = 0,
+    invoice_draft_id: int = 0,
+    template_key: str = "",
+    to_email: str = "",
+    subject: str = "",
+    body_text: str = "",
+    db: Session = Depends(db_session),
+):
+    thread = db.get(MailThread, thread_id) if int(thread_id or 0) > 0 else None
+    if thread:
+        customer_id = int(customer_id or thread.master_customer_id or 0)
+        case_id = int(case_id or thread.case_id or 0)
+    customer = db.get(MasterCustomer, customer_id) if int(customer_id or 0) > 0 else None
+    crm_case = db.get(CrmCase, case_id) if int(case_id or 0) > 0 else None
+    invoice = db.get(PurchaseInvoice, purchase_invoice_id) if int(purchase_invoice_id or 0) > 0 else None
+    invoice_draft = db.get(InvoiceDraft, invoice_draft_id) if int(invoice_draft_id or 0) > 0 else None
+    if not customer and invoice_draft and int(invoice_draft.master_customer_id or 0) > 0:
+        customer = db.get(MasterCustomer, int(invoice_draft.master_customer_id))
+        customer_id = int(customer.id) if customer else customer_id
+    if not crm_case and invoice_draft and int(invoice_draft.case_id or 0) > 0:
+        crm_case = db.get(CrmCase, int(invoice_draft.case_id))
+        case_id = int(crm_case.id) if crm_case else case_id
+    template_rows = _mail_templates(db)
+    template_row = next((row for row in template_rows if str(row.template_key or "") == str(template_key or "").strip()), None)
+    context = {
+        "case_no": crm_case.case_no if crm_case else "",
+        "invoice_no": invoice.invoice_no if invoice else (_invoice_draft_reference_label(invoice_draft) if invoice_draft else ""),
+    }
+    if template_row:
+        subject = subject or _mail_render_template_text(template_row.subject_template, context)
+        body_text = body_text or _mail_render_template_text(template_row.body_template, context)
+    if not to_email:
+        to_email = _mail_default_recipient(db, customer, crm_case)
+        if not to_email and thread:
+            messages = _mail_messages_for_thread(db, int(thread.id))
+            latest = messages[-1] if messages else None
+            if latest and str(latest.direction or "") == "in":
+                to_email = str(latest.from_email or latest.from_text or "").strip()
+    enabled_accounts = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.enabled == True)
+        .order_by(EmailAccount.is_default.desc(), EmailAccount.id.asc())
+        .all()
+    )
+    return templates.TemplateResponse(
+        "mail/compose.html",
+        _ctx(
+            request,
+            user=user,
+            thread=thread,
+            customer=customer,
+            crm_case=crm_case,
+            invoice=invoice,
+            templates_rows=template_rows,
+            accounts=enabled_accounts,
+            selected_account_id=int(enabled_accounts[0].id) if enabled_accounts else 0,
+            form_data={
+                "thread_id": str(int(thread.id)) if thread else "",
+                "customer_id": str(int(customer.id)) if customer else "",
+                "case_id": str(int(crm_case.id)) if crm_case else "",
+                "purchase_invoice_id": str(int(invoice.id)) if invoice else "",
+                "invoice_draft_id": str(int(invoice_draft.id)) if invoice_draft else "",
+                "template_key": str(template_row.template_key) if template_row else str(template_key or ""),
+                "to_email": str(to_email or ""),
+                "subject": str(subject or ""),
+                "body_text": str(body_text or ""),
+            },
+            invoice_draft=invoice_draft,
+        ),
+    )
+
+
+@app.post("/mail/verfassen")
+async def mail_compose_post(request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    form = await request.form()
+    to_email = str(form.get("to_email") or "").strip()
+    subject = str(form.get("subject") or "").strip()
+    body_text = str(form.get("body_text") or "").strip()
+    if not to_email or "@" not in to_email:
+        _flash(request, "Bitte eine gültige Empfänger-E-Mail angeben.", "error")
+        return RedirectResponse("/mail/verfassen", status_code=302)
+    thread_id = _to_int(form.get("thread_id"), 0)
+    customer_id = _to_int(form.get("customer_id"), 0)
+    case_id = _to_int(form.get("case_id"), 0)
+    invoice_draft_id = _to_int(form.get("invoice_draft_id"), 0)
+    invoice_draft = db.get(InvoiceDraft, invoice_draft_id) if invoice_draft_id > 0 else None
+    if customer_id <= 0 and invoice_draft and int(invoice_draft.master_customer_id or 0) > 0:
+        customer_id = int(invoice_draft.master_customer_id)
+    if case_id <= 0 and invoice_draft and int(invoice_draft.case_id or 0) > 0:
+        case_id = int(invoice_draft.case_id)
+    if case_id > 0 and not db.get(CrmCase, case_id):
+        _flash(request, "Vorgang wurde nicht gefunden.", "error")
+        return RedirectResponse("/mail/verfassen", status_code=302)
+    if customer_id > 0 and not db.get(MasterCustomer, customer_id):
+        _flash(request, "Kunde wurde nicht gefunden.", "error")
+        return RedirectResponse("/mail/verfassen", status_code=302)
+    if customer_id <= 0 and case_id > 0:
+        role = (
+            db.query(RoleAssignment)
+            .filter(RoleAssignment.case_id == int(case_id), RoleAssignment.role_type == CRM_ROLE_ORDERING_PARTY)
+            .first()
+        )
+        customer_id = int(role.master_customer_id or 0) if role and int(role.master_customer_id or 0) > 0 else 0
+    thread = db.get(MailThread, thread_id) if thread_id > 0 else None
+    if thread is None:
+        thread = MailThread(
+            subject_normalized=mail_normalize_subject(subject or "(ohne Betreff)"),
+            master_customer_id=customer_id or None,
+            case_id=case_id or None,
+            status="open",
+            last_message_at=_utcnow_naive(),
+            created_at=_utcnow_naive(),
+        )
+        db.add(thread)
+        db.flush()
+    row = EmailOutbox(
+        account_id=_to_int(form.get("account_id"), 0) or None,
+        thread_id=int(thread.id),
+        to_email=to_email,
+        cc_emails=str(form.get("cc_emails") or "").strip() or None,
+        bcc_emails=str(form.get("bcc_emails") or "").strip() or None,
+        subject=subject,
+        body_text=body_text,
+        body_html=None,
+        template_key=str(form.get("template_key") or "").strip() or None,
+        master_customer_id=customer_id or None,
+        case_id=case_id or None,
+        status="queued",
+        attempts=0,
+        created_at=_utcnow_naive(),
+    )
+    db.add(row)
+    db.commit()
+    _flash(request, "E-Mail in den Postausgang gelegt.", "info")
+    return RedirectResponse(f"/mail/threads/{int(thread.id)}", status_code=302)
+
+
+@app.get("/mail/vorlagen", response_class=HTMLResponse)
+def mail_templates_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    return templates.TemplateResponse(
+        "mail/template_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=_mail_templates(db),
+        ),
+    )
+
+
+@app.post("/mail/vorlagen")
+async def mail_templates_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    template_id = _to_int(form.get("template_id"), 0)
+    row = db.get(MailTemplate, template_id) if template_id > 0 else MailTemplate(created_at=_utcnow_naive())
+    if row is None:
+        raise HTTPException(status_code=404)
+    template_key = str(form.get("template_key") or "").strip()
+    name = str(form.get("name") or "").strip()
+    if not template_key or not name:
+        _flash(request, "Schlüssel und Name sind Pflicht.", "error")
+        return RedirectResponse("/mail/vorlagen", status_code=302)
+    row.template_key = template_key
+    row.name = name
+    row.subject_template = str(form.get("subject_template") or "").strip()
+    row.body_template = str(form.get("body_template") or "").strip()
+    row.active = form.get("active") == "on"
+    db.add(row)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse("/mail/vorlagen", status_code=302)
+    _flash(request, "Vorlage gespeichert.", "info")
+    return RedirectResponse("/mail/vorlagen", status_code=302)
+
+
+@app.get("/mail/anhaenge/{attachment_id}")
+def mail_attachment_download(attachment_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    _ = request, user
+    row = db.get(MailAttachment, attachment_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    abs_path = _mail_attachment_abs_path(row.file_path)
+    if abs_path is None:
+        raise HTTPException(status_code=404)
+    return FileResponse(path=str(abs_path), media_type=row.mime_type or "application/octet-stream", filename=row.filename)
+
+
+@app.post("/mail/anhaenge/{attachment_id}/nach-paperless")
+def mail_attachment_to_paperless(attachment_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    row = db.get(MailAttachment, attachment_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    message = db.get(EmailMessage, int(row.mail_message_id))
+    if not message:
+        raise HTTPException(status_code=404)
+    thread = db.get(MailThread, int(message.thread_id or 0)) if int(message.thread_id or 0) > 0 else None
+    abs_path = _mail_attachment_abs_path(row.file_path)
+    if abs_path is None:
+        raise HTTPException(status_code=404)
+    settings = _paperless_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not bool(str(settings.get("base_url") or "").strip()):
+        _flash(request, "Paperless ist nicht aktiv konfiguriert.", "error")
+        return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else int(message.thread_id or 0)}#mail-message-{int(message.id)}", status_code=302)
+    try:
+        result = paperless_upload_document(
+            abs_path,
+            settings,
+            title=row.filename,
+            mime=row.mime_type or "application/octet-stream",
+            created=(message.received_at or message.sent_at or _utcnow_naive()).date().isoformat(),
+        )
+        document_id = str(result.get("document_id") or "").strip()
+        if not document_id:
+            raise ValueError("Paperless hat keine Dokument-ID zurückgegeben.")
+        row.paperless_document_id = document_id
+        db.add(row)
+        target_type = "case" if thread and int(thread.case_id or 0) > 0 else ("customer" if thread and int(thread.master_customer_id or 0) > 0 else "")
+        target_id = int(thread.case_id or 0) if target_type == "case" else int(thread.master_customer_id or 0) if target_type == "customer" else 0
+        if target_type and target_id > 0:
+            item = _upsert_uploaded_document_item(
+                db,
+                paperless_document_id=document_id,
+                title=row.filename,
+                object_type=target_type,
+                object_id=target_id,
+                metadata={"source": "mail_attachment", "mail_message_id": int(message.id), "attachment_id": int(row.id)},
+            )
+            _document_link_item_to_target(db, item=item, object_type=target_type, object_id=target_id)
+        else:
+            existing_item = _document_inbox_item_from_paperless_id(db, document_id)
+            if existing_item is None:
+                db.add(
+                    DocumentInboxItem(
+                        paperless_document_id=document_id,
+                        title=row.filename,
+                        status="new",
+                        created_date=_utcnow_naive(),
+                        metadata_json=json.dumps({"source": "mail_attachment", "mail_message_id": int(message.id), "attachment_id": int(row.id)}, ensure_ascii=False),
+                        created_at=_utcnow_naive(),
+                    )
+                )
+        db.commit()
+        _flash(request, "Anhang nach Paperless archiviert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Paperless-Upload fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else int(message.thread_id or 0)}#mail-message-{int(message.id)}", status_code=302)
+
+
+@app.get("/dokumente/lokal/{attachment_id}")
+def local_document_download(attachment_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    _ = request, user
+    row = db.get(Attachment, attachment_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    abs_path = ensure_dirs()["uploads"] / str(row.filename or "")
+    if not abs_path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(path=str(abs_path), media_type=row.mime_type or "application/octet-stream", filename=row.original_name or abs_path.name)
+
+
+@app.get("/crm/dokumente", response_class=HTMLResponse)
+def crm_document_inbox(
+    request: Request,
+    user=Depends(require_user),
+    q: str = "",
+    status: str = "",
+    db: Session = Depends(db_session),
+):
+    query = db.query(DocumentInboxItem)
+    status_norm = str(status or "").strip().lower()
+    if status_norm in ("new", "matched", "ignored"):
+        query = query.filter(DocumentInboxItem.status == status_norm)
+    rows = query.order_by(DocumentInboxItem.status.asc(), DocumentInboxItem.created_date.desc(), DocumentInboxItem.id.desc()).limit(240).all()
+    q_norm = str(q or "").strip().lower()
+    if q_norm:
+        rows = [row for row in rows if q_norm in _document_search_blob(row).lower()]
+    preview_rows = []
+    for row in rows:
+        target_label = ""
+        target_url = ""
+        if str(row.suggested_object_type or "").strip() and int(row.suggested_object_id or 0) > 0:
+            target_label = _document_object_label(db, str(row.suggested_object_type or ""), int(row.suggested_object_id or 0))
+            target_url = _document_object_url(str(row.suggested_object_type or ""), int(row.suggested_object_id or 0))
+        preview_rows.append(
+            {
+                "row": row,
+                "target_label": target_label,
+                "target_url": target_url,
+            }
+        )
+    settings = _paperless_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "crm/document_inbox.html",
+        _ctx(
+            request,
+            user=user,
+            rows=preview_rows,
+            q=(q or "").strip(),
+            status=status_norm,
+            paperless_mode_label=_paperless_mode_label(str(settings.get("mode") or "poll_api")),
+        ),
+    )
+
+
+@app.post("/crm/dokumente/abrufen")
+def crm_document_fetch(request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    settings = _paperless_settings(db, include_secret=True)
+    mode = str(settings.get("mode") or "poll_api").strip()
+    if mode != "poll_api":
+        _flash(request, "Paperless-Abruf ist im aktuellen Modus deaktiviert.", "warn")
+        return RedirectResponse("/crm/dokumente", status_code=302)
+    try:
+        rows = paperless_list_documents(settings, limit=80)
+        for payload in rows:
+            _upsert_document_inbox_item(db, payload)
+        db.commit()
+        _flash(request, f"{len(rows)} Dokument(e) aus Paperless geprüft.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Paperless-Abruf fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/crm/dokumente", status_code=302)
+
+
+@app.get("/crm/dokumente/{item_id:int}", response_class=HTMLResponse)
+def crm_document_detail(item_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    item = db.get(DocumentInboxItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404)
+    candidates = _document_match_candidates(db, item)
+    settings = _paperless_settings(db, include_secret=False)
+    current_target_label = ""
+    current_target_url = ""
+    if str(item.suggested_object_type or "").strip() and int(item.suggested_object_id or 0) > 0:
+        current_target_label = _document_object_label(db, str(item.suggested_object_type or ""), int(item.suggested_object_id or 0))
+        current_target_url = _document_object_url(str(item.suggested_object_type or ""), int(item.suggested_object_id or 0))
+    return templates.TemplateResponse(
+        "crm/document_detail.html",
+        _ctx(
+            request,
+            user=user,
+            item=item,
+            candidates=candidates,
+            suppliers=_active_suppliers(db),
+            paperless_url=paperless_build_document_url(settings, item.paperless_document_id),
+            current_target_label=current_target_label,
+            current_target_url=current_target_url,
+        ),
+    )
+
+
+@app.post("/crm/dokumente/{item_id:int}/zuweisen")
+async def crm_document_assign(item_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    item = db.get(DocumentInboxItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    object_type = str(form.get("object_type") or "").strip()
+    if object_type == "ignored":
+        item.status = "ignored"
+        db.add(item)
+        db.commit()
+        _flash(request, "Dokument ignoriert.", "info")
+        return RedirectResponse("/crm/dokumente", status_code=302)
+    field_map = {
+        "customer": "customer_id",
+        "case": "case_id",
+        "repair_order": "repair_order_id",
+        "purchase_order": "purchase_order_id",
+        "goods_receipt": "goods_receipt_id",
+        "purchase_invoice": "purchase_invoice_id",
+        "supplier": "supplier_id",
+    }
+    object_id = _to_int(form.get(field_map.get(object_type, "")), 0)
+    if object_id <= 0:
+        object_id = _to_int(form.get("manual_object_id"), 0)
+    if object_id <= 0:
+        _flash(request, "Bitte ein Zielobjekt auswählen.", "error")
+        return RedirectResponse(f"/crm/dokumente/{item_id}", status_code=302)
+    try:
+        _document_link_item_to_target(db, item=item, object_type=object_type, object_id=object_id)
+        db.commit()
+        _flash(request, "Dokument zugeordnet.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Zuordnung fehlgeschlagen: {exc}", "error")
+        return RedirectResponse(f"/crm/dokumente/{item_id}", status_code=302)
+    return RedirectResponse("/crm/dokumente", status_code=302)
+
+
+@app.get("/crm/dokumente/upload", response_class=HTMLResponse)
+def crm_document_upload_get(
+    request: Request,
+    user=Depends(require_user),
+    object_type: str = "",
+    object_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    settings = _paperless_settings(db, include_secret=False)
+    selected_type = str(object_type or "").strip()
+    selected_id = int(object_id or 0)
+    attachments = _attachments_for_entity(db, selected_type, selected_id) if selected_type and selected_id > 0 else []
+    return templates.TemplateResponse(
+        "crm/document_upload.html",
+        _ctx(
+            request,
+            user=user,
+            object_type=selected_type,
+            object_id=selected_id,
+            target_label=_document_object_label(db, selected_type, selected_id) if selected_type and selected_id > 0 else "",
+            target_url=_document_object_url(selected_type, selected_id) if selected_type and selected_id > 0 else "",
+            customer_options=_mail_customer_options(db),
+            case_options=_mail_case_options(db),
+            repair_rows=db.query(RepairOrder).order_by(RepairOrder.id.desc()).limit(120).all(),
+            paperless_available=bool(settings.get("enabled")) and bool(str(settings.get("base_url") or "").strip()),
+            attachments=attachments,
+            paperless_links=_paperless_links_for_object(db, selected_type, selected_id) if selected_type and selected_id > 0 else [],
+            paperless_build_url=lambda document_id: paperless_build_document_url(settings, document_id),
+        ),
+    )
+
+
+@app.post("/crm/dokumente/upload")
+async def crm_document_upload_post(request: Request, user=Depends(require_user), file: UploadFile = File(...), db: Session = Depends(db_session)):
+    form = await request.form()
+    object_type = str(form.get("object_type") or "").strip()
+    object_id = _to_int(form.get("object_id"), 0)
+    if object_id <= 0 or not _document_object_exists(db, object_type, object_id):
+        _flash(request, "Bitte zuerst ein gültiges Zielobjekt wählen.", "error")
+        return RedirectResponse("/crm/dokumente/upload", status_code=302)
+    if not file.filename:
+        _flash(request, "Bitte eine Datei auswählen.", "error")
+        return RedirectResponse(f"/crm/dokumente/upload?object_type={quote(object_type)}&object_id={object_id}", status_code=302)
+    attachment = _store_uploaded_attachment(entity_type=object_type, entity_id=object_id, upload=file)
+    db.add(attachment)
+    db.flush()
+    settings = _paperless_settings(db, include_secret=True)
+    archived = False
+    try:
+        if bool(settings.get("enabled")) and bool(str(settings.get("base_url") or "").strip()):
+            abs_path = ensure_dirs()["uploads"] / str(attachment.filename or "")
+            result = paperless_upload_document(
+                abs_path,
+                settings,
+                title=attachment.original_name or attachment.filename,
+                mime=attachment.mime_type or "application/octet-stream",
+                created=_utcnow_naive().date().isoformat(),
+            )
+            document_id = str(result.get("document_id") or "").strip()
+            if not document_id:
+                raise ValueError("Paperless hat keine Dokument-ID zurückgegeben.")
+            item = _upsert_uploaded_document_item(
+                db,
+                paperless_document_id=document_id,
+                title=attachment.original_name or attachment.filename,
+                object_type=object_type,
+                object_id=object_id,
+                metadata={"source": "local_upload", "attachment_id": int(attachment.id)},
+            )
+            _document_link_item_to_target(db, item=item, object_type=object_type, object_id=object_id)
+            archived = True
+        else:
+            _crm_add_timeline_event(
+                db,
+                case_id=object_id if object_type == "case" else None,
+                master_customer_id=object_id if object_type == "customer" else None,
+                source_system="local_upload",
+                event_type="document_upload",
+                title=f"Dokument lokal hochgeladen: {attachment.original_name or attachment.filename}",
+                body="Paperless ist aktuell nicht aktiv; Datei liegt lokal vor.",
+                event_ts=_utcnow_naive(),
+                external_ref=f"attachment:{int(attachment.id)}",
+                meta={"attachment_id": int(attachment.id), "object_type": object_type, "object_id": int(object_id)},
+            )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Dokument konnte nicht verarbeitet werden: {exc}", "error")
+        return RedirectResponse(f"/crm/dokumente/upload?object_type={quote(object_type)}&object_id={object_id}", status_code=302)
+    _flash(request, "Dokument hochgeladen und archiviert." if archived else "Dokument lokal gespeichert.", "info")
+    redirect_url = _document_object_url(object_type, object_id) or f"/crm/dokumente/upload?object_type={quote(object_type)}&object_id={object_id}"
+    return RedirectResponse(redirect_url, status_code=302)
+
+
+@app.get("/einkauf/dokumente/upload", response_class=HTMLResponse)
+def einkauf_document_upload_get(
+    request: Request,
+    user=Depends(require_user),
+    object_type: str = "",
+    object_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    settings = _paperless_settings(db, include_secret=False)
+    selected_type = str(object_type or "").strip()
+    selected_id = int(object_id or 0)
+    attachments = _attachments_for_entity(db, selected_type, selected_id) if selected_type and selected_id > 0 else []
+    return templates.TemplateResponse(
+        "einkauf/document_upload.html",
+        _ctx(
+            request,
+            user=user,
+            object_type=selected_type,
+            object_id=selected_id,
+            target_label=_document_object_label(db, selected_type, selected_id) if selected_type and selected_id > 0 else "",
+            target_url=_document_object_url(selected_type, selected_id) if selected_type and selected_id > 0 else "",
+            purchase_orders=db.query(PurchaseOrder).order_by(PurchaseOrder.id.desc()).limit(140).all(),
+            goods_receipts=db.query(GoodsReceipt).order_by(GoodsReceipt.id.desc()).limit(140).all(),
+            purchase_invoices=db.query(PurchaseInvoice).order_by(PurchaseInvoice.id.desc()).limit(140).all(),
+            suppliers=_active_suppliers(db),
+            condition_sets=_supplier_condition_sets(db),
+            paperless_available=bool(settings.get("enabled")) and bool(str(settings.get("base_url") or "").strip()),
+            attachments=attachments,
+            paperless_links=_paperless_links_for_object(db, selected_type, selected_id) if selected_type and selected_id > 0 else [],
+            paperless_build_url=lambda document_id: paperless_build_document_url(settings, document_id),
+        ),
+    )
+
+
+@app.post("/einkauf/dokumente/upload")
+async def einkauf_document_upload_post(request: Request, user=Depends(require_user), file: UploadFile = File(...), db: Session = Depends(db_session)):
+    form = await request.form()
+    object_type = str(form.get("object_type") or "").strip()
+    object_id = _to_int(form.get("object_id"), 0)
+    if object_id <= 0 or not _document_object_exists(db, object_type, object_id):
+        _flash(request, "Bitte zuerst ein gültiges Zielobjekt wählen.", "error")
+        return RedirectResponse("/einkauf/dokumente/upload", status_code=302)
+    if not file.filename:
+        _flash(request, "Bitte eine Datei auswählen.", "error")
+        return RedirectResponse(f"/einkauf/dokumente/upload?object_type={quote(object_type)}&object_id={object_id}", status_code=302)
+    attachment = _store_uploaded_attachment(entity_type=object_type, entity_id=object_id, upload=file)
+    db.add(attachment)
+    db.flush()
+    settings = _paperless_settings(db, include_secret=True)
+    archived = False
+    try:
+        if bool(settings.get("enabled")) and bool(str(settings.get("base_url") or "").strip()):
+            abs_path = ensure_dirs()["uploads"] / str(attachment.filename or "")
+            result = paperless_upload_document(
+                abs_path,
+                settings,
+                title=attachment.original_name or attachment.filename,
+                mime=attachment.mime_type or "application/octet-stream",
+                created=_utcnow_naive().date().isoformat(),
+            )
+            document_id = str(result.get("document_id") or "").strip()
+            if not document_id:
+                raise ValueError("Paperless hat keine Dokument-ID zurückgegeben.")
+            item = _upsert_uploaded_document_item(
+                db,
+                paperless_document_id=document_id,
+                title=attachment.original_name or attachment.filename,
+                object_type=object_type,
+                object_id=object_id,
+                metadata={"source": "local_upload", "attachment_id": int(attachment.id)},
+            )
+            _document_link_item_to_target(db, item=item, object_type=object_type, object_id=object_id)
+            archived = True
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Dokument konnte nicht verarbeitet werden: {exc}", "error")
+        return RedirectResponse(f"/einkauf/dokumente/upload?object_type={quote(object_type)}&object_id={object_id}", status_code=302)
+    _flash(request, "Dokument hochgeladen und archiviert." if archived else "Dokument lokal gespeichert.", "info")
+    redirect_url = _document_object_url(object_type, object_id) or f"/einkauf/dokumente/upload?object_type={quote(object_type)}&object_id={object_id}"
+    return RedirectResponse(redirect_url, status_code=302)
+
+
+OFFER_STATUS_CHOICES = ("draft", "prepared", "pushed", "sent", "accepted", "rejected", "expired")
+INVOICE_DRAFT_STATUS_CHOICES = ("draft", "prepared", "pushed", "sent", "partially_paid", "paid", "cancelled")
+INCOMING_VOUCHER_STATUS_CHOICES = ("draft", "prepared", "pushed", "booked", "paid", "disputed")
+DUNNING_STATUS_CHOICES = ("open", "waiting", "escalated", "paid", "closed")
+SEVDESK_PAYMENT_TYPE_CHOICES = ("FULL_PAYMENT", "N", "CB", "O", "OF")
+
+
+def _offer_status_label(value: str | None) -> str:
+    mapping = {
+        "draft": "Entwurf",
+        "prepared": "Vorbereitet",
+        "pushed": "In sevDesk angelegt",
+        "sent": "Versendet",
+        "accepted": "Angenommen",
+        "rejected": "Abgelehnt",
+        "expired": "Abgelaufen",
+    }
+    return mapping.get(_crm_normalize_key(value), str(value or "").strip() or "-")
+
+
+def _invoice_draft_status_label(value: str | None) -> str:
+    mapping = {
+        "draft": "Entwurf",
+        "prepared": "Vorbereitet",
+        "pushed": "In sevDesk angelegt",
+        "sent": "Versendet",
+        "partially_paid": "Teilbezahlt",
+        "paid": "Bezahlt",
+        "cancelled": "Storniert",
+    }
+    return mapping.get(_crm_normalize_key(value), str(value or "").strip() or "-")
+
+
+def _incoming_voucher_status_label(value: str | None) -> str:
+    mapping = {
+        "draft": "Entwurf",
+        "prepared": "Vorbereitet",
+        "pushed": "In sevDesk angelegt",
+        "booked": "Verbucht",
+        "paid": "Bezahlt",
+        "disputed": "Strittig",
+    }
+    return mapping.get(_crm_normalize_key(value), str(value or "").strip() or "-")
+
+
+def _dunning_status_label(value: str | None) -> str:
+    mapping = {
+        "open": "Offen",
+        "waiting": "Warten",
+        "escalated": "Eskaliert",
+        "paid": "Bezahlt",
+        "closed": "Geschlossen",
+    }
+    return mapping.get(_crm_normalize_key(value), str(value or "").strip() or "-")
+
+
+def _sevdesk_payment_type_label(value: str | None) -> str:
+    mapping = {
+        "FULL_PAYMENT": "Vollzahlung",
+        "N": "Normal",
+        "CB": "Chargeback",
+        "O": "Offen",
+        "OF": "Offene Forderung",
+    }
+    return mapping.get(str(value or "").strip().upper(), str(value or "").strip() or "-")
+
+
+def _parse_float_input(raw: str | None, field_label: str, default: float = 0.0, minimum: float = 0.0) -> float:
+    text = str(raw or "").strip().replace(",", ".")
+    if not text:
+        value = float(default)
+    else:
+        try:
+            value = float(text)
+        except Exception:
+            raise ValueError(f"{field_label} ist ungültig.")
+    return value if value >= minimum else minimum
+
+
+def _parse_tax_rate_input(raw: str | None, default: float = VAT_RATE_STANDARD) -> float:
+    text = str(raw or "").strip().replace(",", ".")
+    if not text:
+        return float(default)
+    try:
+        value = float(text)
+    except Exception:
+        return float(default)
+    if value > 1:
+        value = value / 100.0
+    if value < 0:
+        value = 0.0
+    return value
+
+
+def _format_qty_value(value: float | int | None) -> str:
+    if value is None:
+        return ""
+    try:
+        num = float(value)
+    except Exception:
+        return str(value)
+    if abs(num - int(num)) < 0.00001:
+        return str(int(num))
+    return f"{num:.2f}".rstrip("0").rstrip(".")
+
+
+def _draft_line_total_cents(qty: float | int | None, unit_price_net: int | None) -> int:
+    if unit_price_net is None:
+        return 0
+    try:
+        return int(round(float(qty or 0) * float(unit_price_net)))
+    except Exception:
+        return 0
+
+
+def _offer_total_cents(lines: list[OfferDraftLine]) -> int:
+    return sum(_draft_line_total_cents(getattr(line, "qty", 0), getattr(line, "unit_price_net", None)) for line in lines)
+
+
+def _invoice_draft_total_cents(lines: list[InvoiceDraftLine]) -> int:
+    return sum(_draft_line_total_cents(getattr(line, "qty", 0), getattr(line, "unit_price_net", None)) for line in lines)
+
+
+def _invoice_draft_line_rows(rows: list[InvoiceDraftLine]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for row in rows:
+        out.append(
+            {
+                "product_id": str(row.product_id or ""),
+                "text": str(row.text or ""),
+                "qty": _format_qty_value(row.qty),
+                "unit": str(row.unit or "Stk"),
+                "unit_price_net": _format_eur(row.unit_price_net).replace(" €", "") if row.unit_price_net is not None else "",
+                "tax_rate": _format_qty_value((float(row.tax_rate or VAT_RATE_STANDARD) * 100.0)),
+            }
+        )
+    while len(out) < 6:
+        out.append({"product_id": "", "text": "", "qty": "", "unit": "Stk", "unit_price_net": "", "tax_rate": "19"})
+    return out
+
+
+def _offer_line_rows(rows: list[OfferDraftLine]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for row in rows:
+        out.append(
+            {
+                "product_id": str(row.product_id or ""),
+                "text": str(row.text or ""),
+                "qty": _format_qty_value(row.qty),
+                "unit": str(row.unit or "Stk"),
+                "unit_price_net": _format_eur(row.unit_price_net).replace(" €", "") if row.unit_price_net is not None else "",
+                "tax_rate": _format_qty_value((float(row.tax_rate or VAT_RATE_STANDARD) * 100.0)),
+            }
+        )
+    while len(out) < 6:
+        out.append({"product_id": "", "text": "", "qty": "", "unit": "Stk", "unit_price_net": "", "tax_rate": "19"})
+    return out
+
+
+def _voucher_line_rows(rows: list[IncomingVoucherDraftLine]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for row in rows:
+        out.append(
+            {
+                "account_datev_id": str(row.account_datev_id or ""),
+                "tax_rule_id": str(row.tax_rule_id or ""),
+                "tax_rate": _format_qty_value((float(row.tax_rate or VAT_RATE_STANDARD) * 100.0)),
+                "sum_net": _format_eur(row.sum_net).replace(" €", "") if row.sum_net is not None else "",
+                "sum_gross": _format_eur(row.sum_gross).replace(" €", "") if row.sum_gross is not None else "",
+                "comment": str(row.comment or ""),
+                "cost_center_id": str(row.cost_center_id or ""),
+            }
+        )
+    while len(out) < 4:
+        out.append({"account_datev_id": "", "tax_rule_id": "", "tax_rate": "19", "sum_net": "", "sum_gross": "", "comment": "", "cost_center_id": ""})
+    return out
+
+
+def _parse_offer_line_input(db: Session, form) -> tuple[list[dict[str, object]], dict[str, str], list[int]]:
+    texts = _form_list(form, "line_text")
+    qtys = _form_list(form, "line_qty")
+    units = _form_list(form, "line_unit")
+    prices = _form_list(form, "line_unit_price_net")
+    taxes = _form_list(form, "line_tax_rate")
+    product_ids = _form_list(form, "line_product_id")
+    max_len = max(len(texts), len(qtys), len(units), len(prices), len(taxes), len(product_ids), 1)
+    errors: dict[str, str] = {}
+    extra_product_ids: list[int] = []
+    lines: list[dict[str, object]] = []
+    for idx in range(max_len):
+        product_id = _to_int(product_ids[idx] if idx < len(product_ids) else "", 0)
+        text = str(texts[idx] if idx < len(texts) else "").strip()
+        qty_raw = str(qtys[idx] if idx < len(qtys) else "").strip()
+        unit = str(units[idx] if idx < len(units) else "").strip() or "Stk"
+        price_raw = str(prices[idx] if idx < len(prices) else "").strip()
+        tax_raw = str(taxes[idx] if idx < len(taxes) else "").strip()
+        if product_id > 0:
+            extra_product_ids.append(product_id)
+            if not text:
+                product = db.get(Product, product_id)
+                if product:
+                    text = str(product.name or "").strip()
+        if not any((product_id > 0, text, qty_raw, price_raw, tax_raw)):
+            continue
+        try:
+            qty = _parse_float_input(qty_raw or "1", f"Angebotsposition {idx + 1} Menge", default=1.0, minimum=0.01)
+            unit_price = _parse_eur_to_cents(price_raw, f"Angebotsposition {idx + 1} Preis") if price_raw else None
+        except ValueError as exc:
+            errors[f"line_{idx}"] = str(exc)
+            continue
+        if not text:
+            errors[f"line_{idx}"] = f"Angebotsposition {idx + 1} braucht einen Text oder Artikel."
+            continue
+        lines.append(
+            {
+                "product_id": product_id or None,
+                "text": text,
+                "qty": qty,
+                "unit": unit,
+                "unit_price_net": unit_price,
+                "tax_rate": _parse_tax_rate_input(tax_raw, VAT_RATE_STANDARD),
+                "sort_order": idx,
+            }
+        )
+    return lines, errors, extra_product_ids
+
+
+def _parse_invoice_draft_line_input(db: Session, form) -> tuple[list[dict[str, object]], dict[str, str], list[int]]:
+    texts = _form_list(form, "line_text")
+    qtys = _form_list(form, "line_qty")
+    units = _form_list(form, "line_unit")
+    prices = _form_list(form, "line_unit_price_net")
+    taxes = _form_list(form, "line_tax_rate")
+    product_ids = _form_list(form, "line_product_id")
+    max_len = max(len(texts), len(qtys), len(units), len(prices), len(taxes), len(product_ids), 1)
+    errors: dict[str, str] = {}
+    extra_product_ids: list[int] = []
+    lines: list[dict[str, object]] = []
+    for idx in range(max_len):
+        product_id = _to_int(product_ids[idx] if idx < len(product_ids) else "", 0)
+        text = str(texts[idx] if idx < len(texts) else "").strip()
+        qty_raw = str(qtys[idx] if idx < len(qtys) else "").strip()
+        unit = str(units[idx] if idx < len(units) else "").strip() or "Stk"
+        price_raw = str(prices[idx] if idx < len(prices) else "").strip()
+        tax_raw = str(taxes[idx] if idx < len(taxes) else "").strip()
+        if product_id > 0:
+            extra_product_ids.append(product_id)
+            if not text:
+                product = db.get(Product, product_id)
+                if product:
+                    text = str(product.name or "").strip()
+        if not any((product_id > 0, text, qty_raw, price_raw, tax_raw)):
+            continue
+        try:
+            qty = _parse_float_input(qty_raw or "1", f"Rechnungsposition {idx + 1} Menge", default=1.0, minimum=0.01)
+            unit_price = _parse_eur_to_cents(price_raw, f"Rechnungsposition {idx + 1} Preis") if price_raw else None
+        except ValueError as exc:
+            errors[f"line_{idx}"] = str(exc)
+            continue
+        if not text:
+            errors[f"line_{idx}"] = f"Rechnungsposition {idx + 1} braucht einen Text oder Artikel."
+            continue
+        lines.append(
+            {
+                "product_id": product_id or None,
+                "text": text,
+                "qty": qty,
+                "unit": unit,
+                "unit_price_net": unit_price,
+                "tax_rate": _parse_tax_rate_input(tax_raw, VAT_RATE_STANDARD),
+                "sort_order": idx,
+            }
+        )
+    return lines, errors, extra_product_ids
+
+
+def _parse_voucher_line_input(form) -> tuple[list[dict[str, object]], dict[str, str]]:
+    account_ids = _form_list(form, "line_account_datev_id")
+    tax_rule_ids = _form_list(form, "line_tax_rule_id")
+    tax_rates = _form_list(form, "line_tax_rate")
+    sum_nets = _form_list(form, "line_sum_net")
+    sum_grosses = _form_list(form, "line_sum_gross")
+    comments = _form_list(form, "line_comment")
+    cost_centers = _form_list(form, "line_cost_center_id")
+    max_len = max(len(account_ids), len(tax_rule_ids), len(tax_rates), len(sum_nets), len(sum_grosses), len(comments), len(cost_centers), 1)
+    errors: dict[str, str] = {}
+    lines: list[dict[str, object]] = []
+    for idx in range(max_len):
+        account_datev_id = str(account_ids[idx] if idx < len(account_ids) else "").strip()
+        tax_rule_id = str(tax_rule_ids[idx] if idx < len(tax_rule_ids) else "").strip()
+        tax_rate_raw = str(tax_rates[idx] if idx < len(tax_rates) else "").strip()
+        sum_net_raw = str(sum_nets[idx] if idx < len(sum_nets) else "").strip()
+        sum_gross_raw = str(sum_grosses[idx] if idx < len(sum_grosses) else "").strip()
+        comment = str(comments[idx] if idx < len(comments) else "").strip()
+        cost_center_id = str(cost_centers[idx] if idx < len(cost_centers) else "").strip()
+        if not any((account_datev_id, tax_rule_id, tax_rate_raw, sum_net_raw, sum_gross_raw, comment, cost_center_id)):
+            continue
+        try:
+            sum_net = _parse_eur_to_cents(sum_net_raw, f"Voucher-Zeile {idx + 1} Netto") if sum_net_raw else None
+            sum_gross = _parse_eur_to_cents(sum_gross_raw, f"Voucher-Zeile {idx + 1} Brutto") if sum_gross_raw else None
+        except ValueError as exc:
+            errors[f"line_{idx}"] = str(exc)
+            continue
+        lines.append(
+            {
+                "account_datev_id": account_datev_id or None,
+                "tax_rule_id": tax_rule_id or None,
+                "tax_rate": _parse_tax_rate_input(tax_rate_raw, VAT_RATE_STANDARD),
+                "sum_net": sum_net,
+                "sum_gross": sum_gross,
+                "comment": comment or None,
+                "cost_center_id": cost_center_id or None,
+                "sort_order": idx,
+            }
+        )
+    return lines, errors
+
+
+def _offer_line_db_rows(db: Session, offer_id: int) -> list[OfferDraftLine]:
+    return (
+        db.query(OfferDraftLine)
+        .filter(OfferDraftLine.offer_draft_id == int(offer_id))
+        .order_by(OfferDraftLine.sort_order.asc(), OfferDraftLine.id.asc())
+        .all()
+    )
+
+
+def _invoice_draft_db_rows(db: Session, invoice_id: int) -> list[InvoiceDraftLine]:
+    return (
+        db.query(InvoiceDraftLine)
+        .filter(InvoiceDraftLine.invoice_draft_id == int(invoice_id))
+        .order_by(InvoiceDraftLine.sort_order.asc(), InvoiceDraftLine.id.asc())
+        .all()
+    )
+
+
+def _voucher_line_db_rows(db: Session, voucher_id: int) -> list[IncomingVoucherDraftLine]:
+    return (
+        db.query(IncomingVoucherDraftLine)
+        .filter(IncomingVoucherDraftLine.incoming_voucher_draft_id == int(voucher_id))
+        .order_by(IncomingVoucherDraftLine.sort_order.asc(), IncomingVoucherDraftLine.id.asc())
+        .all()
+    )
+
+
+def _crm_case_context(db: Session, case_id: int) -> dict[str, object]:
+    row = db.get(CrmCase, case_id)
+    if not row:
+        return {}
+    role_map = _crm_case_role_map(db, [int(case_id)]).get(int(case_id), {})
+    ordering_role = role_map.get(CRM_ROLE_ORDERING_PARTY)
+    invoice_role = role_map.get(CRM_ROLE_INVOICE_RECIPIENT)
+    service_role = role_map.get(CRM_ROLE_SERVICE_LOCATION)
+    ordering = db.get(MasterCustomer, int(ordering_role.master_customer_id or 0)) if ordering_role and int(ordering_role.master_customer_id or 0) > 0 else None
+    invoice = db.get(MasterCustomer, int(invoice_role.master_customer_id or 0)) if invoice_role and int(invoice_role.master_customer_id or 0) > 0 else None
+    service_location = db.get(ServiceLocation, int(service_role.service_location_id or 0)) if service_role and int(service_role.service_location_id or 0) > 0 else None
+    customer_ids = [int(item.party_id) for item in (ordering, invoice) if item and int(item.party_id or 0) > 0]
+    _, default_map = _crm_party_address_maps(db, customer_ids)
+    return {
+        "row": row,
+        "ordering_role": ordering_role,
+        "invoice_role": invoice_role,
+        "service_role": service_role,
+        "ordering_customer": ordering,
+        "invoice_customer": invoice,
+        "service_location": service_location,
+        "ordering_address": default_map.get(int(ordering.party_id)) if ordering else None,
+        "invoice_address": default_map.get(int(invoice.party_id)) if invoice else None,
+    }
+
+
+def _sevdesk_contact_payload_for_customer(db: Session, customer: MasterCustomer) -> dict[str, object]:
+    party = db.get(Party, int(customer.party_id))
+    _, default_map = _crm_party_address_maps(db, [int(customer.party_id)])
+    address = default_map.get(int(customer.party_id))
+    return {
+        "name": str(party.display_name if party else customer.customer_no_internal),
+        "customerNumber": str(customer.customer_no_internal or ""),
+        "category": "Kunde",
+        "street": str(address.street or "") if address else "",
+        "zip": str(address.zip_code or "") if address else "",
+        "city": str(address.city or "") if address else "",
+        "country": str(address.country_code or "DE") if address else "DE",
+        "email": str(address.email or "") if address else "",
+        "phone": str(address.phone or "") if address else "",
+    }
+
+
+def _sevdesk_contact_payload_for_supplier(supplier: Supplier) -> dict[str, object]:
+    return {
+        "name": str(supplier.name or ""),
+        "category": "Lieferant",
+    }
+
+
+def _sevdesk_customer_identities(db: Session, customer_id: int) -> list[ExternalIdentity]:
+    return (
+        db.query(ExternalIdentity)
+        .filter(ExternalIdentity.master_customer_id == int(customer_id), ExternalIdentity.system_name == "sevdesk")
+        .order_by(ExternalIdentity.is_primary.desc(), ExternalIdentity.id.asc())
+        .all()
+    )
+
+
+def _sevdesk_customer_primary_identity(db: Session, customer_id: int) -> ExternalIdentity | None:
+    rows = _sevdesk_customer_identities(db, customer_id)
+    return rows[0] if rows else None
+
+
+def _sevdesk_upsert_customer_identity(
+    db: Session,
+    *,
+    customer_id: int,
+    external_type: str,
+    external_key: str,
+    external_id: str | None,
+    is_primary: bool = False,
+    note: str | None = None,
+) -> ExternalIdentity:
+    key = str(external_key or "").strip()
+    if not key:
+        raise ValueError("sevDesk-Schlüssel fehlt.")
+    row = (
+        db.query(ExternalIdentity)
+        .filter(
+            ExternalIdentity.system_name == "sevdesk",
+            ExternalIdentity.external_type == str(external_type),
+            ExternalIdentity.external_key == key,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        row = ExternalIdentity(
+            master_customer_id=int(customer_id),
+            system_name="sevdesk",
+            external_type=str(external_type),
+            external_key=key,
+            created_at=_utcnow_naive(),
+        )
+    if is_primary:
+        existing_rows = _sevdesk_customer_identities(db, int(customer_id))
+        for existing in existing_rows:
+            existing.is_primary = False
+            db.add(existing)
+    row.master_customer_id = int(customer_id)
+    row.external_id = str(external_id or "").strip() or None
+    row.is_primary = bool(is_primary)
+    row.note = str(note or "").strip() or None
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _sevdesk_link_supplier_contact(db: Session, supplier: Supplier, contact_id: str, contact_label: str = "") -> None:
+    _upsert_external_link(
+        db,
+        system_name="sevdesk",
+        object_type="supplier",
+        object_id=int(supplier.id),
+        external_key=str(contact_label or supplier.name or contact_id),
+        external_row_id=str(contact_id or "").strip() or None,
+        deep_link_url=sevdesk_build_api_url(_sevdesk_settings(db, include_secret=False), f"/Contact/{contact_id}") if contact_id else None,
+    )
+
+
+def _sevdesk_find_best_contact(rows: list[dict], *, customer_number: str = "", name: str = "", email: str = "") -> dict | None:
+    if not rows:
+        return None
+    customer_number_norm = _crm_normalize_key(customer_number)
+    name_norm = _crm_normalize_key(name)
+    email_norm = _crm_normalize_key(email)
+    for row in rows:
+        if customer_number_norm and _crm_normalize_key(sevdesk_first_value(row, ("customerNumber", "customerNo", "customer_number"))) == customer_number_norm:
+            return row
+    for row in rows:
+        if email_norm and _crm_normalize_key(sevdesk_first_value(row, ("email", "emailAddress"))) == email_norm:
+            return row
+    for row in rows:
+        if name_norm and _crm_normalize_key(sevdesk_first_value(row, ("name", "displayName"))) == name_norm:
+            return row
+    return rows[0]
+
+
+def _sevdesk_contact_id_for_customer(db: Session, settings: dict[str, str | bool], customer: MasterCustomer) -> str:
+    identity = _sevdesk_customer_primary_identity(db, int(customer.id))
+    if identity and str(identity.external_id or identity.external_key or "").strip():
+        return str(identity.external_id or identity.external_key or "").strip()
+    payload = _sevdesk_contact_payload_for_customer(db, customer)
+    matches = sevdesk_find_contact(
+        settings,
+        customer_number=str(payload.get("customerNumber") or ""),
+        name=str(payload.get("name") or ""),
+        city=str(payload.get("city") or ""),
+        zip_code=str(payload.get("zip") or ""),
+        email=str(payload.get("email") or ""),
+        limit=12,
+    )
+    best = _sevdesk_find_best_contact(
+        matches,
+        customer_number=str(payload.get("customerNumber") or ""),
+        name=str(payload.get("name") or ""),
+        email=str(payload.get("email") or ""),
+    )
+    if best:
+        contact_id = sevdesk_extract_object_id(best) or sevdesk_first_value(best, ("id", "ID"))
+        customer_number = sevdesk_first_value(best, ("customerNumber", "customerNo", "customer_number"))
+        _sevdesk_upsert_customer_identity(
+            db,
+            customer_id=int(customer.id),
+            external_type="contact",
+            external_key=str(contact_id or customer_number or payload.get("customerNumber") or customer.customer_no_internal),
+            external_id=contact_id or None,
+            is_primary=True,
+            note="Rechnungsstandard",
+        )
+        if customer_number:
+            _sevdesk_upsert_customer_identity(
+                db,
+                customer_id=int(customer.id),
+                external_type="customernumber",
+                external_key=customer_number,
+                external_id=contact_id or None,
+                is_primary=False,
+            )
+        return str(contact_id or "")
+    customer_number = str(payload.get("customerNumber") or customer.customer_no_internal or "").strip()
+    try:
+        if customer_number and not sevdesk_check_customer_number_availability(settings, customer_number):
+            customer_number = sevdesk_get_next_customer_number(settings) or customer_number
+    except Exception:
+        if not customer_number:
+            customer_number = sevdesk_get_next_customer_number(settings) or customer.customer_no_internal
+    payload["customerNumber"] = customer_number
+    result = sevdesk_create_or_update_contact(settings, payload)
+    contact_id = sevdesk_extract_object_id(result) or sevdesk_first_value(result, ("id", "ID"))
+    _sevdesk_upsert_customer_identity(
+        db,
+        customer_id=int(customer.id),
+        external_type="contact",
+        external_key=str(contact_id or customer_number),
+        external_id=contact_id or None,
+        is_primary=True,
+        note="Rechnungsstandard",
+    )
+    if customer_number:
+        _sevdesk_upsert_customer_identity(
+            db,
+            customer_id=int(customer.id),
+            external_type="customernumber",
+            external_key=customer_number,
+            external_id=contact_id or None,
+            is_primary=False,
+        )
+    return str(contact_id or "")
+
+
+def _sevdesk_contact_id_for_supplier(db: Session, settings: dict[str, str | bool], supplier: Supplier) -> str:
+    existing = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "sevdesk", ExternalLink.object_type == "supplier", ExternalLink.object_id == int(supplier.id))
+        .order_by(ExternalLink.id.asc())
+        .first()
+    )
+    if existing and str(existing.external_row_id or existing.external_key or "").strip():
+        return str(existing.external_row_id or existing.external_key or "").strip()
+    payload = _sevdesk_contact_payload_for_supplier(supplier)
+    matches = sevdesk_find_contact(settings, name=str(payload.get("name") or ""), limit=10)
+    best = _sevdesk_find_best_contact(matches, name=str(payload.get("name") or ""))
+    if best:
+        contact_id = sevdesk_extract_object_id(best) or sevdesk_first_value(best, ("id", "ID"))
+        _sevdesk_link_supplier_contact(db, supplier, str(contact_id or ""), sevdesk_first_value(best, ("name", "displayName")) or supplier.name)
+        return str(contact_id or "")
+    result = sevdesk_create_or_update_contact(settings, payload)
+    contact_id = sevdesk_extract_object_id(result) or sevdesk_first_value(result, ("id", "ID"))
+    _sevdesk_link_supplier_contact(db, supplier, str(contact_id or ""), supplier.name)
+    return str(contact_id or "")
+
+
+def _sevdesk_position_rows_from_offer(db: Session, lines: list[OfferDraftLine]) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for line in lines:
+        product = db.get(Product, int(line.product_id)) if int(line.product_id or 0) > 0 else None
+        out.append(
+            {
+                "text": str(line.text or product.name if product else line.text or "").strip(),
+                "quantity": float(line.qty or 0),
+                "unit": str(line.unit or "Stk"),
+                "priceNet": round(float(line.unit_price_net or 0) / 100.0, 2) if line.unit_price_net is not None else None,
+                "taxRate": round(float(line.tax_rate or VAT_RATE_STANDARD) * 100.0, 2),
+            }
+        )
+    return out
+
+
+def _sevdesk_position_rows_from_invoice(db: Session, lines: list[InvoiceDraftLine]) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for line in lines:
+        product = db.get(Product, int(line.product_id)) if int(line.product_id or 0) > 0 else None
+        out.append(
+            {
+                "text": str(line.text or product.name if product else line.text or "").strip(),
+                "quantity": float(line.qty or 0),
+                "unit": str(line.unit or "Stk"),
+                "priceNet": round(float(line.unit_price_net or 0) / 100.0, 2) if line.unit_price_net is not None else None,
+                "taxRate": round(float(line.tax_rate or VAT_RATE_STANDARD) * 100.0, 2),
+            }
+        )
+    return out
+
+
+def _sevdesk_voucher_rows(lines: list[IncomingVoucherDraftLine]) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for line in lines:
+        out.append(
+            {
+                "accountDatevId": line.account_datev_id,
+                "taxRuleId": line.tax_rule_id,
+                "taxRate": round(float(line.tax_rate or VAT_RATE_STANDARD) * 100.0, 2),
+                "sumNet": round(float(line.sum_net or 0) / 100.0, 2) if line.sum_net is not None else None,
+                "sumGross": round(float(line.sum_gross or 0) / 100.0, 2) if line.sum_gross is not None else None,
+                "comment": line.comment,
+                "costCenterId": line.cost_center_id,
+            }
+        )
+    return out
+
+
+def _invoice_draft_total_due_cents(db: Session, row: InvoiceDraft) -> int:
+    lines = _invoice_draft_db_rows(db, int(row.id))
+    return _invoice_draft_total_cents(lines)
+
+
+def _invoice_draft_open_amount_cents(db: Session, row: InvoiceDraft) -> int:
+    total = _invoice_draft_total_due_cents(db, row)
+    if _crm_normalize_key(row.status) == "paid":
+        return 0
+    if _crm_normalize_key(row.status) == "partially_paid":
+        return max(0, total // 2)
+    return total
+
+
+def _sevdesk_payment_payload(*, check_account_id: str, booking_date: dt.datetime | None, amount_cents: int, booking_type: str, transaction_id: str = "") -> dict[str, object]:
+    payload: dict[str, object] = {
+        "checkAccount": {"id": str(check_account_id), "objectName": "CheckAccount"},
+        "amount": round(float(amount_cents or 0) / 100.0, 2),
+        "date": (booking_date or _utcnow_naive()).date().isoformat(),
+        "type": str(booking_type or "FULL_PAYMENT").strip().upper() or "FULL_PAYMENT",
+    }
+    if str(transaction_id or "").strip():
+        payload["checkAccountTransaction"] = {"id": str(transaction_id).strip(), "objectName": "CheckAccountTransaction"}
+    return payload
+
+
+def _sevdesk_transaction_amount_cents(payload: dict[str, object] | None) -> int:
+    text = str(sevdesk_first_value(payload or {}, ("amount", "sum", "value", "Value", "Betrag")) or "").strip().replace(".", "").replace(",", ".")
+    if not text:
+        return 0
+    try:
+        return int(round(float(text) * 100))
+    except Exception:
+        return 0
+
+
+def _reconciliation_candidate_rows(db: Session, amount_cents: int) -> dict[str, list[dict[str, object]]]:
+    invoice_rows = (
+        db.query(InvoiceDraft)
+        .filter(InvoiceDraft.status.in_(("sent", "pushed", "partially_paid")))
+        .order_by(InvoiceDraft.due_date.asc(), InvoiceDraft.id.desc())
+        .limit(80)
+        .all()
+    )
+    voucher_rows = (
+        db.query(IncomingVoucherDraft)
+        .filter(IncomingVoucherDraft.status.in_(("prepared", "pushed", "booked")))
+        .order_by(IncomingVoucherDraft.due_date.asc(), IncomingVoucherDraft.id.desc())
+        .limit(80)
+        .all()
+    )
+    outgoing = []
+    incoming = []
+    for row in invoice_rows:
+        open_amount = _invoice_draft_open_amount_cents(db, row)
+        if amount_cents and open_amount != abs(int(amount_cents)):
+            continue
+        outgoing.append({"row": row, "open_amount": open_amount})
+    for row in voucher_rows:
+        gross = int(row.gross_total or 0)
+        if amount_cents and gross != abs(int(amount_cents)):
+            continue
+        incoming.append({"row": row, "open_amount": gross})
+    return {"invoice_drafts": outgoing[:12], "voucher_drafts": incoming[:12]}
+
+
+def _invoice_draft_reference_label(row: InvoiceDraft) -> str:
+    return str(row.sevdesk_invoice_number or f"RE-ENTWURF-{int(row.id):04d}")
+
+
+def _ensure_dunning_case_for_invoice(db: Session, row: InvoiceDraft) -> DunningCase | None:
+    existing = db.query(DunningCase).filter(DunningCase.invoice_draft_id == int(row.id)).one_or_none()
+    status_key = _crm_normalize_key(row.status)
+    if status_key in ("paid", "cancelled"):
+        if existing:
+            existing.status = "paid" if status_key == "paid" else "closed"
+            existing.amount_due = 0
+            existing.updated_at = _utcnow_naive()
+            db.add(existing)
+        return existing
+    if int(row.master_customer_id or 0) <= 0:
+        return existing
+    due_date = row.due_date or row.invoice_date
+    amount_due = _invoice_draft_open_amount_cents(db, row)
+    if existing is None:
+        existing = DunningCase(
+            invoice_draft_id=int(row.id),
+            sevdesk_invoice_id=str(row.sevdesk_invoice_id or "").strip() or None,
+            customer_id=int(row.master_customer_id),
+            current_level=1,
+            due_date=due_date,
+            amount_due=amount_due,
+            status="open",
+            next_action_at=due_date,
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+    else:
+        existing.sevdesk_invoice_id = str(row.sevdesk_invoice_id or "").strip() or None
+        existing.customer_id = int(row.master_customer_id)
+        existing.due_date = due_date
+        existing.amount_due = amount_due
+        if existing.status not in ("paid", "closed"):
+            existing.status = "open" if amount_due > 0 else "paid"
+        existing.updated_at = _utcnow_naive()
+    db.add(existing)
+    db.flush()
+    return existing
+
+
+def _dunning_rows(db: Session) -> list[dict[str, object]]:
+    draft_rows = (
+        db.query(InvoiceDraft)
+        .filter(InvoiceDraft.status.in_(("sent", "pushed", "partially_paid", "paid")))
+        .order_by(InvoiceDraft.due_date.asc(), InvoiceDraft.id.desc())
+        .all()
+    )
+    for row in draft_rows:
+        _ensure_dunning_case_for_invoice(db, row)
+    db.flush()
+    cases = (
+        db.query(DunningCase)
+        .order_by(DunningCase.next_action_at.asc(), DunningCase.id.desc())
+        .all()
+    )
+    customer_map = _crm_customer_labels_map(db, [int(row.customer_id) for row in cases if int(row.customer_id or 0) > 0])
+    invoice_map = {int(row.id): row for row in draft_rows}
+    return [
+        {
+            "row": row,
+            "customer_label": customer_map.get(int(row.customer_id), "-"),
+            "invoice": invoice_map.get(int(row.invoice_draft_id or 0)),
+        }
+        for row in cases
+    ]
+
+
+def _render_offer_form(
+    request: Request,
+    *,
+    user,
+    db: Session,
+    page_title: str,
+    form_action: str,
+    row: OfferDraft | None,
+    form_data: dict[str, str | list[str]],
+    form_errors: dict[str, str],
+    line_rows: list[dict[str, str]],
+    selected_case_id: int,
+    selected_customer_id: int,
+):
+    case_context = _crm_case_context(db, selected_case_id) if selected_case_id > 0 else {}
+    ai_offer_input = {
+        "case_id": int(selected_case_id or 0) or None,
+        "master_customer_id": int(selected_customer_id or 0) or None,
+        "case_title": str(getattr(case_context.get("row"), "title", "") or ""),
+        "case_no": str(getattr(case_context.get("row"), "case_no", "") or ""),
+        "customer_name": str(getattr(getattr(case_context.get("ordering_customer"), "party", None), "display_name", "") or ""),
+        "invoice_recipient_id": int(getattr(case_context.get("invoice_customer"), "id", 0) or 0) or None,
+        "product_id": int(line_rows[0]["product_id"]) if line_rows and str(line_rows[0].get("product_id") or "").isdigit() else None,
+        "line_hint": str(line_rows[0].get("text") or "") if line_rows else "",
+    }
+    ai_offer_result = ai_prepare_offer_draft(
+        db,
+        settings=_openai_settings(db, include_secret=True),
+        input_payload=ai_offer_input,
+        related_object_id=int(row.id) if row else None,
+    ) if ai_offer_input["case_id"] or ai_offer_input["master_customer_id"] or ai_offer_input["line_hint"] else None
+    return templates.TemplateResponse(
+        "crm/offer_form.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            page_title=page_title,
+            form_action=form_action,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id="",
+            case_options=_mail_case_options(db),
+            customer_options=_crm_customer_options(db),
+            products=_active_products_for_einkauf(db, [int(item["product_id"]) for item in line_rows if str(item.get("product_id") or "").isdigit()]),
+            line_rows=line_rows,
+            selected_case_id=int(selected_case_id or 0),
+            selected_customer_id=int(selected_customer_id or 0),
+            case_context=case_context,
+            ai_offer_result=ai_offer_result,
+            ai_offer_review=ai_find_review_item(db, int(ai_offer_result["log"].id)) if ai_offer_result else None,
+        ),
+    )
+
+
+def _render_invoice_draft_form(
+    request: Request,
+    *,
+    user,
+    db: Session,
+    page_title: str,
+    form_action: str,
+    row: InvoiceDraft | None,
+    form_data: dict[str, str | list[str]],
+    form_errors: dict[str, str],
+    line_rows: list[dict[str, str]],
+    selected_case_id: int,
+    selected_customer_id: int,
+    selected_offer_id: int,
+):
+    case_context = _crm_case_context(db, selected_case_id) if selected_case_id > 0 else {}
+    offer_rows = db.query(OfferDraft).order_by(OfferDraft.updated_at.desc(), OfferDraft.id.desc()).limit(120).all()
+    selected_offer = db.get(OfferDraft, int(selected_offer_id or 0)) if int(selected_offer_id or 0) > 0 else None
+    ai_invoice_input = {
+        "case_id": int(selected_case_id or 0) or None,
+        "master_customer_id": int(selected_customer_id or 0) or None,
+        "offer_draft_id": int(selected_offer_id or 0) or None,
+        "case_title": str(getattr(case_context.get("row"), "title", "") or ""),
+        "case_no": str(getattr(case_context.get("row"), "case_no", "") or ""),
+        "offer_no": str(getattr(selected_offer, "sevdesk_order_number", "") or ""),
+        "invoice_date": str(form_data.get("invoice_date") or ""),
+        "offer_lines": [
+            {
+                "text": str(item.get("text") or ""),
+                "qty": item.get("qty") or 1,
+                "unit": str(item.get("unit") or "Stk"),
+                "unit_price_net": item.get("unit_price_net"),
+                "tax_rate": item.get("tax_rate") or 0.19,
+                "product_id": int(item["product_id"]) if str(item.get("product_id") or "").isdigit() else None,
+            }
+            for item in line_rows
+            if any(str(item.get(key) or "").strip() for key in ("text", "qty", "unit", "unit_price_net"))
+        ],
+    }
+    ai_invoice_result = ai_prepare_invoice_draft(
+        db,
+        settings=_openai_settings(db, include_secret=True),
+        input_payload=ai_invoice_input,
+        related_object_id=int(row.id) if row else None,
+    ) if ai_invoice_input["case_id"] or ai_invoice_input["master_customer_id"] or ai_invoice_input["offer_draft_id"] else None
+    return templates.TemplateResponse(
+        "crm/invoice_form.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            page_title=page_title,
+            form_action=form_action,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id="",
+            case_options=_mail_case_options(db),
+            customer_options=_crm_customer_options(db),
+            offer_rows=offer_rows,
+            products=_active_products_for_einkauf(db, [int(item["product_id"]) for item in line_rows if str(item.get("product_id") or "").isdigit()]),
+            line_rows=line_rows,
+            selected_case_id=int(selected_case_id or 0),
+            selected_customer_id=int(selected_customer_id or 0),
+            selected_offer_id=int(selected_offer_id or 0),
+            case_context=case_context,
+            source_type_choices=("manual", "outsmart_completed", "converted_offer"),
+            ai_invoice_result=ai_invoice_result,
+            ai_invoice_review=ai_find_review_item(db, int(ai_invoice_result["log"].id)) if ai_invoice_result else None,
+        ),
+    )
+
+
+def _render_voucher_prepare(
+    request: Request,
+    *,
+    user,
+    db: Session,
+    page_title: str,
+    form_action: str,
+    row: IncomingVoucherDraft | None,
+    form_data: dict[str, str | list[str]],
+    form_errors: dict[str, str],
+    line_rows: list[dict[str, str]],
+    selected_purchase_invoice_id: int,
+    selected_supplier_id: int,
+):
+    invoice_row = db.get(PurchaseInvoice, int(selected_purchase_invoice_id or 0)) if int(selected_purchase_invoice_id or 0) > 0 else None
+    supplier_row = db.get(Supplier, int(selected_supplier_id or 0)) if int(selected_supplier_id or 0) > 0 else None
+    ai_input_payload = {
+        "purchase_invoice_id": int(selected_purchase_invoice_id or 0) or None,
+        "supplier_id": int(selected_supplier_id or 0) or None,
+        "invoice_no": str(getattr(invoice_row, "invoice_no", "") or ""),
+        "supplier_name": str(getattr(supplier_row, "name", "") or ""),
+        "description": str(form_data.get("description") or getattr(invoice_row, "invoice_no", "") or ""),
+        "voucher_date": str(form_data.get("voucher_date") or ""),
+        "due_date": str(form_data.get("due_date") or ""),
+        "net_total": str(form_data.get("net_total") or ""),
+        "tax_total": str(form_data.get("tax_total") or ""),
+        "gross_total": str(form_data.get("gross_total") or ""),
+        "purchase_order_id": _to_int(form_data.get("purchase_order_id"), 0),
+        "goods_receipt_id": _to_int(form_data.get("goods_receipt_id"), 0),
+    }
+    ai_extract_result = ai_extract_incoming_invoice(
+        db,
+        settings=_openai_settings(db, include_secret=True),
+        input_payload=ai_input_payload,
+        related_object_type="purchase_invoice",
+        related_object_id=int(invoice_row.id) if invoice_row else None,
+    ) if invoice_row or str(ai_input_payload.get("description") or "").strip() else None
+    ai_voucher_result = ai_suggest_voucher_accounting(
+        db,
+        settings=_openai_settings(db, include_secret=True),
+        input_payload=ai_input_payload,
+        related_object_id=int(row.id) if row else None,
+    ) if supplier_row or invoice_row or str(ai_input_payload.get("description") or "").strip() else None
+    return templates.TemplateResponse(
+        "einkauf/voucher_prepare.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            page_title=page_title,
+            form_action=form_action,
+            form_data=form_data,
+            form_errors=form_errors,
+            first_error_field_id="",
+            suppliers=_active_suppliers(db),
+            purchase_invoices=db.query(PurchaseInvoice).order_by(PurchaseInvoice.id.desc()).limit(160).all(),
+            purchase_orders=db.query(PurchaseOrder).order_by(PurchaseOrder.id.desc()).limit(160).all(),
+            goods_receipts=db.query(GoodsReceipt).order_by(GoodsReceipt.id.desc()).limit(160).all(),
+            line_rows=line_rows,
+            selected_purchase_invoice_id=int(selected_purchase_invoice_id or 0),
+            selected_supplier_id=int(selected_supplier_id or 0),
+            ai_extract_result=ai_extract_result,
+            ai_voucher_result=ai_voucher_result,
+            ai_voucher_review=ai_find_review_item(db, int(ai_voucher_result["log"].id)) if ai_voucher_result else None,
+        ),
+    )
+
+
+@app.get("/system/integrationen/sevdesk", response_class=HTMLResponse)
+def system_integration_sevdesk_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _sevdesk_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "system/integrations_sevdesk.html",
+        _ctx(
+            request,
+            user=user,
+            settings=settings,
+            export_config=_sevdesk_export_config(db),
+            export_jobs=_sevdesk_export_jobs(db),
+            test_result=None,
+        ),
+    )
+
+
+@app.post("/system/integrationen/sevdesk", response_class=HTMLResponse)
+async def system_integration_sevdesk_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    _system_setting_set(db, SEVDESK_SETTING_ENABLED, "1" if form.get("enabled") == "on" else "0")
+    _system_setting_set(db, SEVDESK_SETTING_BASE_URL, str(form.get("base_url") or "https://my.sevdesk.de/api/v1").strip() or "https://my.sevdesk.de/api/v1")
+    _system_setting_set(db, SEVDESK_SETTING_DEFAULT_CONTACT_PERSON_ID, str(form.get("default_contact_person_id") or "").strip() or None)
+    _system_setting_set(db, SEVDESK_SETTING_DEFAULT_TAX_RULE_ID, str(form.get("default_tax_rule_id") or "").strip() or None)
+    _system_setting_set(db, SEVDESK_SETTING_DEFAULT_CURRENCY, str(form.get("default_currency") or "EUR").strip() or "EUR")
+    if str(form.get("api_token") or "").strip():
+        _write_sevdesk_token(str(form.get("api_token") or "").strip())
+    export_config = {
+        "accountingYearBegin": str(form.get("accounting_year_begin") or "").strip(),
+        "enshrinedOnly": form.get("enshrined_only") == "on",
+    }
+    _system_setting_set(db, SEVDESK_SETTING_EXPORT_CONFIG_JSON, json.dumps(export_config, ensure_ascii=False))
+    db.commit()
+    _flash(request, "sevDesk-Einstellungen gespeichert.", "info")
+    return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
+
+
+@app.post("/system/integrationen/sevdesk/test", response_class=HTMLResponse)
+def system_integration_sevdesk_test(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _sevdesk_settings(db, include_secret=True)
+    test_result: dict[str, object] | None = None
+    try:
+        payload = sevdesk_test_connection(settings)
+        version = sevdesk_get_bookkeeping_system_version(settings)
+        if version:
+            _system_setting_set(db, SEVDESK_SETTING_BOOKKEEPING_SYSTEM_VERSION, version)
+            db.commit()
+        test_result = {
+            "ok": True,
+            "message": "Verbindung erfolgreich.",
+            "preview": _json_dict(json.dumps(payload, ensure_ascii=False)) if isinstance(payload, dict) else {"rows": len(payload) if isinstance(payload, list) else 0},
+            "bookkeeping_system_version": version,
+        }
+    except Exception as exc:
+        test_result = {"ok": False, "message": str(exc), "preview": {}}
+    return templates.TemplateResponse(
+        "system/integrations_sevdesk.html",
+        _ctx(
+            request,
+            user=user,
+            settings=_sevdesk_settings(db, include_secret=False),
+            export_config=_sevdesk_export_config(db),
+            export_jobs=_sevdesk_export_jobs(db),
+            test_result=test_result,
+        ),
+    )
+
+
+@app.get("/system/integrationen/openai", response_class=HTMLResponse)
+def system_integration_openai_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    ai_ensure_prompt_definitions(db)
+    db.commit()
+    return templates.TemplateResponse(
+        "system/integrations_openai.html",
+        _ctx(
+            request,
+            user=user,
+            settings=_openai_settings(db, include_secret=False),
+            prompt_rows=(
+                db.query(AiPromptDefinition)
+                .order_by(AiPromptDefinition.task_name.asc(), AiPromptDefinition.version.desc())
+                .all()
+            ),
+            test_result=None,
+        ),
+    )
+
+
+@app.post("/system/integrationen/openai")
+async def system_integration_openai_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    _system_setting_set(db, OPENAI_SETTING_ENABLED, "1" if form.get("enabled") == "on" else "0")
+    _system_setting_set(db, OPENAI_SETTING_MODEL_DEFAULT, str(form.get("model_default") or "gpt-5-mini").strip() or "gpt-5-mini")
+    _system_setting_set(db, OPENAI_SETTING_MODEL_FAST, str(form.get("model_fast") or "gpt-5-mini").strip() or "gpt-5-mini")
+    _system_setting_set(db, OPENAI_SETTING_MODEL_REASONING, str(form.get("model_reasoning") or "gpt-5").strip() or "gpt-5")
+    _system_setting_set(db, OPENAI_SETTING_TIMEOUT, str(_to_int(form.get("timeout_seconds"), 45) or 45))
+    _system_setting_set(db, OPENAI_SETTING_RETRY, str(_to_int(form.get("retry_count"), 1) or 1))
+    _system_setting_set(db, OPENAI_SETTING_MAX_TOKENS, str(_to_int(form.get("max_tokens"), 1500) or 1500))
+    if str(form.get("api_key") or "").strip():
+        _write_openai_api_key(str(form.get("api_key") or "").strip())
+    db.commit()
+    _flash(request, "OpenAI-Einstellungen gespeichert.", "info")
+    return RedirectResponse("/system/integrationen/openai", status_code=302)
+
+
+@app.post("/system/integrationen/openai/test")
+def system_integration_openai_test(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    ai_ensure_prompt_definitions(db)
+    settings = _openai_settings(db, include_secret=True)
+    test_result: dict[str, object]
+    try:
+        payload = ai_test_connection(settings)
+        test_result = {"ok": True, "message": "Verbindung erfolgreich.", "preview": payload}
+    except Exception as exc:
+        test_result = {"ok": False, "message": str(exc), "preview": {}}
+    db.commit()
+    return templates.TemplateResponse(
+        "system/integrations_openai.html",
+        _ctx(
+            request,
+            user=user,
+            settings=_openai_settings(db, include_secret=False),
+            prompt_rows=(
+                db.query(AiPromptDefinition)
+                .order_by(AiPromptDefinition.task_name.asc(), AiPromptDefinition.version.desc())
+                .all()
+            ),
+            test_result=test_result,
+        ),
+    )
+
+
+@app.get("/system/ki-log", response_class=HTMLResponse)
+def system_ai_log(
+    request: Request,
+    user=Depends(require_admin),
+    q: str = "",
+    status: str = "",
+    risk: str = "",
+    db: Session = Depends(db_session),
+):
+    query = db.query(AiDecisionLog)
+    q_norm = (q or "").strip().lower()
+    if q_norm:
+        like = f"%{q_norm}%"
+        query = query.filter(
+            or_(
+                func.lower(func.coalesce(AiDecisionLog.task_name, "")).like(like),
+                func.lower(func.coalesce(AiDecisionLog.related_object_type, "")).like(like),
+                func.lower(func.coalesce(AiDecisionLog.override_note, "")).like(like),
+            )
+        )
+    status_norm = (status or "").strip().lower()
+    if status_norm:
+        query = query.filter(AiDecisionLog.status == status_norm)
+    risk_norm = (risk or "").strip().lower()
+    if risk_norm:
+        query = query.filter(AiDecisionLog.risk_class == risk_norm)
+    rows = query.order_by(AiDecisionLog.created_at.desc(), AiDecisionLog.id.desc()).limit(300).all()
+    return templates.TemplateResponse(
+        "system/ai_log.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            q=q_norm,
+            status=status_norm,
+            risk=risk_norm,
+            status_choices=("suggested", "review", "approved", "rejected", "overridden"),
+            risk_choices=("gruen", "gelb", "rot"),
+            ai_decision_input=ai_decision_input,
+            ai_decision_output=ai_decision_output,
+        ),
+    )
+
+
+@app.get("/system/ki-freigaben", response_class=HTMLResponse)
+def system_ai_review_queue(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = (
+        db.query(AiReviewQueueItem)
+        .order_by(
+            case(
+                (AiReviewQueueItem.priority == "hoch", 0),
+                (AiReviewQueueItem.priority == "mittel", 1),
+                else_=2,
+            ),
+            AiReviewQueueItem.created_at.desc(),
+            AiReviewQueueItem.id.desc(),
+        )
+        .limit(240)
+        .all()
+    )
+    decision_ids = [int(row.ai_decision_log_id) for row in rows]
+    decisions = {int(row.id): row for row in db.query(AiDecisionLog).filter(AiDecisionLog.id.in_(decision_ids or [0])).all()} if decision_ids else {}
+    return templates.TemplateResponse(
+        "system/ai_review_queue.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            decisions=decisions,
+            ai_decision_output=ai_decision_output,
+        ),
+    )
+
+
+@app.post("/system/ki-freigaben/{decision_id}")
+async def system_ai_review_queue_post(decision_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    action = str(form.get("action") or "").strip().lower()
+    note = str(form.get("note") or "").strip()
+    try:
+        ai_apply_review_action(db, decision_id=int(decision_id), action=action, user_id=int(user.id), note=note)
+        db.commit()
+        _flash(request, "KI-Freigabe gespeichert.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"KI-Freigabe fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/ki-freigaben", status_code=302)
+
+
+@app.get("/system/ki-supervisor", response_class=HTMLResponse)
+def system_ai_supervisor(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = (
+        db.query(SupervisorFinding)
+        .order_by(
+            case(
+                (SupervisorFinding.severity == "hoch", 0),
+                (SupervisorFinding.severity == "mittel", 1),
+                else_=2,
+            ),
+            SupervisorFinding.created_at.desc(),
+            SupervisorFinding.id.desc(),
+        )
+        .limit(240)
+        .all()
+    )
+    return templates.TemplateResponse(
+        "system/ai_supervisor.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            open_count=db.query(SupervisorFinding).filter(SupervisorFinding.status == "open").count(),
+        ),
+    )
+
+
+@app.post("/system/ki-supervisor/aktualisieren")
+def system_ai_supervisor_refresh(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    summary = ai_refresh_supervisor_findings(db)
+    db.commit()
+    _flash(
+        request,
+        f"Supervisor aktualisiert: {int(summary['open'])} offen, {int(summary['created'])} neu, {int(summary['resolved'])} erledigt.",
+        "info",
+    )
+    return RedirectResponse("/system/ki-supervisor", status_code=302)
+
+
+@app.post("/system/ki-supervisor/{finding_id}/status")
+async def system_ai_supervisor_status(finding_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(SupervisorFinding, finding_id)
+    if row is None:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    status = str(form.get("status") or "").strip().lower()
+    if status not in {"open", "in_progress", "resolved"}:
+        _flash(request, "Unbekannter Supervisor-Status.", "error")
+        return RedirectResponse("/system/ki-supervisor", status_code=302)
+    row.status = status
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    db.commit()
+    _flash(request, "Supervisor-Status gespeichert.", "info")
+    return RedirectResponse("/system/ki-supervisor", status_code=302)
+
+
+@app.get("/system/verfahrensrichtlinie", response_class=HTMLResponse)
+def system_procedure_guideline(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = _active_procedure_guideline_sections(db)
+    db.commit()
+    return templates.TemplateResponse(
+        "system/procedure_guideline.html",
+        _ctx(request, user=user, rows=rows),
+    )
+
+
+@app.get("/system/verfahrensrichtlinie/bearbeiten", response_class=HTMLResponse)
+def system_procedure_guideline_edit(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = _active_procedure_guideline_sections(db)
+    db.commit()
+    return templates.TemplateResponse(
+        "system/procedure_guideline_edit.html",
+        _ctx(request, user=user, rows=rows),
+    )
+
+
+@app.post("/system/verfahrensrichtlinie/bearbeiten")
+async def system_procedure_guideline_edit_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = _active_procedure_guideline_sections(db)
+    form = await request.form()
+    changed = 0
+    for row in rows:
+        field_name = f"section_{int(row.id)}"
+        new_content = str(form.get(field_name) or "").strip()
+        new_title = str(form.get(f"title_{int(row.id)}") or row.title).strip() or row.title
+        if new_content == str(row.content_markdown or "").strip() and new_title == str(row.title or ""):
+            continue
+        row.active = False
+        db.add(row)
+        db.add(
+            ProcedureGuidelineSection(
+                section_key=str(row.section_key or ""),
+                title=new_title,
+                content_markdown=new_content,
+                version=int(row.version or 0) + 1,
+                active=True,
+                updated_at=_utcnow_naive(),
+                updated_by_user_id=int(user.id),
+            )
+        )
+        changed += 1
+    db.commit()
+    _flash(request, "Verfahrensrichtlinie gespeichert." if changed else "Keine Aenderungen erkannt.", "info")
+    return RedirectResponse("/system/verfahrensrichtlinie", status_code=302)
+
+
+@app.get("/system/ki-evals", response_class=HTMLResponse)
+def system_ai_evals(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ensure_ai_eval_cases(db)
+    ai_ensure_prompt_definitions(db)
+    db.commit()
+    cases = db.query(AiEvalCase).order_by(AiEvalCase.task_name.asc(), AiEvalCase.id.asc()).all()
+    runs = db.query(AiEvalRun).order_by(AiEvalRun.started_at.desc(), AiEvalRun.id.desc()).limit(30).all()
+    return templates.TemplateResponse(
+        "system/ai_evals.html",
+        _ctx(request, user=user, cases=cases, runs=runs, latest_run=None),
+    )
+
+
+@app.post("/system/ki-evals/ausfuehren")
+async def system_ai_evals_run(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ensure_ai_eval_cases(db)
+    ai_ensure_prompt_definitions(db)
+    form = await request.form()
+    task_name = str(form.get("task_name") or "").strip()
+    settings = _openai_settings(db, include_secret=True)
+    cases_query = db.query(AiEvalCase).filter(AiEvalCase.active == True)
+    if task_name:
+        cases_query = cases_query.filter(AiEvalCase.task_name == task_name)
+    cases = cases_query.order_by(AiEvalCase.task_name.asc(), AiEvalCase.id.asc()).all()
+    run = AiEvalRun(
+        task_name=task_name or "alle",
+        prompt_version="mehrere" if not task_name else None,
+        model_name=str(settings.get("model_default") or "local-heuristic") if ai_openai_ready(settings) else "local-heuristic",
+        started_at=_utcnow_naive(),
+        finished_at=None,
+        passed_count=0,
+        failed_count=0,
+        summary_json=None,
+    )
+    db.add(run)
+    db.flush()
+    results = []
+    passed = 0
+    failed = 0
+    for case_row in cases:
+        try:
+            input_payload = _json_dict(case_row.input_json)
+            expected_payload = _json_dict(case_row.expected_json)
+            result_payload = _ai_run_eval_task(db, settings, str(case_row.task_name or ""), input_payload)
+            ok = _ai_eval_matches(expected_payload, result_payload)
+            results.append(
+                {
+                    "case_id": int(case_row.id),
+                    "task_name": str(case_row.task_name or ""),
+                    "expected": expected_payload,
+                    "result": result_payload,
+                    "ok": ok,
+                }
+            )
+            if ok:
+                passed += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            failed += 1
+            results.append(
+                {
+                    "case_id": int(case_row.id),
+                    "task_name": str(case_row.task_name or ""),
+                    "expected": _json_dict(case_row.expected_json),
+                    "result": {"error": str(exc)},
+                    "ok": False,
+                }
+            )
+    run.finished_at = _utcnow_naive()
+    run.passed_count = passed
+    run.failed_count = failed
+    run.summary_json = json.dumps(results, ensure_ascii=False)
+    if task_name:
+        prompt_row = (
+            db.query(AiPromptDefinition)
+            .filter(AiPromptDefinition.task_name == task_name, AiPromptDefinition.active == True)
+            .order_by(AiPromptDefinition.version.desc())
+            .first()
+        )
+        run.prompt_version = str(int(prompt_row.version or 0)) if prompt_row else None
+    db.add(run)
+    db.commit()
+    _flash(request, f"KI-Evals abgeschlossen: {passed} bestanden, {failed} fehlgeschlagen.", "info")
+    cases = db.query(AiEvalCase).order_by(AiEvalCase.task_name.asc(), AiEvalCase.id.asc()).all()
+    runs = db.query(AiEvalRun).order_by(AiEvalRun.started_at.desc(), AiEvalRun.id.desc()).limit(30).all()
+    return templates.TemplateResponse(
+        "system/ai_evals.html",
+        _ctx(request, user=user, cases=cases, runs=runs, latest_run=run),
+    )
+
+
+@app.get("/crm/angebote", response_class=HTMLResponse)
+def crm_offer_list(request: Request, user=Depends(require_user), customer_id: int = 0, db: Session = Depends(db_session)):
+    query = db.query(OfferDraft)
+    if int(customer_id or 0) > 0:
+        query = query.filter(OfferDraft.master_customer_id == int(customer_id))
+    rows = query.order_by(OfferDraft.updated_at.desc(), OfferDraft.id.desc()).limit(200).all()
+    case_map = {int(row.id): row for row in db.query(CrmCase).filter(CrmCase.id.in_([int(item.case_id) for item in rows if int(item.case_id or 0) > 0])).all()} if rows else {}
+    customer_labels = _crm_customer_labels_map(db, [int(item.master_customer_id) for item in rows if int(item.master_customer_id or 0) > 0])
+    line_totals = {int(row.id): _offer_total_cents(_offer_line_db_rows(db, int(row.id))) for row in rows}
+    return templates.TemplateResponse(
+        "crm/offer_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            case_map=case_map,
+            customer_labels=customer_labels,
+            totals=line_totals,
+            offer_status_label=_offer_status_label,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.get("/crm/angebote/neu", response_class=HTMLResponse)
+def crm_offer_new_get(request: Request, user=Depends(require_admin), case_id: int = 0, customer_id: int = 0, db: Session = Depends(db_session)):
+    selected_case_id = int(case_id or 0)
+    selected_customer_id = int(customer_id or 0)
+    if selected_case_id > 0:
+        context = _crm_case_context(db, selected_case_id)
+        context_customer = (context.get("invoice_customer") or context.get("ordering_customer")) if context else None
+        if context_customer:
+            selected_customer_id = int(context_customer.id or 0)
+    return _render_offer_form(
+        request,
+        user=user,
+        db=db,
+        page_title="Angebot anlegen",
+        form_action="/crm/angebote/neu",
+        row=None,
+        form_data={},
+        form_errors={},
+        line_rows=_offer_line_rows([]),
+        selected_case_id=selected_case_id,
+        selected_customer_id=selected_customer_id,
+    )
+
+
+@app.post("/crm/angebote/neu")
+async def crm_offer_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    selected_case_id = _to_int(form.get("case_id"), 0)
+    selected_customer_id = _to_int(form.get("master_customer_id"), 0)
+    case_context = _crm_case_context(db, selected_case_id) if selected_case_id > 0 else {}
+    if selected_case_id > 0 and not db.get(CrmCase, selected_case_id):
+        form_errors["case_id"] = "Vorgang wurde nicht gefunden."
+    if selected_customer_id <= 0 and case_context:
+        context_customer = case_context.get("invoice_customer") or case_context.get("ordering_customer")
+        if context_customer:
+            selected_customer_id = int(context_customer.id or 0)
+    if selected_customer_id <= 0 or not db.get(MasterCustomer, selected_customer_id):
+        form_errors["master_customer_id"] = "Kunde ist erforderlich."
+    line_rows, line_errors, extra_product_ids = _parse_offer_line_input(db, form)
+    form_errors.update(line_errors)
+    if not line_rows:
+        form_errors["lines"] = "Mindestens eine Angebotsposition ist erforderlich."
+    if form_errors:
+        return _render_offer_form(
+            request,
+            user=user,
+            db=db,
+            page_title="Angebot anlegen",
+            form_action="/crm/angebote/neu",
+            row=None,
+            form_data=form_data,
+            form_errors=form_errors,
+            line_rows=_offer_line_rows([]) if not extra_product_ids else _offer_line_rows([]),
+            selected_case_id=selected_case_id,
+            selected_customer_id=selected_customer_id,
+        )
+    draft = OfferDraft(
+        case_id=selected_case_id or None,
+        master_customer_id=selected_customer_id or None,
+        ordering_party_assignment_id=int((case_context.get("ordering_role").id if case_context.get("ordering_role") else 0) or 0) or None,
+        service_location_assignment_id=int((case_context.get("service_role").id if case_context.get("service_role") else 0) or 0) or None,
+        invoice_recipient_assignment_id=int((case_context.get("invoice_role").id if case_context.get("invoice_role") else 0) or 0) or None,
+        status="prepared",
+        currency=str((_sevdesk_settings(db, include_secret=False).get("default_currency") or "EUR")),
+        note=str(form.get("note") or "").strip() or None,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(draft)
+    db.flush()
+    for entry in line_rows:
+        db.add(OfferDraftLine(offer_draft_id=int(draft.id), **entry))
+    db.commit()
+    _flash(request, "Angebot gespeichert.", "info")
+    return RedirectResponse(f"/crm/angebote/{int(draft.id)}", status_code=302)
+
+
+@app.get("/crm/angebote/{offer_id}", response_class=HTMLResponse)
+def crm_offer_detail(offer_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    row = db.get(OfferDraft, offer_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    lines = _offer_line_db_rows(db, int(offer_id))
+    crm_case = db.get(CrmCase, int(row.case_id)) if int(row.case_id or 0) > 0 else None
+    customer = db.get(MasterCustomer, int(row.master_customer_id)) if int(row.master_customer_id or 0) > 0 else None
+    external_link = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "sevdesk", ExternalLink.object_type == "offer_draft", ExternalLink.object_id == int(row.id))
+        .one_or_none()
+    )
+    return templates.TemplateResponse(
+        "crm/offer_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            lines=lines,
+            crm_case=crm_case,
+            customer=customer,
+            total_cents=_offer_total_cents(lines),
+            offer_status_label=_offer_status_label,
+            external_link=external_link,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.post("/crm/angebote/{offer_id}/sevdesk")
+def crm_offer_push_sevdesk(offer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(OfferDraft, offer_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    settings = _sevdesk_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not str(settings.get("api_token") or "").strip():
+        _flash(request, "sevDesk ist nicht vollständig konfiguriert.", "error")
+        return RedirectResponse(f"/crm/angebote/{offer_id}", status_code=302)
+    customer = db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None
+    if not customer:
+        _flash(request, "Kein Kunde am Angebot hinterlegt.", "error")
+        return RedirectResponse(f"/crm/angebote/{offer_id}", status_code=302)
+    lines = _offer_line_db_rows(db, int(row.id))
+    contact_id = _sevdesk_contact_id_for_customer(db, settings, customer)
+    payload = {
+        "orderType": "AN",
+        "status": "100",
+        "currency": str(row.currency or settings.get("default_currency") or "EUR"),
+        "contact": {"id": contact_id, "objectName": "Contact"},
+        "header": str((db.get(CrmCase, int(row.case_id)).case_no if int(row.case_id or 0) > 0 and db.get(CrmCase, int(row.case_id)) else f"AN-{int(row.id):04d}")),
+        "positions": _sevdesk_position_rows_from_offer(db, lines),
+        "note": str(row.note or ""),
+    }
+    try:
+        result = sevdesk_create_order(settings, payload)
+        order_id = sevdesk_extract_object_id(result) or sevdesk_first_value(result, ("id", "order", "orderId"))
+        order_number = sevdesk_first_value(result, ("orderNumber", "number", "documentNumber"))
+        row.sevdesk_order_id = order_id or None
+        row.sevdesk_order_number = order_number or None
+        row.sevdesk_status = sevdesk_first_value(result, ("status", "orderStatus")) or row.sevdesk_status
+        row.status = "pushed"
+        row.updated_at = _utcnow_naive()
+        db.add(row)
+        _upsert_external_link(
+            db,
+            system_name="sevdesk",
+            object_type="offer_draft",
+            object_id=int(row.id),
+            external_key=str(order_number or order_id or row.id),
+            external_row_id=str(order_id or "").strip() or None,
+            deep_link_url=sevdesk_build_api_url(_sevdesk_settings(db, include_secret=False), f"/Order/{order_id}") if order_id else None,
+        )
+        _crm_add_timeline_event(
+            db,
+            case_id=int(row.case_id or 0) or None,
+            master_customer_id=int(row.master_customer_id or 0) or None,
+            source_system="sevdesk",
+            event_type="offer_pushed",
+            title=f"Angebot in sevDesk angelegt: {order_number or order_id or row.id}",
+            body=None,
+            external_ref=f"sevdesk_order:{order_id or order_number}",
+            event_ts=_utcnow_naive(),
+        )
+        db.commit()
+        _flash(request, "Angebot in sevDesk angelegt.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"sevDesk-Export fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/crm/angebote/{offer_id}", status_code=302)
+
+
+@app.post("/crm/angebote/{offer_id}/senden")
+def crm_offer_send_sevdesk(offer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(OfferDraft, offer_id)
+    if not row or not str(row.sevdesk_order_id or "").strip():
+        _flash(request, "Angebot wurde noch nicht in sevDesk erzeugt.", "error")
+        return RedirectResponse(f"/crm/angebote/{offer_id}", status_code=302)
+    settings = _sevdesk_settings(db, include_secret=True)
+    try:
+        result = sevdesk_send_order(settings, str(row.sevdesk_order_id), {"sendType": "VPR"})
+        row.status = "sent"
+        row.sevdesk_status = sevdesk_first_value(result, ("status", "sendStatus")) or row.sevdesk_status
+        row.pdf_url_local = sevdesk_first_value(result, ("pdfUrl", "download", "url")) or row.pdf_url_local
+        row.sent_at = _utcnow_naive()
+        row.updated_at = _utcnow_naive()
+        db.add(row)
+        _crm_add_timeline_event(
+            db,
+            case_id=int(row.case_id or 0) or None,
+            master_customer_id=int(row.master_customer_id or 0) or None,
+            source_system="sevdesk",
+            event_type="offer_sent",
+            title=f"Angebot über sevDesk versendet: {row.sevdesk_order_number or row.sevdesk_order_id}",
+            body=None,
+            external_ref=f"sevdesk_order:{row.sevdesk_order_id}",
+            event_ts=_utcnow_naive(),
+        )
+        db.commit()
+        _flash(request, "Angebot in sevDesk versendet.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Versand fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/crm/angebote/{offer_id}", status_code=302)
+
+
+@app.get("/crm/rechnungen", response_class=HTMLResponse)
+def crm_invoice_list(request: Request, user=Depends(require_user), customer_id: int = 0, db: Session = Depends(db_session)):
+    query = db.query(InvoiceDraft)
+    if int(customer_id or 0) > 0:
+        query = query.filter(InvoiceDraft.master_customer_id == int(customer_id))
+    rows = query.order_by(InvoiceDraft.updated_at.desc(), InvoiceDraft.id.desc()).limit(240).all()
+    case_map = {int(row.id): row for row in db.query(CrmCase).filter(CrmCase.id.in_([int(item.case_id) for item in rows if int(item.case_id or 0) > 0])).all()} if rows else {}
+    customer_labels = _crm_customer_labels_map(db, [int(item.master_customer_id) for item in rows if int(item.master_customer_id or 0) > 0])
+    totals = {int(row.id): _invoice_draft_total_cents(_invoice_draft_db_rows(db, int(row.id))) for row in rows}
+    existing_case_ids = {int(row.case_id) for row in rows if int(row.case_id or 0) > 0}
+    candidate_cases = (
+        db.query(CrmCase)
+        .filter(CrmCase.status.in_(("completed", "in_progress", "planned")))
+        .order_by(CrmCase.updated_at.desc(), CrmCase.id.desc())
+        .limit(120)
+        .all()
+    )
+    candidate_cases = [row for row in candidate_cases if int(row.id) not in existing_case_ids][:20]
+    return templates.TemplateResponse(
+        "crm/invoice_candidates.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            case_map=case_map,
+            customer_labels=customer_labels,
+            totals=totals,
+            candidate_cases=candidate_cases,
+            invoice_draft_status_label=_invoice_draft_status_label,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.get("/crm/rechnungen/neu", response_class=HTMLResponse)
+def crm_invoice_new_get(
+    request: Request,
+    user=Depends(require_admin),
+    case_id: int = 0,
+    customer_id: int = 0,
+    offer_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    selected_case_id = int(case_id or 0)
+    selected_customer_id = int(customer_id or 0)
+    selected_offer_id = int(offer_id or 0)
+    line_rows = _invoice_draft_line_rows([])
+    form_data: dict[str, str | list[str]] = {"source_type": "manual"}
+    if selected_offer_id > 0:
+        offer = db.get(OfferDraft, selected_offer_id)
+        if offer:
+            selected_case_id = int(offer.case_id or 0)
+            selected_customer_id = int(offer.master_customer_id or 0)
+            line_rows = _invoice_draft_line_rows(
+                [
+                    InvoiceDraftLine(
+                        product_id=line.product_id,
+                        text=line.text,
+                        qty=line.qty,
+                        unit=line.unit,
+                        unit_price_net=line.unit_price_net,
+                        tax_rate=line.tax_rate,
+                    )
+                    for line in _offer_line_db_rows(db, int(offer.id))
+                ]
+            )
+            form_data["source_type"] = "converted_offer"
+    elif selected_case_id > 0:
+        context = _crm_case_context(db, selected_case_id)
+        if context:
+            context_customer = context.get("invoice_customer") or context.get("ordering_customer")
+            if context_customer:
+                selected_customer_id = int(context_customer.id or 0)
+            form_data["source_type"] = "outsmart_completed" if _crm_normalize_key(getattr(context.get("row"), "status", "")) == "completed" else "manual"
+    return _render_invoice_draft_form(
+        request,
+        user=user,
+        db=db,
+        page_title="Ausgangsrechnung anlegen",
+        form_action="/crm/rechnungen/neu",
+        row=None,
+        form_data=form_data,
+        form_errors={},
+        line_rows=line_rows,
+        selected_case_id=selected_case_id,
+        selected_customer_id=selected_customer_id,
+        selected_offer_id=selected_offer_id,
+    )
+
+
+@app.post("/crm/rechnungen/neu")
+async def crm_invoice_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    selected_case_id = _to_int(form.get("case_id"), 0)
+    selected_customer_id = _to_int(form.get("master_customer_id"), 0)
+    selected_offer_id = _to_int(form.get("offer_draft_id"), 0)
+    source_type = _crm_normalize_key(form.get("source_type")) or "manual"
+    if source_type not in ("manual", "outsmart_completed", "converted_offer"):
+        source_type = "manual"
+    case_context = _crm_case_context(db, selected_case_id) if selected_case_id > 0 else {}
+    if selected_customer_id <= 0 and case_context:
+        context_customer = case_context.get("invoice_customer") or case_context.get("ordering_customer")
+        if context_customer:
+            selected_customer_id = int(context_customer.id or 0)
+    if selected_customer_id <= 0 or not db.get(MasterCustomer, selected_customer_id):
+        form_errors["master_customer_id"] = "Kunde ist erforderlich."
+    if selected_case_id > 0 and not db.get(CrmCase, selected_case_id):
+        form_errors["case_id"] = "Vorgang wurde nicht gefunden."
+    if selected_offer_id > 0 and not db.get(OfferDraft, selected_offer_id):
+        form_errors["offer_draft_id"] = "Ausgewähltes Angebot wurde nicht gefunden."
+    try:
+        invoice_date = _parse_date_input(form.get("invoice_date"))
+        due_date = _parse_date_input(form.get("due_date"))
+    except ValueError as exc:
+        invoice_date = None
+        due_date = None
+        form_errors["invoice_date"] = str(exc)
+    line_rows, line_errors, extra_product_ids = _parse_invoice_draft_line_input(db, form)
+    form_errors.update(line_errors)
+    if not line_rows:
+        form_errors["lines"] = "Mindestens eine Rechnungsposition ist erforderlich."
+    if form_errors:
+        return _render_invoice_draft_form(
+            request,
+            user=user,
+            db=db,
+            page_title="Ausgangsrechnung anlegen",
+            form_action="/crm/rechnungen/neu",
+            row=None,
+            form_data=form_data,
+            form_errors=form_errors,
+            line_rows=_invoice_draft_line_rows([]),
+            selected_case_id=selected_case_id,
+            selected_customer_id=selected_customer_id,
+            selected_offer_id=selected_offer_id,
+        )
+    draft = InvoiceDraft(
+        case_id=selected_case_id or None,
+        master_customer_id=selected_customer_id or None,
+        invoice_recipient_assignment_id=int((case_context.get("invoice_role").id if case_context.get("invoice_role") else 0) or 0) or None,
+        source_type=source_type,
+        offer_draft_id=selected_offer_id or None,
+        status="prepared",
+        currency=str((_sevdesk_settings(db, include_secret=False).get("default_currency") or "EUR")),
+        invoice_date=invoice_date or _utcnow_naive(),
+        due_date=due_date,
+        note=str(form.get("note") or "").strip() or None,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(draft)
+    db.flush()
+    for entry in line_rows:
+        db.add(InvoiceDraftLine(invoice_draft_id=int(draft.id), **entry))
+    db.commit()
+    _flash(request, "Ausgangsrechnung gespeichert.", "info")
+    return RedirectResponse(f"/crm/rechnungen/{int(draft.id)}", status_code=302)
+
+
+@app.get("/crm/rechnungen/{invoice_id}", response_class=HTMLResponse)
+def crm_invoice_detail(invoice_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    row = db.get(InvoiceDraft, invoice_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    lines = _invoice_draft_db_rows(db, int(invoice_id))
+    crm_case = db.get(CrmCase, int(row.case_id)) if int(row.case_id or 0) > 0 else None
+    customer = db.get(MasterCustomer, int(row.master_customer_id)) if int(row.master_customer_id or 0) > 0 else None
+    external_link = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "sevdesk", ExternalLink.object_type == "invoice_draft", ExternalLink.object_id == int(row.id))
+        .one_or_none()
+    )
+    dunning_case = _ensure_dunning_case_for_invoice(db, row)
+    db.commit()
+    return templates.TemplateResponse(
+        "crm/invoice_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            lines=lines,
+            crm_case=crm_case,
+            customer=customer,
+            total_cents=_invoice_draft_total_cents(lines),
+            open_amount_cents=_invoice_draft_open_amount_cents(db, row),
+            invoice_draft_status_label=_invoice_draft_status_label,
+            external_link=external_link,
+            dunning_case=dunning_case,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.post("/crm/rechnungen/{invoice_id}/sevdesk")
+def crm_invoice_push_sevdesk(invoice_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(InvoiceDraft, invoice_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    settings = _sevdesk_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not str(settings.get("api_token") or "").strip():
+        _flash(request, "sevDesk ist nicht vollständig konfiguriert.", "error")
+        return RedirectResponse(f"/crm/rechnungen/{invoice_id}", status_code=302)
+    customer = db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None
+    if not customer:
+        _flash(request, "Kein Kunde an der Rechnung hinterlegt.", "error")
+        return RedirectResponse(f"/crm/rechnungen/{invoice_id}", status_code=302)
+    lines = _invoice_draft_db_rows(db, int(row.id))
+    contact_id = _sevdesk_contact_id_for_customer(db, settings, customer)
+    payload = {
+        "invoiceType": "RE",
+        "status": "100",
+        "currency": str(row.currency or settings.get("default_currency") or "EUR"),
+        "contact": {"id": contact_id, "objectName": "Contact"},
+        "header": str((db.get(CrmCase, int(row.case_id)).case_no if int(row.case_id or 0) > 0 and db.get(CrmCase, int(row.case_id)) else f"RE-{int(row.id):04d}")),
+        "invoiceDate": (row.invoice_date or _utcnow_naive()).date().isoformat(),
+        "dueDate": row.due_date.date().isoformat() if row.due_date else None,
+        "positions": _sevdesk_position_rows_from_invoice(db, lines),
+        "note": str(row.note or ""),
+    }
+    try:
+        result = sevdesk_create_invoice(settings, payload)
+        external_id = sevdesk_extract_object_id(result) or sevdesk_first_value(result, ("id", "invoiceId"))
+        invoice_number = sevdesk_first_value(result, ("invoiceNumber", "number", "documentNumber"))
+        row.sevdesk_invoice_id = external_id or None
+        row.sevdesk_invoice_number = invoice_number or None
+        row.sevdesk_status = sevdesk_first_value(result, ("status", "invoiceStatus")) or row.sevdesk_status
+        row.status = "pushed"
+        row.updated_at = _utcnow_naive()
+        db.add(row)
+        _upsert_external_link(
+            db,
+            system_name="sevdesk",
+            object_type="invoice_draft",
+            object_id=int(row.id),
+            external_key=str(invoice_number or external_id or row.id),
+            external_row_id=str(external_id or "").strip() or None,
+            deep_link_url=sevdesk_build_api_url(_sevdesk_settings(db, include_secret=False), f"/Invoice/{external_id}") if external_id else None,
+        )
+        _crm_add_timeline_event(
+            db,
+            case_id=int(row.case_id or 0) or None,
+            master_customer_id=int(row.master_customer_id or 0) or None,
+            source_system="sevdesk",
+            event_type="invoice_pushed",
+            title=f"Rechnung in sevDesk angelegt: {invoice_number or external_id or row.id}",
+            body=None,
+            external_ref=f"sevdesk_invoice:{external_id or invoice_number}",
+            event_ts=_utcnow_naive(),
+        )
+        _ensure_dunning_case_for_invoice(db, row)
+        db.commit()
+        _flash(request, "Rechnung in sevDesk angelegt.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"sevDesk-Export fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/crm/rechnungen/{invoice_id}", status_code=302)
+
+
+@app.post("/crm/rechnungen/{invoice_id}/senden")
+def crm_invoice_send_sevdesk(invoice_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(InvoiceDraft, invoice_id)
+    if not row or not str(row.sevdesk_invoice_id or "").strip():
+        _flash(request, "Rechnung wurde noch nicht in sevDesk erzeugt.", "error")
+        return RedirectResponse(f"/crm/rechnungen/{invoice_id}", status_code=302)
+    settings = _sevdesk_settings(db, include_secret=True)
+    try:
+        result = sevdesk_send_invoice(settings, str(row.sevdesk_invoice_id), {"sendType": "VPR"})
+        row.status = "sent"
+        row.sevdesk_status = sevdesk_first_value(result, ("status", "sendStatus")) or row.sevdesk_status
+        row.pdf_url_local = sevdesk_first_value(result, ("pdfUrl", "download", "url")) or row.pdf_url_local
+        row.sent_at = _utcnow_naive()
+        row.updated_at = _utcnow_naive()
+        db.add(row)
+        _ensure_dunning_case_for_invoice(db, row)
+        _crm_add_timeline_event(
+            db,
+            case_id=int(row.case_id or 0) or None,
+            master_customer_id=int(row.master_customer_id or 0) or None,
+            source_system="sevdesk",
+            event_type="invoice_sent",
+            title=f"Rechnung über sevDesk versendet: {row.sevdesk_invoice_number or row.sevdesk_invoice_id}",
+            body=None,
+            external_ref=f"sevdesk_invoice:{row.sevdesk_invoice_id}",
+            event_ts=_utcnow_naive(),
+        )
+        db.commit()
+        _flash(request, "Rechnung in sevDesk versendet.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Versand fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/crm/rechnungen/{invoice_id}", status_code=302)
+
+
+@app.get("/einkauf/voucher", response_class=HTMLResponse)
+def einkauf_voucher_list(request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    rows = db.query(IncomingVoucherDraft).order_by(IncomingVoucherDraft.updated_at.desc(), IncomingVoucherDraft.id.desc()).limit(240).all()
+    supplier_map = {int(row.id): row for row in _active_suppliers(db)}
+    invoice_map = {int(row.id): row for row in db.query(PurchaseInvoice).filter(PurchaseInvoice.id.in_([int(item.purchase_invoice_id) for item in rows if int(item.purchase_invoice_id or 0) > 0])).all()} if rows else {}
+    return templates.TemplateResponse(
+        "einkauf/voucher_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            supplier_map=supplier_map,
+            invoice_map=invoice_map,
+            incoming_voucher_status_label=_incoming_voucher_status_label,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.get("/einkauf/voucher/vorbereiten", response_class=HTMLResponse)
+def einkauf_voucher_prepare_get(
+    request: Request,
+    user=Depends(require_admin),
+    purchase_invoice_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    selected_purchase_invoice_id = int(purchase_invoice_id or 0)
+    selected_supplier_id = 0
+    form_data: dict[str, str | list[str]] = {}
+    line_rows = _voucher_line_rows([])
+    if selected_purchase_invoice_id > 0:
+        invoice = db.get(PurchaseInvoice, selected_purchase_invoice_id)
+        if invoice:
+            selected_supplier_id = int(invoice.supplier_id or 0)
+            form_data = {
+                "description": str(invoice.invoice_no or ""),
+                "voucher_date": _coerce_date_value((invoice.invoice_date or _utcnow_naive()).date().isoformat()),
+                "due_date": _coerce_date_value(invoice.due_date.date().isoformat()) if invoice.due_date else "",
+                "net_total": _format_eur(invoice.net_total).replace(" €", "") if invoice.net_total is not None else "",
+                "tax_total": _format_eur(invoice.tax_total).replace(" €", "") if invoice.tax_total is not None else "",
+                "gross_total": _format_eur(invoice.gross_total).replace(" €", "") if invoice.gross_total is not None else "",
+            }
+            line_rows = [
+                {
+                    "account_datev_id": "",
+                    "tax_rule_id": "",
+                    "tax_rate": "19",
+                    "sum_net": _format_eur(invoice.net_total).replace(" €", "") if invoice.net_total is not None else "",
+                    "sum_gross": _format_eur(invoice.gross_total).replace(" €", "") if invoice.gross_total is not None else "",
+                    "comment": str(invoice.invoice_no or ""),
+                    "cost_center_id": "",
+                }
+            ]
+            while len(line_rows) < 4:
+                line_rows.append({"account_datev_id": "", "tax_rule_id": "", "tax_rate": "19", "sum_net": "", "sum_gross": "", "comment": "", "cost_center_id": ""})
+    return _render_voucher_prepare(
+        request,
+        user=user,
+        db=db,
+        page_title="Voucher vorbereiten",
+        form_action="/einkauf/voucher/vorbereiten",
+        row=None,
+        form_data=form_data,
+        form_errors={},
+        line_rows=line_rows,
+        selected_purchase_invoice_id=selected_purchase_invoice_id,
+        selected_supplier_id=selected_supplier_id,
+    )
+
+
+@app.post("/einkauf/voucher/vorbereiten")
+async def einkauf_voucher_prepare_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    selected_purchase_invoice_id = _to_int(form.get("purchase_invoice_id"), 0)
+    selected_supplier_id = _to_int(form.get("supplier_id"), 0)
+    selected_purchase_order_id = _to_int(form.get("purchase_order_id"), 0)
+    selected_goods_receipt_id = _to_int(form.get("goods_receipt_id"), 0)
+    if selected_purchase_invoice_id > 0:
+        invoice = db.get(PurchaseInvoice, selected_purchase_invoice_id)
+        if invoice and selected_supplier_id <= 0:
+            selected_supplier_id = int(invoice.supplier_id or 0)
+    if selected_supplier_id <= 0 or not db.get(Supplier, selected_supplier_id):
+        form_errors["supplier_id"] = "Lieferant ist erforderlich."
+    try:
+        voucher_date = _parse_date_input(form.get("voucher_date"))
+        due_date = _parse_date_input(form.get("due_date"))
+        net_total = _parse_eur_to_cents(form.get("net_total"), "Netto")
+        tax_total = _parse_eur_to_cents(form.get("tax_total"), "Steuer")
+        gross_total = _parse_eur_to_cents(form.get("gross_total"), "Brutto")
+    except ValueError as exc:
+        voucher_date = None
+        due_date = None
+        net_total = tax_total = gross_total = None
+        form_errors["totals"] = str(exc)
+    line_rows, line_errors = _parse_voucher_line_input(form)
+    form_errors.update(line_errors)
+    if not line_rows:
+        form_errors["lines"] = "Mindestens eine Voucher-Zeile ist erforderlich."
+    if form_errors:
+        return _render_voucher_prepare(
+            request,
+            user=user,
+            db=db,
+            page_title="Voucher vorbereiten",
+            form_action="/einkauf/voucher/vorbereiten",
+            row=None,
+            form_data=form_data,
+            form_errors=form_errors,
+            line_rows=_voucher_line_rows([]),
+            selected_purchase_invoice_id=selected_purchase_invoice_id,
+            selected_supplier_id=selected_supplier_id,
+        )
+    draft = IncomingVoucherDraft(
+        supplier_id=int(selected_supplier_id),
+        purchase_invoice_id=selected_purchase_invoice_id or None,
+        purchase_order_id=selected_purchase_order_id or None,
+        goods_receipt_id=selected_goods_receipt_id or None,
+        linked_document_id=str(form.get("linked_document_id") or "").strip() or None,
+        paperless_document_id=str(form.get("paperless_document_id") or "").strip() or None,
+        status="prepared",
+        description=str(form.get("description") or "").strip() or None,
+        voucher_date=voucher_date or _utcnow_naive(),
+        due_date=due_date,
+        net_total=net_total,
+        tax_total=tax_total,
+        gross_total=gross_total,
+        currency=str(form.get("currency") or _sevdesk_settings(db, include_secret=False).get("default_currency") or "EUR"),
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(draft)
+    db.flush()
+    for entry in line_rows:
+        db.add(IncomingVoucherDraftLine(incoming_voucher_draft_id=int(draft.id), **entry))
+    db.commit()
+    _flash(request, "Voucher-Entwurf gespeichert.", "info")
+    return RedirectResponse(f"/einkauf/voucher/{int(draft.id)}", status_code=302)
+
+
+@app.get("/einkauf/voucher/{voucher_id}", response_class=HTMLResponse)
+def einkauf_voucher_detail(voucher_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    row = db.get(IncomingVoucherDraft, voucher_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    lines = _voucher_line_db_rows(db, int(voucher_id))
+    supplier = db.get(Supplier, int(row.supplier_id))
+    purchase_invoice = db.get(PurchaseInvoice, int(row.purchase_invoice_id or 0)) if int(row.purchase_invoice_id or 0) > 0 else None
+    external_link = (
+        db.query(ExternalLink)
+        .filter(ExternalLink.system_name == "sevdesk", ExternalLink.object_type == "incoming_voucher_draft", ExternalLink.object_id == int(row.id))
+        .one_or_none()
+    )
+    return templates.TemplateResponse(
+        "einkauf/voucher_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            lines=lines,
+            supplier=supplier,
+            purchase_invoice=purchase_invoice,
+            incoming_voucher_status_label=_incoming_voucher_status_label,
+            external_link=external_link,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.post("/einkauf/voucher/{voucher_id}/sevdesk")
+def einkauf_voucher_push_sevdesk(voucher_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(IncomingVoucherDraft, voucher_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    settings = _sevdesk_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not str(settings.get("api_token") or "").strip():
+        _flash(request, "sevDesk ist nicht vollständig konfiguriert.", "error")
+        return RedirectResponse(f"/einkauf/voucher/{voucher_id}", status_code=302)
+    supplier = db.get(Supplier, int(row.supplier_id))
+    if not supplier:
+        _flash(request, "Lieferant fehlt am Voucher.", "error")
+        return RedirectResponse(f"/einkauf/voucher/{voucher_id}", status_code=302)
+    contact_id = _sevdesk_contact_id_for_supplier(db, settings, supplier)
+    payload = {
+        "voucherType": "VOU",
+        "creditDebit": "C",
+        "contact": {"id": contact_id, "objectName": "Contact"},
+        "currency": str(row.currency or settings.get("default_currency") or "EUR"),
+        "voucherDate": (row.voucher_date or _utcnow_naive()).date().isoformat(),
+        "dueDate": row.due_date.date().isoformat() if row.due_date else None,
+        "description": str(row.description or ""),
+        "sumNet": round(float(row.net_total or 0) / 100.0, 2) if row.net_total is not None else None,
+        "sumTax": round(float(row.tax_total or 0) / 100.0, 2) if row.tax_total is not None else None,
+        "sumGross": round(float(row.gross_total or 0) / 100.0, 2) if row.gross_total is not None else None,
+        "positions": _sevdesk_voucher_rows(_voucher_line_db_rows(db, int(row.id))),
+        "paperlessDocumentId": str(row.paperless_document_id or ""),
+    }
+    try:
+        result = sevdesk_create_voucher(settings, payload)
+        external_id = sevdesk_extract_object_id(result) or sevdesk_first_value(result, ("id", "voucherId"))
+        row.sevdesk_voucher_id = external_id or None
+        row.sevdesk_voucher_status = sevdesk_first_value(result, ("status", "voucherStatus")) or row.sevdesk_voucher_status
+        row.status = "pushed"
+        row.updated_at = _utcnow_naive()
+        db.add(row)
+        _upsert_external_link(
+            db,
+            system_name="sevdesk",
+            object_type="incoming_voucher_draft",
+            object_id=int(row.id),
+            external_key=str(external_id or row.id),
+            external_row_id=str(external_id or "").strip() or None,
+            deep_link_url=sevdesk_build_api_url(_sevdesk_settings(db, include_secret=False), f"/Voucher/{external_id}") if external_id else None,
+        )
+        db.commit()
+        _flash(request, "Voucher in sevDesk angelegt.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"sevDesk-Export fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/einkauf/voucher/{voucher_id}", status_code=302)
+
+
+@app.get("/finanzen/zahlungen", response_class=HTMLResponse)
+def finance_payments_dashboard(request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    outgoing = (
+        db.query(InvoiceDraft)
+        .filter(InvoiceDraft.status.in_(("sent", "pushed", "partially_paid")))
+        .order_by(InvoiceDraft.due_date.asc(), InvoiceDraft.id.desc())
+        .limit(80)
+        .all()
+    )
+    incoming = (
+        db.query(IncomingVoucherDraft)
+        .filter(IncomingVoucherDraft.status.in_(("prepared", "pushed", "booked")))
+        .order_by(IncomingVoucherDraft.due_date.asc(), IncomingVoucherDraft.id.desc())
+        .limit(80)
+        .all()
+    )
+    customer_labels = _crm_customer_labels_map(db, [int(row.master_customer_id) for row in outgoing if int(row.master_customer_id or 0) > 0])
+    supplier_map = {int(row.id): row for row in _active_suppliers(db)}
+    return templates.TemplateResponse(
+        "finance/reconciliation_dashboard.html",
+        _ctx(
+            request,
+            user=user,
+            focus="payments",
+            open_invoice_drafts=[
+                {"row": row, "customer_label": customer_labels.get(int(row.master_customer_id), "-"), "open_amount": _invoice_draft_open_amount_cents(db, row)}
+                for row in outgoing
+            ],
+            open_voucher_drafts=[{"row": row, "supplier": supplier_map.get(int(row.supplier_id)), "open_amount": int(row.gross_total or 0)} for row in incoming],
+            check_accounts=[],
+            transactions=[],
+            selected_check_account_id="",
+            search="",
+            date_from="",
+            date_to="",
+            format_date=_format_date_local,
+            invoice_draft_status_label=_invoice_draft_status_label,
+            incoming_voucher_status_label=_incoming_voucher_status_label,
+        ),
+    )
+
+
+@app.get("/finanzen/zahlungen/vorbereiten", response_class=HTMLResponse)
+def finance_payment_prepare_get(
+    request: Request,
+    user=Depends(require_admin),
+    target_type: str = "",
+    target_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    settings = _sevdesk_settings(db, include_secret=True)
+    check_accounts = sevdesk_get_check_accounts(settings) if bool(settings.get("enabled")) and bool(settings.get("api_token")) else []
+    target_type_norm = _crm_normalize_key(target_type)
+    target = None
+    target_label = ""
+    amount_cents = 0
+    sevdesk_object_id = ""
+    if target_type_norm == "invoice_draft":
+        target = db.get(InvoiceDraft, target_id)
+        if target:
+            target_label = _invoice_draft_reference_label(target)
+            amount_cents = _invoice_draft_open_amount_cents(db, target)
+            sevdesk_object_id = str(target.sevdesk_invoice_id or "")
+    elif target_type_norm == "voucher":
+        target = db.get(IncomingVoucherDraft, target_id)
+        if target:
+            target_label = str(target.description or target.sevdesk_voucher_id or f"Voucher {int(target.id)}")
+            amount_cents = int(target.gross_total or 0)
+            sevdesk_object_id = str(target.sevdesk_voucher_id or "")
+    if not target:
+        raise HTTPException(status_code=404)
+    transactions = []
+    if check_accounts and amount_cents:
+        try:
+            transactions = sevdesk_get_transactions(settings, amount=str(round(float(amount_cents) / 100.0, 2)), limit=20)
+        except Exception as exc:
+            _flash(request, f"Transaktionen konnten nicht geladen werden: {exc}", "error")
+    return templates.TemplateResponse(
+        "einkauf/payment_prepare.html",
+        _ctx(
+            request,
+            user=user,
+            target_type=target_type_norm,
+            target=target,
+            target_label=target_label,
+            sevdesk_object_id=sevdesk_object_id,
+            amount_cents=amount_cents,
+            check_accounts=check_accounts,
+            transactions=transactions,
+            booking_type_choices=SEVDESK_PAYMENT_TYPE_CHOICES,
+            sevdesk_payment_type_label=_sevdesk_payment_type_label,
+            booking_date_value=_utcnow_naive().date().isoformat(),
+        ),
+    )
+
+
+@app.post("/finanzen/zahlungen/vorbereiten")
+async def finance_payment_prepare_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    target_type_norm = _crm_normalize_key(form.get("target_type"))
+    target_id = _to_int(form.get("target_id"), 0)
+    settings = _sevdesk_settings(db, include_secret=True)
+    if target_type_norm == "invoice_draft":
+        row = db.get(InvoiceDraft, target_id)
+        if not row:
+            raise HTTPException(status_code=404)
+        external_id = str(row.sevdesk_invoice_id or "").strip()
+        if not external_id:
+            _flash(request, "Rechnung ist noch nicht mit sevDesk verknüpft.", "error")
+            return RedirectResponse(f"/crm/rechnungen/{target_id}", status_code=302)
+    elif target_type_norm == "voucher":
+        row = db.get(IncomingVoucherDraft, target_id)
+        if not row:
+            raise HTTPException(status_code=404)
+        external_id = str(row.sevdesk_voucher_id or "").strip()
+        if not external_id:
+            _flash(request, "Voucher ist noch nicht mit sevDesk verknüpft.", "error")
+            return RedirectResponse(f"/einkauf/voucher/{target_id}", status_code=302)
+    else:
+        raise HTTPException(status_code=404)
+    check_account_id = str(form.get("check_account_id") or "").strip()
+    if not check_account_id:
+        _flash(request, "Bitte ein Konto wählen.", "error")
+        return RedirectResponse(f"/finanzen/zahlungen/vorbereiten?target_type={quote(target_type_norm)}&target_id={target_id}", status_code=302)
+    try:
+        amount_cents = _parse_eur_to_cents(form.get("amount"), "Betrag") or 0
+        booking_date = _parse_date_input(form.get("booking_date"))
+    except ValueError as exc:
+        _flash(request, str(exc), "error")
+        return RedirectResponse(f"/finanzen/zahlungen/vorbereiten?target_type={quote(target_type_norm)}&target_id={target_id}", status_code=302)
+    booking_type = str(form.get("booking_type") or "FULL_PAYMENT").strip().upper() or "FULL_PAYMENT"
+    transaction_id = str(form.get("transaction_id") or "").strip()
+    payload = _sevdesk_payment_payload(
+        check_account_id=check_account_id,
+        booking_date=booking_date,
+        amount_cents=amount_cents,
+        booking_type=booking_type,
+        transaction_id=transaction_id,
+    )
+    try:
+        if target_type_norm == "invoice_draft":
+            result = sevdesk_book_invoice(settings, external_id, payload)
+            row.status = "paid" if booking_type == "FULL_PAYMENT" else "partially_paid"
+            _ensure_dunning_case_for_invoice(db, row)
+            _crm_add_timeline_event(
+                db,
+                case_id=int(row.case_id or 0) or None,
+                master_customer_id=int(row.master_customer_id or 0) or None,
+                source_system="sevdesk",
+                event_type="invoice_payment",
+                title=f"Zahlung auf Rechnung angestoßen: {_invoice_draft_reference_label(row)}",
+                body=f"Betrag: {_format_eur(amount_cents)} | Typ: {_sevdesk_payment_type_label(booking_type)}",
+                external_ref=f"sevdesk_invoice:{external_id}",
+                event_ts=_utcnow_naive(),
+            )
+            db.add(row)
+            target_url = f"/crm/rechnungen/{int(row.id)}"
+        else:
+            result = sevdesk_book_voucher(settings, external_id, payload)
+            row.status = "paid" if booking_type == "FULL_PAYMENT" else "booked"
+            db.add(row)
+            target_url = f"/einkauf/voucher/{int(row.id)}"
+        db.commit()
+        _flash(request, f"Zahlung in sevDesk angestoßen. {sevdesk_first_value(result, ('status', 'result', 'message')) or ''}".strip(), "info")
+        return RedirectResponse(target_url, status_code=302)
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Zahlung fehlgeschlagen: {exc}", "error")
+        return RedirectResponse(f"/finanzen/zahlungen/vorbereiten?target_type={quote(target_type_norm)}&target_id={target_id}", status_code=302)
+
+
+@app.get("/finanzen/abgleich", response_class=HTMLResponse)
+def finance_reconciliation_dashboard(
+    request: Request,
+    user=Depends(require_user),
+    check_account_id: str = "",
+    q: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    db: Session = Depends(db_session),
+):
+    settings = _sevdesk_settings(db, include_secret=True)
+    check_accounts: list[dict] = []
+    transactions: list[dict] = []
+    if bool(settings.get("enabled")) and bool(settings.get("api_token")):
+        try:
+            check_accounts = sevdesk_get_check_accounts(settings)
+            transactions = sevdesk_get_transactions(
+                settings,
+                check_account_id=check_account_id or None,
+                start_date=str(date_from or "").strip(),
+                end_date=str(date_to or "").strip(),
+                search=str(q or "").strip(),
+                limit=80,
+            )
+        except Exception as exc:
+            _flash(request, f"sevDesk-Abgleich konnte nicht geladen werden: {exc}", "error")
+    outgoing = (
+        db.query(InvoiceDraft)
+        .filter(InvoiceDraft.status.in_(("sent", "pushed", "partially_paid")))
+        .order_by(InvoiceDraft.due_date.asc(), InvoiceDraft.id.desc())
+        .limit(80)
+        .all()
+    )
+    incoming = (
+        db.query(IncomingVoucherDraft)
+        .filter(IncomingVoucherDraft.status.in_(("prepared", "pushed", "booked")))
+        .order_by(IncomingVoucherDraft.due_date.asc(), IncomingVoucherDraft.id.desc())
+        .limit(80)
+        .all()
+    )
+    customer_labels = _crm_customer_labels_map(db, [int(row.master_customer_id) for row in outgoing if int(row.master_customer_id or 0) > 0])
+    supplier_map = {int(row.id): row for row in _active_suppliers(db)}
+    tx_rows = []
+    for tx in transactions:
+        amount_cents = _sevdesk_transaction_amount_cents(tx)
+        tx_rows.append(
+            {
+                "row": tx,
+                "amount_cents": amount_cents,
+                "candidates": _reconciliation_candidate_rows(db, amount_cents),
+                "tx_id": sevdesk_first_value(tx, ("id", "ID")),
+            }
+        )
+    return templates.TemplateResponse(
+        "finance/reconciliation_dashboard.html",
+        _ctx(
+            request,
+            user=user,
+            focus="reconciliation",
+            check_accounts=check_accounts,
+            transactions=tx_rows,
+            selected_check_account_id=str(check_account_id or ""),
+            search=str(q or "").strip(),
+            date_from=str(date_from or "").strip(),
+            date_to=str(date_to or "").strip(),
+            open_invoice_drafts=[
+                {"row": row, "customer_label": customer_labels.get(int(row.master_customer_id), "-"), "open_amount": _invoice_draft_open_amount_cents(db, row)}
+                for row in outgoing
+            ],
+            open_voucher_drafts=[{"row": row, "supplier": supplier_map.get(int(row.supplier_id)), "open_amount": int(row.gross_total or 0)} for row in incoming],
+            format_date=_format_date_local,
+            invoice_draft_status_label=_invoice_draft_status_label,
+            incoming_voucher_status_label=_incoming_voucher_status_label,
+        ),
+    )
+
+
+@app.get("/finanzen/transaktionen/{tx_id}", response_class=HTMLResponse)
+def finance_transaction_detail(tx_id: str, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    settings = _sevdesk_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not bool(settings.get("api_token")):
+        raise HTTPException(status_code=404)
+    try:
+        tx_rows = sevdesk_get_transactions(settings, limit=120)
+    except Exception as exc:
+        _flash(request, f"Transaktionsdetail konnte nicht geladen werden: {exc}", "error")
+        raise HTTPException(status_code=404)
+    tx = next((row for row in tx_rows if sevdesk_first_value(row, ("id", "ID")) == str(tx_id)), None)
+    if not tx:
+        raise HTTPException(status_code=404)
+    amount_cents = _sevdesk_transaction_amount_cents(tx)
+    candidates = _reconciliation_candidate_rows(db, amount_cents)
+    return templates.TemplateResponse(
+        "finance/transaction_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=tx,
+            amount_cents=amount_cents,
+            candidates=candidates,
+        ),
+    )
+
+
+@app.get("/crm/mahnfaelle", response_class=HTMLResponse)
+def crm_dunning_list(request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    rows = _dunning_rows(db)
+    db.commit()
+    return templates.TemplateResponse(
+        "crm/dunning_list.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            dunning_status_label=_dunning_status_label,
+            invoice_draft_status_label=_invoice_draft_status_label,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.get("/crm/mahnfaelle/{dunning_id}", response_class=HTMLResponse)
+def crm_dunning_detail(dunning_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    row = db.get(DunningCase, dunning_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    invoice = db.get(InvoiceDraft, int(row.invoice_draft_id or 0)) if int(row.invoice_draft_id or 0) > 0 else None
+    customer = db.get(MasterCustomer, int(row.customer_id))
+    actions = (
+        db.query(DunningAction)
+        .filter(DunningAction.dunning_case_id == int(row.id))
+        .order_by(DunningAction.created_at.desc(), DunningAction.id.desc())
+        .all()
+    )
+    return templates.TemplateResponse(
+        "crm/dunning_detail.html",
+        _ctx(
+            request,
+            user=user,
+            row=row,
+            invoice=invoice,
+            customer=customer,
+            actions=actions,
+            dunning_status_label=_dunning_status_label,
+            invoice_draft_status_label=_invoice_draft_status_label,
+            format_date=_format_date_local,
+        ),
+    )
+
+
+@app.post("/crm/mahnfaelle/{dunning_id}/stufe")
+async def crm_dunning_escalate(dunning_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(DunningCase, dunning_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    note = str(form.get("note") or "").strip()
+    row.current_level = max(1, int(row.current_level or 1) + 1)
+    row.status = "escalated" if row.current_level >= 2 else "waiting"
+    row.next_action_at = _utcnow_naive() + dt.timedelta(days=7)
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    db.add(
+        DunningAction(
+            dunning_case_id=int(row.id),
+            level=int(row.current_level),
+            action_type="note",
+            status="done",
+            note=note or f"Mahnstufe {int(row.current_level)} gesetzt.",
+            created_at=_utcnow_naive(),
+        )
+    )
+    db.commit()
+    _flash(request, "Mahnstufe erhöht.", "info")
+    return RedirectResponse(f"/crm/mahnfaelle/{dunning_id}", status_code=302)
+
+
+@app.get("/crm/mahnfaelle/{dunning_id}/mail")
+def crm_dunning_prepare_mail(dunning_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(DunningCase, dunning_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    invoice = db.get(InvoiceDraft, int(row.invoice_draft_id or 0)) if int(row.invoice_draft_id or 0) > 0 else None
+    customer = db.get(MasterCustomer, int(row.customer_id))
+    if not invoice or not customer:
+        raise HTTPException(status_code=404)
+    template_key = "mahnung_stufe_2" if int(row.current_level or 1) >= 2 else "mahnung_stufe_1"
+    subject = f"{'2. Mahnung' if int(row.current_level or 1) >= 2 else 'Zahlungserinnerung'} {_invoice_draft_reference_label(invoice)}"
+    body_text = (
+        f"Guten Tag,\\n\\nbitte prüfen Sie die offene Rechnung {_invoice_draft_reference_label(invoice)} "
+        f"über {_format_eur(_invoice_draft_open_amount_cents(db, invoice))}.\\n\\nViele Grüße"
+    )
+    row.last_contact_at = _utcnow_naive()
+    row.next_action_at = _utcnow_naive() + dt.timedelta(days=7)
+    row.status = "waiting"
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    db.add(
+        DunningAction(
+            dunning_case_id=int(row.id),
+            level=int(row.current_level or 1),
+            action_type="email",
+            status="prepared",
+            note=f"Mailvorbereitung für Mahnstufe {int(row.current_level or 1)}.",
+            created_at=_utcnow_naive(),
+        )
+    )
+    db.commit()
+    params = {
+        "customer_id": str(int(customer.id)),
+        "case_id": str(int(invoice.case_id or 0) or ""),
+        "invoice_draft_id": str(int(invoice.id)),
+        "template_key": template_key,
+        "subject": subject,
+        "body_text": body_text,
+    }
+    return RedirectResponse(f"/mail/verfassen?{urlencode(params)}", status_code=302)
+
+
+@app.get("/finanzen/datev", response_class=HTMLResponse)
+def finance_datev_dashboard(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    settings = _sevdesk_settings(db, include_secret=False)
+    return templates.TemplateResponse(
+        "finance/datev_dashboard.html",
+        _ctx(
+            request,
+            user=user,
+            settings=settings,
+            export_config=_sevdesk_export_config(db),
+            export_jobs=_sevdesk_export_jobs(db),
+        ),
+    )
+
+
+@app.post("/finanzen/datev")
+async def finance_datev_dashboard_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    action = _crm_normalize_key(form.get("action")) or "config"
+    settings = _sevdesk_settings(db, include_secret=True)
+    try:
+        if action == "config":
+            payload = {
+                "accountingYearBegin": str(form.get("accounting_year_begin") or "").strip(),
+                "enshrinedOnly": form.get("enshrined_only") == "on",
+            }
+            result = sevdesk_update_export_config(settings, payload)
+            _system_setting_set(db, SEVDESK_SETTING_EXPORT_CONFIG_JSON, json.dumps(payload, ensure_ascii=False))
+            if sevdesk_get_bookkeeping_system_version(settings):
+                _system_setting_set(db, SEVDESK_SETTING_BOOKKEEPING_SYSTEM_VERSION, sevdesk_get_bookkeeping_system_version(settings))
+            _flash(request, f"DATEV-Konfiguration gespeichert. {sevdesk_first_value(result, ('status', 'message')) or ''}".strip(), "info")
+        else:
+            payload = {"from": str(form.get("date_from") or "").strip(), "to": str(form.get("date_to") or "").strip()}
+            result = sevdesk_create_datev_csv_export_job(settings, payload) if action == "csv" else sevdesk_create_datev_xml_export_job(settings, payload)
+            job_id = sevdesk_extract_object_id(result) or sevdesk_first_value(result, ("jobId", "id"))
+            download_hash = ""
+            progress = {}
+            download_info = {}
+            if job_id:
+                try:
+                    hash_payload = sevdesk_generate_download_hash(settings, job_id)
+                    download_hash = sevdesk_first_value(hash_payload, ("downloadHash", "hash"))
+                except Exception:
+                    download_hash = ""
+                try:
+                    progress = sevdesk_get_export_progress(settings, job_id)
+                except Exception:
+                    progress = {}
+                try:
+                    download_info = sevdesk_get_job_download_info(settings, job_id)
+                except Exception:
+                    download_info = {}
+            _sevdesk_store_export_job(
+                db,
+                {
+                    "action": action,
+                    "job_id": job_id,
+                    "created_at": _utcnow_naive().isoformat(),
+                    "payload": payload,
+                    "progress": progress,
+                    "download_hash": download_hash,
+                    "download_info": download_info,
+                },
+            )
+            _flash(request, "DATEV-Export in sevDesk angestoßen.", "info")
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"DATEV-Aktion fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/finanzen/datev", status_code=302)
+
+
+@app.post("/crm/kunden/{customer_id}/sevdesk/verknuepfen")
+async def crm_customer_sevdesk_link(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    external_id = str(form.get("external_id") or "").strip()
+    external_key = str(form.get("external_key") or external_id).strip()
+    external_type = str(form.get("external_type") or "contact").strip() or "contact"
+    note = str(form.get("note") or "").strip() or None
+    is_primary = form.get("is_primary") == "on"
+    if not external_key:
+        _flash(request, "sevDesk-Kontakt konnte nicht gelesen werden.", "error")
+        return RedirectResponse(f"/crm/kunden/{customer_id}", status_code=302)
+    _sevdesk_upsert_customer_identity(
+        db,
+        customer_id=int(customer.id),
+        external_type=external_type,
+        external_key=external_key,
+        external_id=external_id or None,
+        is_primary=is_primary,
+        note=note,
+    )
+    if external_type == "contact":
+        customer_number = str(form.get("customer_number") or "").strip()
+        if customer_number:
+            _sevdesk_upsert_customer_identity(
+                db,
+                customer_id=int(customer.id),
+                external_type="customernumber",
+                external_key=customer_number,
+                external_id=external_id or None,
+                is_primary=False,
+            )
+    db.commit()
+    _flash(request, "sevDesk-Kontakt verknüpft.", "info")
+    return RedirectResponse(f"/crm/kunden/{customer_id}", status_code=302)
 
 
 @app.get("/settings/backup", response_class=HTMLResponse)

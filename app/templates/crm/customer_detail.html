@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{{ customer.customer_no_internal }}: {{ party.display_name }}</h1>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap;">
+    {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+    {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/adressen/neu">Adresse hinzufügen</a>{% endif %}
+    {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/standorte/neu">Standort hinzufügen</a>{% endif %}
+    {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/kontaktpersonen/neu">Kontaktperson hinzufügen</a>{% endif %}
+    <a class="btn" href="/crm/kunden/{{ customer.id }}/objekte">Objekte / Geräte</a>
+    <a class="btn" href="/crm/angebote?customer_id={{ customer.id }}">Angebote</a>
+    <a class="btn" href="/crm/rechnungen?customer_id={{ customer.id }}">Rechnungen</a>
+    <a class="btn" href="/crm/mahnfaelle">Mahnwesen</a>
+    <a class="btn" href="/mail/verfassen?customer_id={{ customer.id }}">Mail verfassen</a>
+    <a class="btn" href="/crm/dokumente/upload?object_type=customer&object_id={{ customer.id }}">Dokument hochladen</a>
+    <a class="btn" href="/crm/dokumente">Dokumenten-Inbox</a>
+    {% if role_flags.is_admin and outsmart_enabled %}<form method="post" action="/crm/kunden/{{ customer.id }}/outsmart/synchronisieren" class="inline"><button class="btn" type="submit">Nach OutSmart synchronisieren</button></form>{% endif %}
+    {% if outsmart_relation_link and outsmart_relation_link.deep_link_url %}<a class="btn" href="{{ outsmart_relation_link.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}
+    <a class="btn" href="/crm/kunden">Zurück zur Liste</a>
+  </div>
+
+  <div class="grid2">
+    <div class="box">
+      <div class="box-title">Stammdaten</div>
+      <div class="box-body">
+        <div><b>Status:</b> {{ crm_customer_status_label(customer.status) }}</div>
+        <div><b>Kundentyp:</b> {{ crm_party_type_label(party.party_type) }}</div>
+        <div><b>Vorname:</b> {{ party.first_name or '-' }}</div>
+        <div><b>Nachname:</b> {{ party.last_name or '-' }}</div>
+        <div><b>Aktiv:</b> {{ 'Ja' if party.active else 'Nein' }}</div>
+        <div><b>Notiz:</b> {{ customer.note or party.note or '-' }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Standardadresse</div>
+      <div class="box-body">
+        {% if default_address %}
+          <div>{{ default_address.label or 'Adresse' }}</div>
+          <div>{{ default_address.street or '' }} {{ default_address.house_no or '' }}</div>
+          <div>{{ default_address.zip_code or '' }} {{ default_address.city or '' }}</div>
+          <div>{{ default_address.country_code or 'DE' }}</div>
+          <div><b>E-Mail:</b> {{ default_address.email or '-' }}</div>
+          <div><b>Telefon:</b> {{ default_address.phone or '-' }}</div>
+        {% else %}
+          <div class="muted">Keine Standardadresse gepflegt.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Adressen</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 1.1fr 1.4fr 1fr 160px 160px;">
+          <div>Bezeichnung</div>
+          <div>Anschrift</div>
+          <div>Kontakt</div>
+          <div>Status</div>
+          <div>Aktionen</div>
+        </div>
+        {% for address in addresses %}
+          <div class="tr" style="grid-template-columns: 1.1fr 1.4fr 1fr 160px 160px; align-items:start;">
+            <div>{{ address.label or '-' }}{% if address.is_default %}<div class="hint">Standard</div>{% endif %}</div>
+            <div>
+              <div>{{ address.street or '' }} {{ address.house_no or '' }}</div>
+              <div>{{ address.zip_code or '' }} {{ address.city or '' }}</div>
+              <div>{{ address.country_code or 'DE' }}</div>
+            </div>
+            <div>
+              <div>{{ address.email or '-' }}</div>
+              <div>{{ address.phone or '-' }}</div>
+            </div>
+            <div>{{ 'Aktiv' if address.active else 'Inaktiv' }}</div>
+            <div>
+              {% if role_flags.is_admin %}<a class="btn small" href="/crm/kunden/{{ customer.id }}/adressen/{{ address.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+        {% if not addresses %}<div class="muted">Noch keine Adressen gepflegt.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Kontaktpersonen</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 1.3fr 1fr 1fr 140px 140px;">
+          <div>Name</div>
+          <div>Rolle</div>
+          <div>Kontakt</div>
+          <div>Status</div>
+          <div>Aktionen</div>
+        </div>
+        {% for item in contact_rows %}
+          <div class="tr" style="grid-template-columns: 1.3fr 1fr 1fr 140px 140px; align-items:start;">
+            <div>{{ item.party.display_name }}</div>
+            <div>{{ item.row.role_label or '-' }}</div>
+            <div>
+              <div>{{ item.row.email or '-' }}</div>
+              <div>{{ item.row.phone or '-' }}</div>
+            </div>
+            <div>{{ 'Aktiv' if item.row.active else 'Inaktiv' }}</div>
+            <div>
+              {% if role_flags.is_admin %}<a class="btn small" href="/crm/kunden/{{ customer.id }}/kontaktpersonen/{{ item.row.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+        {% if not contact_rows %}<div class="muted">Noch keine Kontaktpersonen gepflegt.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Standorte</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 1.2fr 1.5fr 1fr 140px 140px;">
+          <div>Standort</div>
+          <div>Anschrift</div>
+          <div>Notiz</div>
+          <div>Status</div>
+          <div>Aktionen</div>
+        </div>
+        {% for item in location_rows %}
+          <div class="tr" style="grid-template-columns: 1.2fr 1.5fr 1fr 140px 140px; align-items:start;">
+            <div>{{ item.row.location_label }}</div>
+            <div>
+              <div>{{ item.address.street or '' }} {{ item.address.house_no or '' }}</div>
+              <div>{{ item.address.zip_code or '' }} {{ item.address.city or '' }}</div>
+            </div>
+            <div>{{ item.row.note or '-' }}</div>
+            <div>{{ 'Aktiv' if item.row.active else 'Inaktiv' }}</div>
+            <div>
+              {% if role_flags.is_admin %}<a class="btn small" href="/crm/kunden/{{ customer.id }}/standorte/{{ item.row.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+        {% if not location_rows %}<div class="muted">Noch keine Standorte gepflegt.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">Externe Identitäten</div>
+      <div class="box-body">
+        {% for item in identities %}
+          <div style="margin-bottom:8px;">
+            <div><b>{{ crm_external_system_label(item.system_name) }}</b> / {{ crm_external_type_label(item.external_type) }}</div>
+            <div>{{ item.external_key }}</div>
+            <div class="muted">{{ item.external_id or '-' }}{% if item.is_primary %} | Primär{% endif %}</div>
+          </div>
+        {% endfor %}
+        {% if outsmart_relation_link %}<div class="hint">OutSmart-Relation: {{ outsmart_relation_link.external_key }}{% if outsmart_relation_link.external_row_id %} | Zeile {{ outsmart_relation_link.external_row_id }}{% endif %}</div>{% endif %}
+        {% if not identities %}<div class="muted">Noch keine externen Identitäten verknüpft.</div>{% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">sevDesk-Kontakte</div>
+      <div class="box-body">
+        <form method="get" action="/crm/kunden/{{ customer.id }}" class="form compact">
+          <input type="hidden" name="timeline_filter" value="{{ timeline_filter or 'all' }}">
+          <label>Suche in sevDesk</label>
+          <div class="row" style="gap:8px; flex-wrap:wrap;">
+            <input type="text" name="sevdesk_q" value="{{ sevdesk_search_query or '' }}" placeholder="Name, Kundennummer, Mail">
+            <button class="btn small" type="submit">Suchen</button>
+            <a class="btn small" href="/crm/identitaeten?system=sevdesk">Alle sevDesk-Links</a>
+          </div>
+        </form>
+        <div style="margin-top:10px;">
+          {% for item in sevdesk_identities %}
+            <div style="margin-bottom:8px;">
+              <div><b>{{ crm_external_type_label(item.external_type) }}</b> {{ item.external_key }}</div>
+              <div class="muted">{{ item.external_id or '-' }}{% if item.is_primary %} | Primär{% endif %}{% if item.note %} | {{ item.note }}{% endif %}</div>
+            </div>
+          {% endfor %}
+          {% if not sevdesk_identities %}<div class="muted">Noch keine sevDesk-Identitäten vorhanden.</div>{% endif %}
+        </div>
+        {% if sevdesk_search_query %}
+          <div class="table" style="margin-top:10px;">
+            <div class="tr th" style="grid-template-columns: 1.2fr 160px 1fr 180px;">
+              <div>Name</div>
+              <div>Kundennr.</div>
+              <div>Kontakt</div>
+              <div>Aktion</div>
+            </div>
+            {% for item in sevdesk_search_results %}
+              {% set external_id = item.id or item.ID or item.objectId %}
+              {% set external_name = item.name or item.displayName or external_id %}
+              {% set customer_number = item.customerNumber or item.customerNo or item.customer_number or '' %}
+              {% set email = item.email or item.emailAddress or '' %}
+              <div class="tr" style="grid-template-columns: 1.2fr 160px 1fr 180px; align-items:start;">
+                <div>{{ external_name }}</div>
+                <div>{{ customer_number or '-' }}</div>
+                <div>{{ email or '-' }}</div>
+                <div>
+                  {% if role_flags.is_admin %}
+                  <form method="post" action="/crm/kunden/{{ customer.id }}/sevdesk/verknuepfen" class="inline">
+                    <input type="hidden" name="external_id" value="{{ external_id }}">
+                    <input type="hidden" name="external_key" value="{{ external_id }}">
+                    <input type="hidden" name="external_type" value="contact">
+                    <input type="hidden" name="customer_number" value="{{ customer_number }}">
+                    <input type="hidden" name="note" value="Rechnungsstandard">
+                    <label><input type="checkbox" name="is_primary" checked> Primär</label>
+                    <button class="btn small" type="submit">Verknüpfen</button>
+                  </form>
+                  {% else %}-{% endif %}
+                </div>
+              </div>
+            {% endfor %}
+            {% if not sevdesk_search_results %}<div class="muted">Keine sevDesk-Treffer zur Suche gefunden.</div>{% endif %}
+          </div>
+        {% elif not sevdesk_enabled %}
+          <div class="hint" style="margin-top:10px;">sevDesk ist aktuell nicht aktiviert.</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Vorgänge</div>
+      <div class="box-body">
+        {% for item in recent_case_rows %}
+          <div style="margin-bottom:8px;">
+            <a href="/crm/vorgaenge/{{ item.row.id }}">{{ item.row.case_no }} | {{ item.row.title }}</a>
+            <div class="muted">{{ item.role_label }} | {{ crm_case_status_label(item.row.status) }}</div>
+          </div>
+        {% endfor %}
+        {% if not recent_case_rows %}<div class="muted">Noch keine lokalen Vorgänge verknüpft.</div>{% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">KI-Hinweise</div>
+      <div class="box-body">
+        {% for row in ai_related_logs %}
+          <div style="margin-bottom:8px;">
+            <div><b>{{ ai_task_label(row.task_name) }}</b> | {{ ai_status_label(row.status) }}</div>
+            <div class="muted">{{ format_date(row.created_at) }} | {{ ai_risk_label(row.risk_class) }}</div>
+            {% if ai_object_url(row.related_object_type, row.related_object_id) %}<div><a href="{{ ai_object_url(row.related_object_type, row.related_object_id) }}">Bezugsobjekt öffnen</a></div>{% endif %}
+          </div>
+        {% endfor %}
+        {% if not ai_related_logs %}<div class="muted">Noch keine KI-Hinweise für diesen Kunden oder seine Vorgänge vorhanden.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">Objekte / Geräte</div>
+      <div class="box-body">
+        {% if customer_objects %}
+          {% for item in customer_objects %}
+          <div style="margin-bottom:8px;">
+            <a href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ item.id }}"><b>{{ item.brand_label or item.supplier_label or 'Objekt' }}</b> {{ item.model_label or item.type_label or item.external_object_code }}</a>
+            <div class="muted">Seriennummer: {{ item.serial_no or '-' }}</div>
+          </div>
+          {% endfor %}
+        {% else %}
+        <div class="muted">Noch keine Kundenobjekte aus OutSmart vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Kommunikation & Dokumente</div>
+      <div class="box-body">
+        <div class="row" style="margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+          <a class="btn small{% if timeline_filter == 'all' %} active{% endif %}" href="/crm/kunden/{{ customer.id }}?timeline_filter=all">Alles</a>
+          <a class="btn small{% if timeline_filter == 'mail' %} active{% endif %}" href="/crm/kunden/{{ customer.id }}?timeline_filter=mail">Nur Mails</a>
+          <a class="btn small{% if timeline_filter == 'document' %} active{% endif %}" href="/crm/kunden/{{ customer.id }}?timeline_filter=document">Nur Dokumente</a>
+        </div>
+        {% if timeline_rows %}
+          {% for item in timeline_rows %}
+          <div style="margin-bottom:10px;">
+            <div><b>{{ item.row.title }}</b></div>
+            <div class="muted">{{ format_date(item.row.event_ts) }} | {{ item.type_label }}</div>
+            {% if item.detail_url %}<div><a href="{{ item.detail_url }}">{{ item.detail_label or 'Details öffnen' }}</a></div>{% endif %}
+            {% if item.paperless_url %}<div><a href="{{ item.paperless_url }}" target="_blank" rel="noopener">In Paperless öffnen</a></div>{% endif %}
+            {% if item.row.body %}<div>{{ item.row.body|e|replace('\n', '<br>')|safe }}</div>{% endif %}
+          </div>
+          {% endfor %}
+        {% else %}
+        <div class="muted">Noch keine Einträge im Kommunikationsblock vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">Paperless-Dokumente</div>
+      <div class="box-body">
+        {% for link in paperless_links %}
+          <div style="margin-bottom:8px;">
+            {% if paperless_build_url(link.paperless_document_id) %}
+              <a href="{{ paperless_build_url(link.paperless_document_id) }}" target="_blank" rel="noopener">{{ link.paperless_title or link.paperless_document_id }}</a>
+            {% else %}
+              {{ link.paperless_title or link.paperless_document_id }}
+            {% endif %}
+          </div>
+        {% endfor %}
+        {% if not paperless_links %}<div class="muted">Noch keine Paperless-Dokumente verknüpft.</div>{% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Lokale Uploads</div>
+      <div class="box-body">
+        {% for row in local_attachments %}
+          <div style="margin-bottom:8px;"><a href="/dokumente/lokal/{{ row.id }}">{{ row.original_name or row.filename }}</a></div>
+        {% endfor %}
+        {% if not local_attachments %}<div class="muted">Noch keine lokalen Uploads vorhanden.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Detailseite bündelt Kundenstamm, Kontakte, Objekte sowie Kommunikation und Dokumente.</li>
+  <li>OutSmart bleibt angebunden, ohne den Kundenstamm zum Master zu machen.</li>
+  <li>Über Mail verfassen und Dokument hochladen startest du Kommunikation direkt aus der Kundenakte.</li>
+</ul>
+{% endblock %}

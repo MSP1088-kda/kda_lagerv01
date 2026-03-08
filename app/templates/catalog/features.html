@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Merkmale</h1>
+  <div class="hint">Hier bearbeitest du Merkmale, die beim CSV-Import angelegt wurden.</div>
+  <div class="row" style="margin-top:10px;">
+    <a class="btn" href="/catalog/features/normalization{% if selected_kind_id %}?kind_id={{ selected_kind_id }}{% endif %}">Normalisierung öffnen</a>
+  </div>
+
+  <form method="get" action="/catalog/features" class="form compact" style="margin-top:10px;">
+    <div class="grid3">
+      <div>
+        <label>Suche</label>
+        <input type="text" name="q" value="{{ q or '' }}" placeholder="Merkmalname oder Schlüssel">
+      </div>
+      <div>
+        <label>Geräteart</label>
+        <select name="kind_id">
+          <option value="0">Alle</option>
+          {% for k in kind_option_rows %}
+            <option value="{{ k.id }}" {% if selected_kind_id == k.id %}selected{% endif %}>{{ k.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Filter</label>
+        <div class="row" style="margin-top:0;">
+          <button class="btn primary" type="submit">Anwenden</button>
+          <a class="btn" href="/catalog/features">Zurücksetzen</a>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  <div class="hint">
+    Angezeigt: <b>{{ rows|length }}</b> von <b>{{ total_rows }}</b> Merkmalen.
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 1.2fr 1.3fr 0.7fr 1fr 1fr;">
+      <div>Geräteart</div>
+      <div>Merkmal</div>
+      <div>Datentyp</div>
+      <div>Filterbar</div>
+      <div>Nutzung</div>
+    </div>
+
+    {% for entry in rows %}
+      {% set f = entry.row %}
+      {% set value_count = entry.value_count %}
+      {% set profile_count = entry.profile_count %}
+      <div class="tr" style="grid-template-columns: 1.2fr 1.3fr 0.7fr 1fr 1fr;">
+        <div>{{ entry.kind_label }}</div>
+        <div>
+          <b>{{ f.label_de }}</b>
+          <div class="muted">Schlüssel: {{ f.key }} | ID {{ f.id }}</div>
+        </div>
+        <div>{% if f.data_type == 'text' %}Text{% elif f.data_type == 'enum' %}Enum{% elif f.data_type == 'number' %}Zahl{% elif f.data_type == 'bool' %}Ja/Nein{% else %}{{ f.data_type }}{% endif %}</div>
+        <div>{% if f.filterable %}Ja{% else %}Nein{% endif %}</div>
+        <div>
+          Werte: {{ value_count }} | Profile: {{ profile_count }}
+          {% if f.data_type in ('text', 'enum') %}
+          <div><a class="btn small" href="/catalog/features/normalization?kind_id={{ f.device_kind_id }}&feature_id={{ f.id }}">Normalisierung</a></div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="tr" style="grid-template-columns: 1fr;">
+        <div>
+          <details class="box collapse-box">
+            <summary class="box-title">Merkmal bearbeiten</summary>
+            <div class="box-body">
+              <form method="post" action="/catalog/features/{{ f.id }}/edit" class="form compact">
+                <div class="grid3">
+                  <div>
+                    <label>Name</label>
+                    <input type="text" name="label_de" value="{{ f.label_de }}" required>
+                  </div>
+                  <div>
+                    <label>Schlüssel</label>
+                    <input type="text" name="key" value="{{ f.key }}" required>
+                  </div>
+                  <div>
+                    <label>Datentyp</label>
+                    <select name="data_type">
+                      <option value="text" {% if f.data_type == 'text' %}selected{% endif %}>Text</option>
+                      <option value="enum" {% if f.data_type == 'enum' %}selected{% endif %}>Enum</option>
+                      <option value="number" {% if f.data_type == 'number' %}selected{% endif %}>Zahl</option>
+                      <option value="bool" {% if f.data_type == 'bool' %}selected{% endif %}>Ja/Nein</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="row">
+                  <label class="check"><input type="checkbox" name="filterable" {% if f.filterable %}checked{% endif %}> Im Katalog filterbar</label>
+                </div>
+                {% if value_count > 0 %}
+                <div class="hint">Datentyp-Wechsel ist gesperrt, weil bereits Merkmalswerte vorhanden sind.</div>
+                {% endif %}
+                {% if profile_count > 0 %}
+                <div class="hint">Bei Schlüsseländerung werden vorhandene Import-Profile automatisch mitgezogen.</div>
+                {% endif %}
+                <button class="btn small" type="submit">Änderungen speichern</button>
+              </form>
+            </div>
+          </details>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if not rows %}
+    <div class="hint">Keine Merkmale für den aktuellen Filter gefunden.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Merkmale kommen aus dem CSV-Import und können hier nachträglich angepasst werden.</li>
+  <li>Der Schlüssel ist technisch wichtig und muss je Geräteart eindeutig sein.</li>
+  <li>Beim Speichern einer Schlüsseländerung werden passende Import-Profile automatisch aktualisiert.</li>
+</ul>
+{% endblock %}

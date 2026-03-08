@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Abgleichprotokoll</h1>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 120px 120px 120px 120px 160px 160px 1.8fr;">
+      <div>System</div>
+      <div>Richtung</div>
+      <div>Objekt</div>
+      <div>Status</div>
+      <div>Start</div>
+      <div>Ende</div>
+      <div>Log</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 120px 120px 120px 120px 160px 160px 1.8fr; align-items:start;">
+        <div>{{ row.system_name }}</div>
+        <div>{{ sync_job_direction_label(row.direction) }}</div>
+        <div>{{ sync_job_entity_label(row.entity_type) }}</div>
+        <div>{{ sync_job_status_label(row.status) }}</div>
+        <div>{{ row.started_at or '-' }}</div>
+        <div>{{ row.finished_at or '-' }}</div>
+        <div>{{ row.log_text or '-' }}</div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Abgleichläufe vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier stehen die letzten technischen Sende- und Abrufläufe für Paperless und OutSmart.</li>
+  <li>Fehler bleiben im Log sichtbar und werden nicht still verschluckt.</li>
+  <li>Über die Integrationsseiten lassen sich Tests und manuelle Läufe anstoßen.</li>
+</ul>
+{% endblock %}

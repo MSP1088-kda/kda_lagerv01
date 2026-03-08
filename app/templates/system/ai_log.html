@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>KI-Log</h1>
+  <form method="get" action="/system/ki-log" class="form compact">
+    <div class="grid3">
+      <div>
+        <label>Suche</label>
+        <input type="text" name="q" value="{{ q or '' }}" placeholder="Aufgabe, Objekt, Hinweis">
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status">
+          <option value="">Alle</option>
+          {% for item in status_choices %}<option value="{{ item }}"{% if status == item %} selected{% endif %}>{{ ai_status_label(item) }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Risiko</label>
+        <select name="risk">
+          <option value="">Alle</option>
+          {% for item in risk_choices %}<option value="{{ item }}"{% if risk == item %} selected{% endif %}>{{ ai_risk_label(item) }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      <button class="btn small" type="submit">Filtern</button>
+      <a class="btn small" href="/system/ki-freigaben">Freigaben</a>
+    </div>
+  </form>
+
+  {% for row in rows %}
+    <details class="box" style="margin-top:10px;">
+      <summary class="box-title">{{ ai_task_label(row.task_name) }} | {{ ai_status_label(row.status) }} | {{ ai_risk_label(row.risk_class) }} | {{ format_date(row.created_at) }}</summary>
+      <div class="box-body">
+        <div><b>Modell:</b> {{ row.model_name or '-' }}</div>
+        <div><b>Vertrauen:</b> {{ '%.2f'|format(row.confidence or 0) }}</div>
+        <div><b>Objekt:</b> {{ row.related_object_type or '-' }} {% if row.related_object_id %}#{{ row.related_object_id }}{% endif %}</div>
+        {% if ai_object_url(row.related_object_type, row.related_object_id) %}<div><a href="{{ ai_object_url(row.related_object_type, row.related_object_id) }}">Bezugsobjekt öffnen</a></div>{% endif %}
+        {% if row.override_note %}<div><b>Hinweis:</b> {{ row.override_note }}</div>{% endif %}
+        <div style="margin-top:10px;"><b>Eingabe</b></div>
+        <pre>{{ ai_decision_input(row) | tojson(indent=2) }}</pre>
+        <div style="margin-top:10px;"><b>Ausgabe</b></div>
+        <pre>{{ ai_decision_output(row) | tojson(indent=2) }}</pre>
+      </div>
+    </details>
+  {% endfor %}
+  {% if not rows %}<div class="muted">Noch keine KI-Entscheidungen protokolliert.</div>{% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Jede KI-Entscheidung landet hier mit Eingabe, Ausgabe, Risiko und Status.</li>
+  <li>Gelbe und rote Vorschläge erscheinen zusätzlich in der KI-Freigabe.</li>
+  <li>Das Fachobjekt bleibt immer der führende Arbeitsort.</li>
+</ul>
+{% endblock %}

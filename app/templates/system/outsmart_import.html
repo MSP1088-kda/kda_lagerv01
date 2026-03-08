@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>OutSmart Initialimport</h1>
+
+  <div class="row" style="margin-bottom:10px;">
+    <a class="btn" href="/system/integrationen/outsmart">Zurück zu OutSmart</a>
+    <a class="btn" href="/system/sync-log">Abgleichprotokoll</a>
+  </div>
+
+  <div class="box">
+    <div class="box-title">Import starten</div>
+    <div class="box-body">
+      <div class="hint">Debitor-/Relationsnummern sind der führende Anker für Kunden. Projekte, Objekte und Arbeitsaufträge werden duplikatsicher aktualisiert.</div>
+      <div class="row" style="margin-top:10px; flex-wrap:wrap;">
+        <form method="post" action="/system/integrationen/outsmart/import" class="inline"><input type="hidden" name="action" value="relations"><button class="btn" type="submit">Relations importieren</button></form>
+        <form method="post" action="/system/integrationen/outsmart/import" class="inline"><input type="hidden" name="action" value="projects"><button class="btn" type="submit">Projects importieren</button></form>
+        <form method="post" action="/system/integrationen/outsmart/import" class="inline"><input type="hidden" name="action" value="objects"><button class="btn" type="submit">Objects importieren</button></form>
+        <form method="post" action="/system/integrationen/outsmart/import" class="inline"><input type="hidden" name="action" value="workorders"><button class="btn" type="submit">Workorders importieren</button></form>
+        <form method="post" action="/system/integrationen/outsmart/import" class="inline"><input type="hidden" name="action" value="all"><button class="btn primary" type="submit">Komplettimport</button></form>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px;">
+    <div class="box">
+      <div class="box-title">Verbindung</div>
+      <div class="box-body">
+        <div><b>Aktiv:</b> {{ 'Ja' if settings.enabled else 'Nein' }}</div>
+        <div><b>Basis-URL:</b> {{ settings.base_url }}</div>
+        <div><b>Letzter Sync:</b> {{ settings.last_sync_at or '-' }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Regeln</div>
+      <div class="box-body">
+        <div>Kunden: Relation -> Masterkunde + Adresse + Identitäten</div>
+        <div>Vorgänge: Project -> lokaler Vorgang</div>
+        <div>Objekte: Object -> Kundenobjekt / installiertes Gerät</div>
+        <div>Aufträge: Workorder -> lokale Ansicht + Timeline</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Letztes Ergebnis</div>
+    <div class="box-body">
+      {% if summary %}
+        {% for key, stats in summary|dictsort %}
+        <div style="margin-bottom:10px;">
+          <div><b>{{ sync_job_entity_label(key) }}</b></div>
+          <div class="hint">
+            Neu: {{ stats['created'] if 'created' in stats else 0 }} |
+            Aktualisiert: {{ stats['updated'] if 'updated' in stats else 0 }} |
+            Übersprungen: {{ stats['skipped'] if 'skipped' in stats else 0 }} |
+            Fehler: {{ stats['errors'] if 'errors' in stats else 0 }}
+            {% if 'events' in stats %}| Timeline: {{ stats['events'] }}{% endif %}
+          </div>
+          {% if 'messages' in stats and stats['messages'] %}
+          <div class="muted">{{ stats['messages']|join(' | ') }}</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+      <div class="muted">Noch kein Initialimport ausgeführt.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Letzte OutSmart-Jobs</div>
+    <div class="box-body">
+      {% if recent_jobs %}
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 120px 120px 140px 140px 1fr;">
+          <div>Richtung</div>
+          <div>Typ</div>
+          <div>Status</div>
+          <div>Start</div>
+          <div>Protokoll</div>
+        </div>
+        {% for job in recent_jobs %}
+        <div class="tr" style="grid-template-columns: 120px 120px 140px 140px 1fr; align-items:start;">
+          <div>{{ sync_job_direction_label(job.direction) }}</div>
+          <div>{{ sync_job_entity_label(job.entity_type) }}</div>
+          <div>{{ sync_job_status_label(job.status) }}</div>
+          <div>{{ format_date(job.started_at) }}</div>
+          <div>{{ job.log_text or '-' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="muted">Noch keine Jobs vorhanden.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Starte den Initialimport schrittweise, wenn du das Mapping zuerst beobachten willst.</li>
+  <li>Der Komplettimport zieht Relations, Projekte, Objekte und Arbeitsaufträge hintereinander.</li>
+  <li>Das Ergebnis zeigt nur neu, aktualisiert, übersprungen und Fehler, damit die Oberfläche knapp bleibt.</li>
+</ul>
+{% endblock %}

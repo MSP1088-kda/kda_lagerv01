@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Bestellung {{ order.order_no or order.po_number }}</h1>
+
+  <div class="box">
+    <div class="box-title">Kopf</div>
+    <div class="box-body">
+      <div><b>Lieferant:</b> {{ supplier.name if supplier else '-' }}</div>
+      <div><b>Status:</b> {{ purchase_status_label(order.status) }}</div>
+      <div><b>Bestelldatum:</b> {{ format_date(order.order_date or order.created_at) }}</div>
+      <div><b>Wunschtermin:</b> {{ format_date(order.wanted_date) }}</div>
+      <div><b>Summe:</b> {{ order_total|eur_cents }}</div>
+      <div><b>Notiz:</b> {{ order.note or '-' }}</div>
+      <div class="row" style="margin-top:10px;">
+        <a class="btn" href="/einkauf/bestellungen/{{ order.id }}/bearbeiten">Bearbeiten</a>
+        <a class="btn" href="/einkauf/wareneingaenge/neu?purchase_order_id={{ order.id }}">Wareneingang daraus buchen</a>
+        <a class="btn" href="/einkauf/rechnungen/neu?purchase_order_id={{ order.id }}">Rechnung dazu erfassen</a>
+        <form method="post" action="/einkauf/bestellungen/{{ order.id }}/status" class="inline">
+          <select name="status">
+            {% for key in ('draft','sent','confirmed','partially_received','received','closed','cancelled') %}
+              <option value="{{ key }}" {% if order.status == key %}selected{% endif %}>{{ purchase_status_label(key) }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn" type="submit">Status speichern</button>
+        </form>
+        <a class="btn" href="/einkauf/bestellungen">Zurück</a>
+      </div>
+    </div>
+  </div>
+
+  <h2>Positionen</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1.6fr 100px 100px 140px 140px 1fr;">
+      <div>Produkt</div>
+      <div>Bestellt</div>
+      <div>Erhalten</div>
+      <div>Erwarteter EK</div>
+      <div>Lieferanten-Nr.</div>
+      <div>Notiz</div>
+    </div>
+    {% for line in lines %}
+      {% set p = products.get(line.product_id) %}
+      <div class="tr" style="grid-template-columns: 1.6fr 100px 100px 140px 140px 1fr;">
+        <div>{% if p %}<a href="/catalog/products/{{ p.id }}">{{ p.name }}</a>{% else %}{{ line.product_id }}{% endif %}</div>
+        <div>{{ line.qty_ordered or line.qty }}</div>
+        <div>{{ line.qty_received or 0 }}</div>
+        <div>{{ (line.unit_price_expected if line.unit_price_expected is not none else line.expected_cost_cents)|eur_cents if (line.unit_price_expected is not none or line.expected_cost_cents is not none) else '-' }}</div>
+        <div>{{ line.supplier_product_no or '-' }}</div>
+        <div>{{ line.note or '-' }}</div>
+      </div>
+    {% endfor %}
+    {% if not lines %}<div class="muted">Keine Positionen vorhanden.</div>{% endif %}
+  </div>
+
+  <h2>Dokumente</h2>
+  <div class="box">
+    <div class="box-body">
+      <form method="post" action="/einkauf/bestellungen/{{ order.id }}/dokumente/link" class="form compact">
+        <div class="grid2">
+          <div>
+            <label>Dokument aus Dokumenteneingang</label>
+            <select name="document_inbox_id">
+              <option value="0">-</option>
+              {% for item in unmatched_documents %}
+                <option value="{{ item.id }}">{{ item.title or ('Dokument ' ~ item.paperless_document_id) }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Paperless-Dokument-ID direkt</label>
+            <input type="text" name="paperless_document_id" value="">
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn primary" type="submit">An Paperless-Dokument anhängen</button>
+          <button class="btn" type="submit" formaction="/einkauf/bestellungen/{{ order.id }}/dokumente/export">Interne Zusammenfassung an Paperless senden</button>
+        </div>
+      </form>
+      <div class="table" style="margin-top:10px;">
+        <div class="tr th" style="grid-template-columns: 120px 1.8fr 180px;">
+          <div>ID</div>
+          <div>Titel</div>
+          <div>Aktion</div>
+        </div>
+        {% for link in paperless_links %}
+          <div class="tr" style="grid-template-columns: 120px 1.8fr 180px;">
+            <div>{{ link.paperless_document_id }}</div>
+            <div>{{ link.paperless_title or '-' }}</div>
+            <div>{% if paperless_base_url %}<a class="btn small" target="_blank" rel="noopener" href="{{ paperless_build_url(link.paperless_document_id) }}">In Paperless öffnen</a>{% else %}-{% endif %}</div>
+          </div>
+        {% endfor %}
+        {% if not paperless_links %}<div class="muted">Keine Dokumente verknüpft.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wareneingänge und Rechnungen lassen sich direkt aus der Bestellung erzeugen.</li>
+  <li>Dokumente werden nur verknüpft; Paperless bleibt das Archiv.</li>
+  <li>Die interne Paperless-Übertragung erzeugt derzeit eine strukturierte Textzusammenfassung.</li>
+</ul>
+{% endblock %}

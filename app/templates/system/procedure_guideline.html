@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Verfahrensrichtlinie</h1>
+  <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+    <a class="btn primary" href="/system/verfahrensrichtlinie/bearbeiten">Bearbeiten</a>
+    <a class="btn" href="/system/integrationen/openai">OpenAI</a>
+  </div>
+
+  {% for row in rows %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">{{ row.title }} | Version {{ row.version }}</div>
+      <div class="box-body" style="white-space:pre-wrap;">{{ row.content_markdown }}</div>
+    </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Verfahrensrichtlinie lebt im System und ist versioniert.</li>
+  <li>Sie beschreibt Führerschaft, Flüsse, KI-Regeln und Ausnahmebehandlung.</li>
+  <li>Änderungen werden als neue Version gespeichert, nicht still überschrieben.</li>
+</ul>
+{% endblock %}

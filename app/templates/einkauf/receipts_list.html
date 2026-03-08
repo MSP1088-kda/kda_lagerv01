@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Wareneingänge</h1>
+  <form method="get" action="/einkauf/wareneingaenge" class="form compact">
+    <div class="grid3">
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">Alle</option>
+          {% for s in suppliers %}
+            <option value="{{ s.id }}" {% if supplier_id|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status">
+          <option value="">Alle</option>
+          {% for key in ('open','posted','closed') %}
+            <option value="{{ key }}" {% if status == key %}selected{% endif %}>{{ goods_receipt_status_label(key) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Suche</label>
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="WE-Nummer oder Lieferschein">
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn primary" type="submit">Filtern</button>
+      <a class="btn" href="/einkauf/wareneingaenge">Zurücksetzen</a>
+      <a class="btn" href="/einkauf/wareneingaenge/neu">Neuer Wareneingang</a>
+    </div>
+  </form>
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 140px 1.3fr 140px 140px 150px 150px;">
+      <div>Nummer</div>
+      <div>Lieferant</div>
+      <div>Datum</div>
+      <div>Status</div>
+      <div>Summe</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 140px 1.3fr 140px 140px 150px 150px;">
+        <div>{{ row.receipt_no or ('WE-' ~ row.id) }}</div>
+        <div>{{ supplier_map.get(row.supplier_id).name if supplier_map.get(row.supplier_id) else '-' }}</div>
+        <div>{{ format_date(row.receipt_date or row.created_at) }}</div>
+        <div>{{ goods_receipt_status_label(row.status) }}</div>
+        <div>{{ receipt_totals.get(row.id, 0)|eur_cents }}</div>
+        <div><a class="btn small" href="/einkauf/wareneingaenge/{{ row.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Wareneingänge gefunden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wareneingänge können frei oder aus einer Bestellung erzeugt werden.</li>
+  <li>Jede Position bucht Bestand und schreibt eine EK-Historie.</li>
+  <li>Die Summe stammt aus Menge mal erhaltenem EK.</li>
+</ul>
+{% endblock %}

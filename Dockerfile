@@ -1,13 +1,16 @@
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV ALLOW_HARD_RESET=0
 
 WORKDIR /app
 
 # System deps (for bcrypt/cryptography wheels, usually ok; keep minimal)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    tesseract-ocr \
+    tesseract-ocr-deu \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt

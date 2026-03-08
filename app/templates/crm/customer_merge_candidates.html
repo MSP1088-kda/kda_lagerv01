@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>CRM: Merge-Kandidaten</h1>
+  <div class="hint">Regelbasiert: gleicher Name + PLZ, gleiche Mail, gleiche Telefonnummer oder gleiche OutSmart-Debitornummer.</div>
+
+  {% for item in rows %}
+    {% set pair_key = item.master_customer.id|string ~ ':' ~ item.candidate_customer.id|string if item.master_customer.id < item.candidate_customer.id else item.candidate_customer.id|string ~ ':' ~ item.master_customer.id|string %}
+    {% set ai_item = ai_results.get(pair_key) if ai_results else None %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Masterkunde: <a href="/crm/kunden/{{ item.master_customer.id }}">{{ item.master_customer.customer_no_internal }}</a> | {{ item.master_party.display_name }}</div>
+      <div class="box-body">
+        <div><b>Kandidat:</b> <a href="/crm/kunden/{{ item.candidate_customer.id }}">{{ item.candidate_customer.customer_no_internal }}</a> | {{ item.candidate_party.display_name }}</div>
+        <div><b>Treffer:</b> {{ item.reasons|join(', ') }}</div>
+        {% if ai_item %}
+          {% set ai_output = ai_item.output %}
+          <div><b>KI-Score:</b> {{ '%.2f'|format(ai_output.score or 0) }} | {{ ai_risk_label(ai_output.risk_level) }}</div>
+          {% if ai_output.reasons %}<div><b>KI-Gründe:</b> {{ ai_output.reasons|join(', ') }}</div>{% endif %}
+        {% endif %}
+        <div><b>Master-Ort:</b> {{ item.master_address.zip_code if item.master_address else '' }} {{ item.master_address.city if item.master_address else '-' }}</div>
+        <div><b>Kandidat-Ort:</b> {{ item.candidate_address.zip_code if item.candidate_address else '' }} {{ item.candidate_address.city if item.candidate_address else '-' }}</div>
+        {% if item.sevdesk_identities %}
+          <div style="margin-top:8px;"><b>sevDesk-Kontakte des Kandidaten</b></div>
+          {% for identity in item.sevdesk_identities %}
+            <div class="muted">{{ identity.external_type }} | {{ identity.external_key }}{% if identity.external_id %} | {{ identity.external_id }}{% endif %}</div>
+          {% endfor %}
+        {% endif %}
+        <div class="row" style="margin-top:10px;">
+          <form method="post" action="/crm/merge-kandidaten/{{ item.master_customer.id }}/zuordnen" class="inline">
+            <input type="hidden" name="candidate_id" value="{{ item.candidate_customer.id }}">
+            <button class="btn primary" type="submit">sevDesk zuordnen</button>
+          </form>
+          <form method="post" action="/crm/merge-kandidaten/ablehnen" class="inline">
+            <input type="hidden" name="master_id" value="{{ item.master_customer.id }}">
+            <input type="hidden" name="candidate_id" value="{{ item.candidate_customer.id }}">
+            <button class="btn" type="submit">Ablehnen</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+  {% if not rows %}<div class="muted">Aktuell keine offenen Merge-Kandidaten gefunden.</div>{% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Beim Zuordnen werden nur lokale sevDesk-Identitäten auf den Masterkunden umgehängt.</li>
+  <li>Es werden keine sevDesk-Kontakte gelöscht und keine harten Kunden-Merges erzwungen.</li>
+</ul>
+{% endblock %}

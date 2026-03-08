@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  <h1>{{ page_title }}</h1>
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+    {% if form_mode == 'address' %}
+      <div class="box">
+        <div class="box-title">Kunde</div>
+        <div class="box-body">
+          <div><b>{{ customer.customer_no_internal }}</b> | {{ party.display_name }}</div>
+        </div>
+      </div>
+
+      <div class="grid3" style="margin-top:10px;">
+        <div>
+          <label for="crm_address_label">Bezeichnung</label>
+          <input id="crm_address_label" type="text" name="label" value="{{ f.old(fd, 'label', row.label if row else '') }}" class="{% if fe.get('label') %}is-error{% endif %}">
+          {{ f.field_error(fe, 'label') }}
+        </div>
+        <div>
+          <label for="crm_address_street">Straße</label>
+          <input id="crm_address_street" type="text" name="street" value="{{ f.old(fd, 'street', row.street if row else '') }}" class="{% if fe.get('street') %}is-error{% endif %}">
+          {{ f.field_error(fe, 'street') }}
+        </div>
+        <div>
+          <label for="crm_address_house_no">Hausnr.</label>
+          <input id="crm_address_house_no" type="text" name="house_no" value="{{ f.old(fd, 'house_no', row.house_no if row else '') }}">
+        </div>
+        <div>
+          <label for="crm_address_zip_code">PLZ</label>
+          <input id="crm_address_zip_code" type="text" name="zip_code" value="{{ f.old(fd, 'zip_code', row.zip_code if row else '') }}">
+        </div>
+        <div>
+          <label for="crm_address_city">Ort</label>
+          <input id="crm_address_city" type="text" name="city" value="{{ f.old(fd, 'city', row.city if row else '') }}" class="{% if fe.get('city') %}is-error{% endif %}">
+          {{ f.field_error(fe, 'city') }}
+        </div>
+        <div>
+          <label for="crm_address_country_code">Land</label>
+          <input id="crm_address_country_code" type="text" name="country_code" value="{{ f.old(fd, 'country_code', row.country_code if row else 'DE') }}" maxlength="8">
+        </div>
+        <div>
+          <label for="crm_address_email">E-Mail</label>
+          <input id="crm_address_email" type="email" name="email" value="{{ f.old(fd, 'email', row.email if row else '') }}">
+        </div>
+        <div>
+          <label for="crm_address_phone">Telefon</label>
+          <input id="crm_address_phone" type="text" name="phone" value="{{ f.old(fd, 'phone', row.phone if row else '') }}">
+        </div>
+        <div class="row" style="align-items:end;">
+          <label class="check"><input type="checkbox" name="is_default" {{ f.is_checked(fd, 'is_default', row.is_default if row else False) }}> Standardadresse</label>
+          <label class="check"><input type="checkbox" name="active" {{ f.is_checked(fd, 'active', row.active if row else True) }}> Aktiv</label>
+        </div>
+      </div>
+    {% else %}
+      <div class="grid3">
+        <div>
+          <label for="crm_party_type">Kundentyp</label>
+          <select id="crm_party_type" name="party_type" class="{% if fe.get('party_type') %}is-error{% endif %}">
+            {% for item in party_type_choices %}
+              <option value="{{ item }}" {% if f.old(fd, 'party_type', party.party_type if party else 'company') == item %}selected{% endif %}>{{ crm_party_type_label(item) }}</option>
+            {% endfor %}
+          </select>
+          {{ f.field_error(fe, 'party_type') }}
+        </div>
+        <div>
+          <label for="crm_display_name">Anzeigename</label>
+          <input id="crm_display_name" type="text" name="display_name" value="{{ f.old(fd, 'display_name', party.display_name if party else '') }}" class="{% if fe.get('display_name') %}is-error{% endif %}" required>
+          {{ f.field_error(fe, 'display_name') }}
+        </div>
+        <div>
+          <label for="crm_customer_status">Status</label>
+          <select id="crm_customer_status" name="status" class="{% if fe.get('status') %}is-error{% endif %}">
+            {% for item in status_choices %}
+              <option value="{{ item }}" {% if f.old(fd, 'status', customer.status if customer else 'active') == item %}selected{% endif %}>{{ item|replace('_', ' ')|title }}</option>
+            {% endfor %}
+          </select>
+          {{ f.field_error(fe, 'status') }}
+        </div>
+        <div>
+          <label for="crm_first_name">Vorname</label>
+          <input id="crm_first_name" type="text" name="first_name" value="{{ f.old(fd, 'first_name', party.first_name if party else '') }}">
+        </div>
+        <div>
+          <label for="crm_last_name">Nachname</label>
+          <input id="crm_last_name" type="text" name="last_name" value="{{ f.old(fd, 'last_name', party.last_name if party else '') }}">
+        </div>
+        <div class="row" style="align-items:end;">
+          <label class="check"><input type="checkbox" name="active" {{ f.is_checked(fd, 'active', party.active if party else True) }}> Aktiv</label>
+        </div>
+      </div>
+
+      <label for="crm_customer_note">Notiz</label>
+      <textarea id="crm_customer_note" name="note" rows="3">{{ f.old(fd, 'note', customer.note if customer else (party.note if party else '')) }}</textarea>
+
+      <h2>Standardadresse</h2>
+      <div class="grid3">
+        <div>
+          <label for="crm_default_address_label">Bezeichnung</label>
+          <input id="crm_default_address_label" type="text" name="address_label" value="{{ f.old(fd, 'address_label', default_address.label if default_address else 'Hauptadresse') }}">
+        </div>
+        <div>
+          <label for="crm_default_street">Straße</label>
+          <input id="crm_default_street" type="text" name="address_street" value="{{ f.old(fd, 'address_street', default_address.street if default_address else '') }}">
+        </div>
+        <div>
+          <label for="crm_default_house_no">Hausnr.</label>
+          <input id="crm_default_house_no" type="text" name="address_house_no" value="{{ f.old(fd, 'address_house_no', default_address.house_no if default_address else '') }}">
+        </div>
+        <div>
+          <label for="crm_default_zip_code">PLZ</label>
+          <input id="crm_default_zip_code" type="text" name="address_zip_code" value="{{ f.old(fd, 'address_zip_code', default_address.zip_code if default_address else '') }}">
+        </div>
+        <div>
+          <label for="crm_default_city">Ort</label>
+          <input id="crm_default_city" type="text" name="address_city" value="{{ f.old(fd, 'address_city', default_address.city if default_address else '') }}">
+        </div>
+        <div>
+          <label for="crm_default_country_code">Land</label>
+          <input id="crm_default_country_code" type="text" name="address_country_code" value="{{ f.old(fd, 'address_country_code', default_address.country_code if default_address else 'DE') }}" maxlength="8">
+        </div>
+        <div>
+          <label for="crm_default_email">E-Mail</label>
+          <input id="crm_default_email" type="email" name="address_email" value="{{ f.old(fd, 'address_email', default_address.email if default_address else '') }}">
+        </div>
+        <div>
+          <label for="crm_default_phone">Telefon</label>
+          <input id="crm_default_phone" type="text" name="address_phone" value="{{ f.old(fd, 'address_phone', default_address.phone if default_address else '') }}">
+        </div>
+      </div>
+    {% endif %}
+
+    <div class="row" style="margin-top:10px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      {% if customer %}
+        <a class="btn" href="/crm/kunden/{{ customer.id }}">Zurück</a>
+      {% else %}
+        <a class="btn" href="/crm/kunden">Zurück</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  {% if form_mode == 'address' %}
+  <li>Markiere genau eine Adresse als Standardadresse, wenn sie in Listen zuerst erscheinen soll.</li>
+  <li>Adresse, Mail und Telefon bleiben beim Kunden gebündelt und können in Vorgängen direkt verwendet werden.</li>
+  {% else %}
+  <li>Kundenstamm und Standardadresse werden zusammen gepflegt.</li>
+  <li>Für Personen kannst du Vor- und Nachname getrennt pflegen; der Anzeigename bleibt die Hauptsicht.</li>
+  <li>Weitere Adressen, Standorte und Kontaktpersonen pflegst du auf der Detailseite.</li>
+  {% endif %}
+</ul>
+{% endblock %}

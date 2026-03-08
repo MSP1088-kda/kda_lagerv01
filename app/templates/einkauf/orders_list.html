@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Bestellungen</h1>
+  <form method="get" action="/einkauf/bestellungen" class="form compact">
+    <div class="grid3">
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">Alle</option>
+          {% for s in suppliers %}
+            <option value="{{ s.id }}" {% if supplier_id|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status">
+          <option value="">Alle</option>
+          {% for key in ('draft','sent','confirmed','partially_received','received','closed','cancelled') %}
+            <option value="{{ key }}" {% if status == key %}selected{% endif %}>{{ purchase_status_label(key) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Suche</label>
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Bestellnummer oder Notiz">
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn primary" type="submit">Filtern</button>
+      <a class="btn" href="/einkauf/bestellungen">Zurücksetzen</a>
+      <a class="btn" href="/einkauf/bestellungen/neu">Neue Bestellung</a>
+    </div>
+  </form>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 150px 1.4fr 140px 160px 140px 150px;">
+      <div>Nummer</div>
+      <div>Lieferant</div>
+      <div>Datum</div>
+      <div>Status</div>
+      <div>Summe</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 150px 1.4fr 140px 160px 140px 150px;">
+        <div>{{ row.order_no or row.po_number }}</div>
+        <div>{{ supplier_map.get(row.supplier_id).name if supplier_map.get(row.supplier_id) else '-' }}</div>
+        <div>{{ format_date(row.order_date or row.created_at) }}</div>
+        <div>{{ purchase_status_label(row.status) }}</div>
+        <div>{{ order_totals.get(row.id, 0)|eur_cents }}</div>
+        <div><a class="btn small" href="/einkauf/bestellungen/{{ row.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Bestellungen gefunden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Liste filtert nach Lieferant, Status und Suchbegriff.</li>
+  <li>Neue Bestellungen können direkt hier oder aus dem Produktdetail angelegt werden.</li>
+  <li>Die Summe basiert auf Menge mal erwartetem EK je Position.</li>
+</ul>
+{% endblock %}

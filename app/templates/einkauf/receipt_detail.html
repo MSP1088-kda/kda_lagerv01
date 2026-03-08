@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Wareneingang {{ row.receipt_no or ('WE-' ~ row.id) }}</h1>
+  <div class="box">
+    <div class="box-title">Kopf</div>
+    <div class="box-body">
+      <div><b>Lieferant:</b> {{ supplier.name if supplier else '-' }}</div>
+      <div><b>Bestellung:</b> {% if purchase_order %}<a href="/einkauf/bestellungen/{{ purchase_order.id }}">{{ purchase_order.order_no or purchase_order.po_number }}</a>{% else %}-{% endif %}</div>
+      <div><b>Lager:</b> {{ warehouse.name if warehouse else '-' }}</div>
+      <div><b>Status:</b> {{ goods_receipt_status_label(row.status) }}</div>
+      <div><b>Datum:</b> {{ format_date(row.receipt_date or row.created_at) }}</div>
+      <div><b>Lieferschein:</b> {{ row.delivery_note_no or '-' }}</div>
+      <div><b>Summe:</b> {{ receipt_total|eur_cents }}</div>
+      <div class="row" style="margin-top:10px;">
+        <a class="btn" href="/einkauf/rechnungen/neu?goods_receipt_id={{ row.id }}">Rechnung dazu erfassen</a>
+        <a class="btn" href="/einkauf/wareneingaenge">Zurück</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 1.5fr 120px 140px 140px 1fr;">
+      <div>Produkt</div>
+      <div>Menge</div>
+      <div>EK</div>
+      <div>Zustand</div>
+      <div>Notiz</div>
+    </div>
+    {% for line in lines %}
+      {% set p = products.get(line.product_id) %}
+      <div class="tr" style="grid-template-columns: 1.5fr 120px 140px 140px 1fr;">
+        <div>{% if p %}<a href="/catalog/products/{{ p.id }}">{{ p.name }}</a>{% else %}{{ line.product_id }}{% endif %}</div>
+        <div>{{ line.qty_received }}</div>
+        <div>{{ line.unit_cost_received|eur_cents if line.unit_cost_received is not none else '-' }}</div>
+        <div>{{ condition_labels.get(line.condition_code, line.condition_code) }}</div>
+        <div>{{ line.note or '-' }}</div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <h2>Dokumente</h2>
+  <div class="box">
+    <div class="box-body">
+      <form method="post" action="/einkauf/wareneingaenge/{{ row.id }}/dokumente/link" class="form compact">
+        <div class="grid2">
+          <div>
+            <label>Dokument aus Dokumenteneingang</label>
+            <select name="document_inbox_id">
+              <option value="0">-</option>
+              {% for item in unmatched_documents %}
+                <option value="{{ item.id }}">{{ item.title or ('Dokument ' ~ item.paperless_document_id) }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Paperless-Dokument-ID direkt</label>
+            <input type="text" name="paperless_document_id">
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn primary" type="submit">Dokument verknüpfen</button>
+          <button class="btn" type="submit" formaction="/einkauf/wareneingaenge/{{ row.id }}/dokumente/export">Interne Zusammenfassung an Paperless senden</button>
+        </div>
+      </form>
+      <div class="table" style="margin-top:10px;">
+        <div class="tr th" style="grid-template-columns: 120px 1.8fr 180px;">
+          <div>ID</div>
+          <div>Titel</div>
+          <div>Aktion</div>
+        </div>
+        {% for link in paperless_links %}
+          <div class="tr" style="grid-template-columns: 120px 1.8fr 180px;">
+            <div>{{ link.paperless_document_id }}</div>
+            <div>{{ link.paperless_title or '-' }}</div>
+            <div>{% if paperless_base_url %}<a class="btn small" target="_blank" rel="noopener" href="{{ paperless_build_url(link.paperless_document_id) }}">In Paperless öffnen</a>{% else %}-{% endif %}</div>
+          </div>
+        {% endfor %}
+        {% if not paperless_links %}<div class="muted">Keine Dokumente verknüpft.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wareneingänge referenzieren optional eine Bestellung, funktionieren aber auch frei.</li>
+  <li>Die Detailseite zeigt nur die fachlichen Wareneingangszeilen, nicht die einzelnen Journalbuchungen.</li>
+  <li>Rechnungen sollten auf Wareneingangszeilen oder Bestellzeilen abgeglichen werden.</li>
+</ul>
+{% endblock %}

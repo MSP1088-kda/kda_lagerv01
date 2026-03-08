@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{{ page_title }}</h1>
+  {% if form_errors %}<div class="flash error">{{ (form_errors.values()|list)[0] }}</div>{% endif %}
+  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+    <div class="grid3">
+      <div>
+        <label>Quelle</label>
+        <select name="source_type">
+          {% for key in source_type_choices %}
+            <option value="{{ key }}" {% if (form_data.source_type or 'manual') == key %}selected{% endif %}>
+              {% if key == 'manual' %}Manuell{% elif key == 'outsmart_completed' %}OutSmart abgeschlossen{% elif key == 'converted_offer' %}Aus Angebot{% else %}{{ key }}{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Vorgang</label>
+        <select name="case_id">
+          <option value="0">-</option>
+          {% for option in case_options %}
+            <option value="{{ option.id }}" {% if option.id == selected_case_id %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Angebot</label>
+        <select name="offer_draft_id">
+          <option value="0">-</option>
+          {% for offer in offer_rows %}
+            <option value="{{ offer.id }}" {% if offer.id == selected_offer_id %}selected{% endif %}>{{ offer.sevdesk_order_number or ('ANG-' ~ '%04d'|format(offer.id)) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="grid3">
+      <div>
+        <label>Kunde</label>
+        <select name="master_customer_id">
+          <option value="0">-</option>
+          {% for option in customer_options %}
+            <option value="{{ option.id }}" {% if option.id == selected_customer_id %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div><label>Rechnungsdatum</label><input type="date" name="invoice_date" value="{{ form_data.invoice_date or '' }}"></div>
+      <div><label>Fällig am</label><input type="date" name="due_date" value="{{ form_data.due_date or '' }}"></div>
+    </div>
+    {% if case_context %}
+      <div class="box" style="margin-top:10px;"><div class="box-title">Leistungsdreieck</div><div class="box-body">
+        <div><b>Auftraggeber:</b> {{ case_context.ordering_customer.customer_no_internal if case_context.ordering_customer else '-' }}</div>
+        <div><b>Rechnungsempfänger:</b> {{ case_context.invoice_customer.customer_no_internal if case_context.invoice_customer else '-' }}</div>
+        <div><b>Leistungsort:</b> {{ case_context.service_location.location_label if case_context.service_location else '-' }}</div>
+      </div></div>
+    {% endif %}
+    {% if ai_invoice_result %}
+      {% set ai_invoice = ai_invoice_result.output %}
+      <details class="box" style="margin-top:10px;" open>
+        <summary class="box-title">KI-Rechnungsvorschlag</summary>
+        <div class="box-body">
+          <div><b>Status:</b> {{ ai_status_label(ai_invoice_result.log.status) }} | {{ ai_risk_label(ai_invoice_result.risk_class) }}</div>
+          {% if ai_invoice.completeness_check %}<div><b>Vollständigkeit:</b> {{ ai_invoice.completeness_check|join(', ') }}</div>{% endif %}
+          {% if ai_invoice.references %}<div><b>Bezüge:</b> {{ ai_invoice.references|join(', ') }}</div>{% endif %}
+          {% if ai_invoice.flags %}<div><b>Hinweise:</b> {{ ai_invoice.flags|join(', ') }}</div>{% endif %}
+          {% if ai_invoice.proposed_lines %}
+            <div style="margin-top:8px;"><b>Vorgeschlagene Positionen</b></div>
+            {% for item in ai_invoice.proposed_lines %}
+              <div>{{ item.text }} | {{ item.qty }} {{ item.unit }} | {{ item.unit_price_net or '-' }}</div>
+            {% endfor %}
+          {% endif %}
+          {% if ai_invoice_review and ai_invoice_review.status == 'open' %}
+            <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+              <form method="post" action="/system/ki-freigaben/{{ ai_invoice_result.log.id }}" class="inline">
+                <input type="hidden" name="action" value="approve">
+                <button class="btn small" type="submit">Freigeben</button>
+              </form>
+              <form method="post" action="/system/ki-freigaben/{{ ai_invoice_result.log.id }}" class="inline">
+                <input type="hidden" name="action" value="reject">
+                <button class="btn small" type="submit">Ablehnen</button>
+              </form>
+            </div>
+          {% endif %}
+        </div>
+      </details>
+    {% endif %}
+    <label>Notiz</label>
+    <textarea name="note" rows="3">{{ form_data.note or '' }}</textarea>
+
+    <h2>Positionen</h2>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 160px 1.6fr 100px 90px 120px 90px;">
+        <div>Artikel</div><div>Text</div><div>Menge</div><div>Einheit</div><div>Preis netto</div><div>Steuer %</div>
+      </div>
+      {% for line in line_rows %}
+        <div class="tr" style="grid-template-columns: 160px 1.6fr 100px 90px 120px 90px; align-items:start;">
+          <div>
+            <select name="line_product_id">
+              <option value="0">-</option>
+              {% for product in products %}
+                <option value="{{ product.id }}" {% if product.id|string == line.product_id|string %}selected{% endif %}>{{ product.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div><input type="text" name="line_text" value="{{ line.text or '' }}"></div>
+          <div><input type="text" name="line_qty" value="{{ line.qty or '' }}"></div>
+          <div><input type="text" name="line_unit" value="{{ line.unit or 'Stk' }}"></div>
+          <div><input type="text" name="line_unit_price_net" value="{{ line.unit_price_net or '' }}"></div>
+          <div><input type="text" name="line_tax_rate" value="{{ line.tax_rate or '19' }}"></div>
+        </div>
+      {% endfor %}
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/crm/rechnungen">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>KI-Supervisor</h1>
+  <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+    <form method="post" action="/system/ki-supervisor/aktualisieren" class="inline">
+      <button class="btn primary" type="submit">Supervisor aktualisieren</button>
+    </form>
+    <a class="btn" href="/system/ki-log">KI-Log</a>
+    <a class="btn" href="/system/ki-freigaben">KI-Freigaben</a>
+  </div>
+  <div class="hint">Offene Funde: {{ open_count }}</div>
+
+  {% for row in rows %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">{{ row.title }} | {{ supervisor_severity_label(row.severity) }} | {{ row.status }}</div>
+      <div class="box-body">
+        <div>{{ row.description }}</div>
+        <div style="margin-top:8px;"><b>Nächster Schritt:</b> {{ row.suggested_action or '-' }}</div>
+        {% if ai_object_url(row.related_object_type, row.related_object_id) %}<div style="margin-top:8px;"><a href="{{ ai_object_url(row.related_object_type, row.related_object_id) }}">Bezugsobjekt öffnen</a></div>{% endif %}
+        <form method="post" action="/system/ki-supervisor/{{ row.id }}/status" class="form compact" style="margin-top:10px;">
+          <label>Status</label>
+          <select name="status">
+            <option value="open"{% if row.status == 'open' %} selected{% endif %}>Offen</option>
+            <option value="in_progress"{% if row.status == 'in_progress' %} selected{% endif %}>In Bearbeitung</option>
+            <option value="resolved"{% if row.status == 'resolved' %} selected{% endif %}>Erledigt</option>
+          </select>
+          <button class="btn small" type="submit">Speichern</button>
+        </form>
+      </div>
+    </div>
+  {% endfor %}
+  {% if not rows %}<div class="muted">Noch keine Supervisor-Funde vorhanden.</div>{% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der Supervisor zeigt echte Arbeitsrückstände und Inkonsistenzen.</li>
+  <li>Die Liste ist priorisiert, damit nicht nur Zahlen, sondern konkrete Aufgaben sichtbar werden.</li>
+  <li>Erledigte Funde bleiben nachvollziehbar, offene Funde bleiben priorisiert.</li>
+</ul>
+{% endblock %}

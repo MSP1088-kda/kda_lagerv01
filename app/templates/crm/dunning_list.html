@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Mahnwesen</h1>
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 160px 1.2fr 140px 120px 140px 140px;">
+      <div>Rechnung</div><div>Kunde</div><div>Status</div><div>Stufe</div><div>Offen</div><div>Aktion</div>
+    </div>
+    {% for item in rows %}
+      <div class="tr" style="grid-template-columns: 160px 1.2fr 140px 120px 140px 140px;">
+        <div>{% if item.invoice %}<a href="/crm/rechnungen/{{ item.invoice.id }}">{{ item.invoice.sevdesk_invoice_number or ('RE-ENTW-' ~ '%04d'|format(item.invoice.id)) }}</a>{% else %}-{% endif %}</div>
+        <div>{{ item.customer_label }}</div>
+        <div>{{ dunning_status_label(item.row.status) }}</div>
+        <div>{{ item.row.current_level }}</div>
+        <div>{{ item.row.amount_due|eur_cents if item.row.amount_due is not none else '-' }}</div>
+        <div><a class="btn small" href="/crm/mahnfaelle/{{ item.row.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Mahnfälle vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}

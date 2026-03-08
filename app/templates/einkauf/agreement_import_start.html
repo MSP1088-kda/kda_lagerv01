@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel agreement-panel">
+  <h1>SEG Jahresvereinbarung importieren</h1>
+  <div class="hint">Diese Spezialmaske ist nur für SEG Hausgeräte Jahresvereinbarungen gedacht. Ziel ist: Dokument wählen, kurz prüfen, übernehmen.</div>
+
+  <div class="grid2" style="margin-top:10px;">
+    <div class="box">
+      <div class="box-title">Voreinstellungen</div>
+      <div class="box-body">
+        <div><b>Lieferant:</b> {{ supplier_row.name if supplier_row else 'SEG Hausgeräte GmbH nicht im System gefunden' }}</div>
+        <div><b>Marke:</b> {{ manufacturer_row.name if manufacturer_row else 'Siemens wird als Vorschlag verwendet' }}</div>
+        <div class="hint" style="margin-top:8px;">Im guten Fall reicht später ein Klick auf „Übernehmen“.</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Dokumenteingang</div>
+      <div class="box-body">
+        <div><b>Paperless:</b> {% if paperless_ready %}bereit{% else %}nicht vollständig konfiguriert{% endif %}</div>
+        <div class="hint" style="margin-top:8px;">Upload und Paperless laufen in denselben Prüfpfad.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px;">
+    <div class="box agreement-import-box">
+      <div class="box-title">PDF hochladen</div>
+      <div class="box-body">
+        <form method="post" action="/einkauf/konditionen/import/upload" enctype="multipart/form-data" class="form compact">
+          <label for="agreement_pdf">SEG Jahresvereinbarung (PDF)</label>
+          <input id="agreement_pdf" type="file" name="agreement_pdf" accept="application/pdf,.pdf" required>
+          <div class="row" style="margin-top:10px;">
+            <button class="btn primary" type="submit">PDF lesen</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="box agreement-import-box">
+      <div class="box-title">Aus Paperless auswählen</div>
+      <div class="box-body">
+        <div class="hint">Bevorzugt Dokumente mit SEG, Siemens, Jahresvereinbarung oder Konditionen.</div>
+        <div class="row" style="margin-top:10px;">
+          <a class="btn primary" href="/einkauf/konditionen/import/paperless">Paperless öffnen</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Diese Seite ist nur für SEG Hausgeräte Jahresvereinbarungen gedacht.</li>
+  <li>PDF hochladen oder ein Paperless-Dokument wählen.</li>
+  <li>Danach folgt nur noch die Prüfmaske mit den erkannten Feldern.</li>
+</ul>
+{% endblock %}

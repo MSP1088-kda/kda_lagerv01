@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Dokument zuordnen</h1>
+  <div class="box">
+    <div class="box-title">Dokument</div>
+    <div class="box-body">
+      <div><b>Paperless-ID:</b> {{ item.paperless_document_id }}</div>
+      <div><b>Titel:</b> {{ item.title or '-' }}</div>
+      <div><b>Korrespondent:</b> {{ item.correspondent or '-' }}</div>
+      <div><b>Typ:</b> {{ item.document_type or '-' }}</div>
+      <div><b>Status:</b> {{ document_inbox_status_label(item.status) }}</div>
+      {% if paperless_url %}<div><a class="btn small" target="_blank" rel="noopener" href="{{ paperless_url }}">In Paperless öffnen</a></div>{% endif %}
+    </div>
+  </div>
+
+  {% if ai_document_result %}
+    {% set ai_output = ai_document_result.output %}
+    <details class="box" style="margin-top:10px;" open>
+      <summary class="box-title">KI-Vorschlag</summary>
+      <div class="box-body">
+        <div><b>Dokumenttyp:</b> {{ ai_output.doc_kind or '-' }}</div>
+        <div><b>Status:</b> {{ ai_status_label(ai_document_result.log.status) }} | {{ ai_risk_label(ai_document_result.risk_class) }}</div>
+        <div><b>Lieferant:</b> {{ ai_output.supplier_candidate or '-' }}</div>
+        <div><b>Bestellung:</b> {{ ai_output.purchase_order_candidate or '-' }}</div>
+        <div><b>Wareneingang:</b> {{ ai_output.goods_receipt_candidate or '-' }}</div>
+        <div><b>Eingangsrechnung:</b> {{ ai_output.invoice_candidate or '-' }}</div>
+        {% if ai_output.missing_fields %}
+          <div style="margin-top:8px;"><b>Offene Felder:</b> {{ ai_output.missing_fields|join(', ') }}</div>
+        {% endif %}
+        {% if ai_document_review and ai_document_review.status == 'open' %}
+          <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+            <form method="post" action="/system/ki-freigaben/{{ ai_document_result.log.id }}" class="inline">
+              <input type="hidden" name="action" value="approve">
+              <button class="btn small" type="submit">Freigeben</button>
+            </form>
+            <form method="post" action="/system/ki-freigaben/{{ ai_document_result.log.id }}" class="inline">
+              <input type="hidden" name="action" value="reject">
+              <button class="btn small" type="submit">Ablehnen</button>
+            </form>
+          </div>
+        {% endif %}
+      </div>
+    </details>
+  {% endif %}
+
+  <form method="post" action="/einkauf/dokumente/{{ item.id }}" class="form" style="margin-top:10px;">
+    <label>Objekttyp</label>
+    <select name="object_type">
+      <option value="purchase_order">Bestellung</option>
+      <option value="goods_receipt">Wareneingang</option>
+      <option value="purchase_invoice">Eingangsrechnung</option>
+      <option value="supplier">Lieferant</option>
+      <option value="ignored">Ignorieren</option>
+    </select>
+
+    <div class="grid2">
+      <div>
+        <label>Bestellung</label>
+        <select name="purchase_order_id">
+          <option value="0">-</option>
+          {% for row in purchase_orders %}
+            <option value="{{ row.id }}">{{ row.order_no or row.po_number }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Wareneingang</label>
+        <select name="goods_receipt_id">
+          <option value="0">-</option>
+          {% for row in goods_receipts %}
+            <option value="{{ row.id }}">{{ row.receipt_no or ('WE-' ~ row.id) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Eingangsrechnung</label>
+        <select name="purchase_invoice_id">
+          <option value="0">-</option>
+          {% for row in purchase_invoices %}
+            <option value="{{ row.id }}">{{ row.invoice_no }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">-</option>
+          {% for row in suppliers %}
+            <option value="{{ row.id }}">{{ row.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Zuordnung speichern</button>
+      <a class="btn" href="/einkauf/dokumente">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wähle den Objekttyp passend zum fachlichen Bezug des Dokuments.</li>
+  <li>Beim Speichern wird ein Link im Fachobjekt und im Dokumenteneingang gesetzt.</li>
+  <li>Ignorierte Dokumente bleiben im Dokumenteneingang sichtbar, werden aber nicht mehr als neu gezählt.</li>
+</ul>
+{% endblock %}

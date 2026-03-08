@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{{ page_title }}</h1>
+  {% if form_errors %}<div class="flash error">{{ (form_errors.values()|list)[0] }}</div>{% endif %}
+  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+    <div class="grid2">
+      <div>
+        <label>Eingangsrechnung</label>
+        <select name="purchase_invoice_id">
+          <option value="0">-</option>
+          {% for invoice in purchase_invoices %}
+            <option value="{{ invoice.id }}" {% if invoice.id == selected_purchase_invoice_id %}selected{% endif %}>{{ invoice.invoice_no }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">-</option>
+          {% for supplier in suppliers %}
+            <option value="{{ supplier.id }}" {% if supplier.id == selected_supplier_id %}selected{% endif %}>{{ supplier.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="grid3">
+      <div>
+        <label>Bestellung</label>
+        <select name="purchase_order_id"><option value="0">-</option>{% for row in purchase_orders %}<option value="{{ row.id }}">{{ row.order_no or row.po_number }}</option>{% endfor %}</select>
+      </div>
+      <div>
+        <label>Wareneingang</label>
+        <select name="goods_receipt_id"><option value="0">-</option>{% for row in goods_receipts %}<option value="{{ row.id }}">{{ row.receipt_no or ('WE-' ~ row.id) }}</option>{% endfor %}</select>
+      </div>
+      <div>
+        <label>Währung</label>
+        <input type="text" name="currency" value="{{ form_data.currency or 'EUR' }}">
+      </div>
+    </div>
+    <div class="grid2">
+      <div><label>Beschreibung</label><input type="text" name="description" value="{{ form_data.description or '' }}"></div>
+      <div><label>Verknüpftes Dokument</label><input type="text" name="linked_document_id" value="{{ form_data.linked_document_id or '' }}"></div>
+    </div>
+    <div class="grid3">
+      <div><label>Belegdatum</label><input type="date" name="voucher_date" value="{{ form_data.voucher_date or '' }}"></div>
+      <div><label>Fällig am</label><input type="date" name="due_date" value="{{ form_data.due_date or '' }}"></div>
+      <div><label>Paperless-Dokument-ID</label><input type="text" name="paperless_document_id" value="{{ form_data.paperless_document_id or '' }}"></div>
+    </div>
+    <div class="grid3">
+      <div><label>Netto</label><input type="text" name="net_total" value="{{ form_data.net_total or '' }}"></div>
+      <div><label>Steuer</label><input type="text" name="tax_total" value="{{ form_data.tax_total or '' }}"></div>
+      <div><label>Brutto</label><input type="text" name="gross_total" value="{{ form_data.gross_total or '' }}"></div>
+    </div>
+
+    {% if ai_extract_result or ai_voucher_result %}
+      <div class="grid2" style="margin-top:10px; align-items:start;">
+        {% if ai_extract_result %}
+        {% set ai_extract = ai_extract_result.output %}
+        <details class="box" open>
+          <summary class="box-title">KI-Belegdaten</summary>
+          <div class="box-body">
+            <div><b>Rechnungsnummer:</b> {{ ai_extract.invoice_no or '-' }}</div>
+            <div><b>Lieferant:</b> {{ ai_extract.supplier_candidate or '-' }}</div>
+            <div><b>Belegdatum:</b> {{ ai_extract.invoice_date or '-' }}</div>
+            <div><b>Fällig:</b> {{ ai_extract.due_date or '-' }}</div>
+            <div><b>Netto:</b> {{ ai_extract.amounts.net_total or '-' }}</div>
+            <div><b>Steuer:</b> {{ ai_extract.amounts.tax_total or '-' }}</div>
+            <div><b>Brutto:</b> {{ ai_extract.amounts.gross_total or '-' }}</div>
+            {% if ai_extract.flags %}<div style="margin-top:8px;"><b>Hinweise:</b> {{ ai_extract.flags|join(', ') }}</div>{% endif %}
+          </div>
+        </details>
+        {% endif %}
+        {% if ai_voucher_result %}
+        {% set ai_voucher = ai_voucher_result.output %}
+        <details class="box" open>
+          <summary class="box-title">KI-Kontierung</summary>
+          <div class="box-body">
+            <div><b>Status:</b> {{ ai_status_label(ai_voucher_result.log.status) }} | {{ ai_risk_label(ai_voucher_result.risk_class) }}</div>
+            <div><b>DATEV-Konto:</b> {{ ai_voucher.suggested_account_datev or '-' }}</div>
+            <div><b>Steuerregel:</b> {{ ai_voucher.suggested_tax_rule or '-' }}</div>
+            <div><b>Kostenstelle:</b> {{ ai_voucher.suggested_cost_center or '-' }}</div>
+            <div><b>Bestellungen:</b> {{ ai_voucher.candidate_po_ids|join(', ') if ai_voucher.candidate_po_ids else '-' }}</div>
+            <div><b>Wareneingänge:</b> {{ ai_voucher.candidate_receipt_ids|join(', ') if ai_voucher.candidate_receipt_ids else '-' }}</div>
+            <div><b>Buchungshinweis:</b> {{ ai_voucher.booking_note or '-' }}</div>
+            {% if ai_voucher.flags %}<div style="margin-top:8px;"><b>Hinweise:</b> {{ ai_voucher.flags|join(', ') }}</div>{% endif %}
+            {% if ai_voucher_review and ai_voucher_review.status == 'open' %}
+              <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+                <form method="post" action="/system/ki-freigaben/{{ ai_voucher_result.log.id }}" class="inline">
+                  <input type="hidden" name="action" value="approve">
+                  <button class="btn small" type="submit">Freigeben</button>
+                </form>
+                <form method="post" action="/system/ki-freigaben/{{ ai_voucher_result.log.id }}" class="inline">
+                  <input type="hidden" name="action" value="reject">
+                  <button class="btn small" type="submit">Ablehnen</button>
+                </form>
+              </div>
+            {% endif %}
+          </div>
+        </details>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <h2>Voucher-Zeilen</h2>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 120px 120px 90px 120px 120px 1.6fr 120px;">
+        <div>DATEV-Konto</div><div>Steuerregel</div><div>Steuer %</div><div>Netto</div><div>Brutto</div><div>Kommentar</div><div>Kostenstelle</div>
+      </div>
+      {% for line in line_rows %}
+        <div class="tr" style="grid-template-columns: 120px 120px 90px 120px 120px 1.6fr 120px; align-items:start;">
+          <div><input type="text" name="line_account_datev_id" value="{{ line.account_datev_id or '' }}"></div>
+          <div><input type="text" name="line_tax_rule_id" value="{{ line.tax_rule_id or '' }}"></div>
+          <div><input type="text" name="line_tax_rate" value="{{ line.tax_rate or '19' }}"></div>
+          <div><input type="text" name="line_sum_net" value="{{ line.sum_net or '' }}"></div>
+          <div><input type="text" name="line_sum_gross" value="{{ line.sum_gross or '' }}"></div>
+          <div><input type="text" name="line_comment" value="{{ line.comment or '' }}"></div>
+          <div><input type="text" name="line_cost_center_id" value="{{ line.cost_center_id or '' }}"></div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/einkauf/voucher">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

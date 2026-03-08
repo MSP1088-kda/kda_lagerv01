@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>OutSmart vorbereiten: {{ row.case_no }}</h1>
+
+  <div class="row" style="margin-bottom:10px;">
+    <a class="btn" href="/crm/vorgaenge/{{ row.id }}">Zurück zum Vorgang</a>
+    {% if outsmart_workorder %}<a class="btn" href="/outsmart/arbeitsauftraege/{{ outsmart_workorder.id }}">Lokalen Arbeitsauftrag öffnen</a>{% endif %}
+    {% if outsmart_project_link and outsmart_project_link.deep_link_url %}<a class="btn" href="{{ outsmart_project_link.deep_link_url }}" target="_blank" rel="noopener">Projekt in OutSmart öffnen</a>{% endif %}
+  </div>
+
+  <div class="grid2">
+    <div class="box">
+      <div class="box-title">Vorgang</div>
+      <div class="box-body">
+        <div><b>Titel:</b> {{ row.title }}</div>
+        <div><b>Status:</b> {{ crm_case_status_label(row.status) }}</div>
+        <div><b>Auftraggeber:</b> {{ ordering_party.party.display_name if ordering_party and ordering_party.party else '-' }}</div>
+        <div><b>Leistungsort:</b> {{ service_location.location_label if service_location else '-' }}</div>
+        <div><b>Rechnungsempfänger:</b> {{ invoice_recipient.party.display_name if invoice_recipient and invoice_recipient.party else '-' }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Sendeablauf</div>
+      <div class="box-body">
+        <div>1. Kunde als Relation spiegeln</div>
+        <div>2. Vorgang als Projekt spiegeln</div>
+        <div>3. Arbeitsauftrag mit Leistungsdreieck senden</div>
+        <form method="post" action="/crm/vorgaenge/{{ row.id }}/outsmart/senden" style="margin-top:10px;">
+          <button class="btn primary" type="submit">Jetzt an OutSmart senden</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid3" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">Relation</div>
+      <div class="box-body">
+        {% if relation_payload %}
+          {% for key, value in relation_payload|dictsort %}
+          <div><b>{{ key }}:</b> {{ value or '-' }}</div>
+          {% endfor %}
+        {% else %}
+        <div class="muted">Kein Auftraggeber vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Projekt</div>
+      <div class="box-body">
+        {% for key, value in project_payload|dictsort %}
+        <div><b>{{ key }}:</b> {{ value or '-' }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Arbeitsauftrag</div>
+      <div class="box-body">
+        {% for key, value in workorder_payload|dictsort %}
+        <div><b>{{ key }}:</b> {{ value or '-' }}</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Zugeordnete Objekte / Geräte</div>
+    <div class="box-body">
+      {% if customer_objects %}
+        {% for item in customer_objects %}
+        <div style="margin-bottom:8px;">
+          <div><b>{{ item.brand_label or item.supplier_label or 'Objekt' }}</b> {{ item.model_label or item.type_label or item.external_object_code }}</div>
+          <div class="muted">Seriennummer: {{ item.serial_no or '-' }}{% if item.deep_link_url %} | <a href="{{ item.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}</div>
+        </div>
+        {% endfor %}
+      {% else %}
+      <div class="muted">Noch keine Kundenobjekte am Vorgang gefunden.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Vorschau zeigt die exakten Felder, die an OutSmart gesendet werden.</li>
+  <li>Leistungsort und Rechnungsempfänger bleiben im Arbeitsauftrag getrennt sichtbar.</li>
+  <li>Der Sendevorgang legt danach lokale Links und Timeline-Einträge an.</li>
+</ul>
+{% endblock %}

@@ -108,9 +108,17 @@ class EmailOutbox(Base):
     __tablename__ = "email_outbox"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("email_accounts.id"), nullable=True)
+    thread_id: Mapped[int | None] = mapped_column(ForeignKey("mail_threads.id"), nullable=True)
+    mail_message_id: Mapped[int | None] = mapped_column(ForeignKey("email_messages.id"), nullable=True)
     to_email: Mapped[str] = mapped_column(String(200), nullable=False)
+    cc_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bcc_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
     subject: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("crm_cases.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")  # queued|sent|error
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -129,13 +137,28 @@ class EmailMessage(Base):
     __tablename__ = "email_messages"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("email_accounts.id"), nullable=False)
+    thread_id: Mapped[int | None] = mapped_column(ForeignKey("mail_threads.id"), nullable=True)
     folder: Mapped[str] = mapped_column(String(120), nullable=False, default="INBOX")
     uid: Mapped[str] = mapped_column(String(120), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False, default="in")
+    message_id_header: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    in_reply_to: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    references_header: Mapped[str | None] = mapped_column(Text, nullable=True)
     from_text: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    from_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    to_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cc_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bcc_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
     subject: Mapped[str | None] = mapped_column(String(300), nullable=True)
     date_text: Mapped[str | None] = mapped_column(String(120), nullable=True)
     snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assignment_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unassigned")
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("crm_cases.id"), nullable=True)
     fetched_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     account = relationship("EmailAccount")
@@ -143,6 +166,59 @@ class EmailMessage(Base):
     __table_args__ = (
         UniqueConstraint("account_id", "folder", "uid", name="uq_email_message_uid"),
         Index("ix_email_messages_account_fetched", "account_id", "fetched_at"),
+        Index("ix_email_messages_thread", "thread_id"),
+        Index("ix_email_messages_assignment", "assignment_status"),
+        Index("ix_email_messages_message_id_header", "message_id_header"),
+    )
+
+
+class MailThread(Base):
+    __tablename__ = "mail_threads"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subject_normalized: Mapped[str] = mapped_column(String(300), nullable=False)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("crm_cases.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    last_message_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_mail_threads_subject", "subject_normalized"),
+        Index("ix_mail_threads_customer", "master_customer_id"),
+        Index("ix_mail_threads_case", "case_id"),
+        Index("ix_mail_threads_last_message_at", "last_message_at"),
+    )
+
+
+class MailAttachment(Base):
+    __tablename__ = "mail_attachments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mail_message_id: Mapped[int] = mapped_column(ForeignKey("email_messages.id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(300), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    file_path: Mapped[str] = mapped_column(String(600), nullable=False)
+    paperless_document_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_mail_attachments_message", "mail_message_id"),
+        Index("ix_mail_attachments_paperless", "paperless_document_id"),
+    )
+
+
+class MailTemplate(Base):
+    __tablename__ = "mail_templates"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    template_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    subject_template: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    body_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("template_key", name="uq_mail_templates_template_key"),
+        Index("ix_mail_templates_active", "active"),
     )
 
 
@@ -246,6 +322,7 @@ class Product(Base):
     material_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     search_blob: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_url: Mapped[str | None] = mapped_column(String(600), nullable=True)
     image_url_1: Mapped[str | None] = mapped_column(String(600), nullable=True)
     image_url_2: Mapped[str | None] = mapped_column(String(600), nullable=True)
     image_url_3: Mapped[str | None] = mapped_column(String(600), nullable=True)
@@ -264,6 +341,28 @@ class Product(Base):
     manufacturer_ref = relationship("Manufacturer")
     attribute_values = relationship("ProductAttributeValue", back_populates="product", cascade="all, delete-orphan")
     feature_values = relationship("FeatureValue", back_populates="product", cascade="all, delete-orphan")
+    accessory_links = relationship(
+        "ProductAccessoryLink",
+        foreign_keys="ProductAccessoryLink.product_id",
+        back_populates="product",
+        cascade="all, delete-orphan",
+    )
+    accessory_linked_from = relationship(
+        "ProductAccessoryLink",
+        foreign_keys="ProductAccessoryLink.accessory_product_id",
+        back_populates="accessory_product",
+    )
+    accessory_references = relationship(
+        "ProductAccessoryReference",
+        foreign_keys="ProductAccessoryReference.product_id",
+        back_populates="product",
+        cascade="all, delete-orphan",
+    )
+    accessory_matched_references = relationship(
+        "ProductAccessoryReference",
+        foreign_keys="ProductAccessoryReference.matched_product_id",
+        back_populates="matched_product",
+    )
 
     __table_args__ = (
         Index("ix_products_name", "name"),
@@ -363,11 +462,52 @@ class FeatureDef(Base):
     )
 
 
+class FeatureOption(Base):
+    __tablename__ = "feature_options"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    feature_def_id: Mapped[int] = mapped_column(ForeignKey("feature_defs.id"), nullable=False)
+    canonical_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    label_de: Mapped[str] = mapped_column(String(200), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    feature_def = relationship("FeatureDef")
+    aliases = relationship("FeatureOptionAlias", back_populates="option", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("feature_def_id", "canonical_key", name="uq_feature_option_canonical"),
+        Index("ix_feature_option_feature_active", "feature_def_id", "active"),
+        Index("ix_feature_option_feature_sort", "feature_def_id", "sort_order"),
+    )
+
+
+class FeatureOptionAlias(Base):
+    __tablename__ = "feature_option_aliases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    option_id: Mapped[int] = mapped_column(ForeignKey("feature_options.id"), nullable=False)
+    alias_text: Mapped[str] = mapped_column(String(220), nullable=False)
+    alias_norm: Mapped[str] = mapped_column(String(220), nullable=False)
+    manufacturer_id: Mapped[int | None] = mapped_column(ForeignKey("manufacturers.id"), nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+
+    option = relationship("FeatureOption", back_populates="aliases")
+    manufacturer_ref = relationship("Manufacturer")
+
+    __table_args__ = (
+        UniqueConstraint("option_id", "alias_text", "manufacturer_id", name="uq_feature_option_alias"),
+        Index("ix_feature_option_alias_option", "option_id"),
+        Index("ix_feature_option_alias_norm", "alias_norm"),
+        Index("ix_feature_option_alias_manufacturer", "manufacturer_id"),
+    )
+
+
 class FeatureValue(Base):
     __tablename__ = "feature_values"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     feature_def_id: Mapped[int] = mapped_column(ForeignKey("feature_defs.id"), nullable=False)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    option_id: Mapped[int | None] = mapped_column(ForeignKey("feature_options.id"), nullable=True)
     value_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     value_num: Mapped[float | None] = mapped_column(Float, nullable=True)
     value_bool: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -375,11 +515,14 @@ class FeatureValue(Base):
 
     product = relationship("Product", back_populates="feature_values")
     feature_def = relationship("FeatureDef")
+    option = relationship("FeatureOption")
 
     __table_args__ = (
         UniqueConstraint("product_id", "feature_def_id", name="uq_featurevalue_product_feature"),
         Index("ix_featurevalue_feature", "feature_def_id"),
         Index("ix_featurevalue_product", "product_id"),
+        Index("ix_featurevalue_option", "option_id"),
+        Index("ix_featurevalue_feature_option", "feature_def_id", "option_id"),
         Index("ix_featurevalue_norm", "value_norm"),
         Index("ix_featurevalue_num", "value_num"),
         Index("ix_featurevalue_bool", "value_bool"),
@@ -414,10 +557,10 @@ class ImportProfileMap(Base):
     __tablename__ = "import_profile_maps"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     profile_id: Mapped[int] = mapped_column(ForeignKey("import_profiles.id"), nullable=False)
-    map_type: Mapped[str] = mapped_column(String(30), nullable=False)  # product_field|feature
+    map_type: Mapped[str] = mapped_column(String(30), nullable=False)  # product_field|feature|accessory
     target_key: Mapped[str] = mapped_column(String(180), nullable=False)
     source_column: Mapped[str] = mapped_column(String(200), nullable=False)
-    data_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    data_type: Mapped[str | None] = mapped_column(String(20), nullable=True)  # feature-type or accessory separator_mode
 
     __table_args__ = (
         UniqueConstraint("profile_id", "map_type", "target_key", name="uq_import_profile_map_target"),
@@ -440,6 +583,78 @@ class ImportRun(Base):
     __table_args__ = (
         Index("ix_import_runs_started", "started_at"),
         Index("ix_import_runs_profile", "profile_id"),
+    )
+
+
+class ImportDraft(Base):
+    __tablename__ = "import_drafts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="uploaded")
+    filename_original: Mapped[str | None] = mapped_column(String(260), nullable=True)
+    file_path_tmp: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    delimiter: Mapped[str] = mapped_column(String(5), nullable=False, default=";")
+    encoding: Mapped[str] = mapped_column(String(40), nullable=False, default="utf-8")
+    has_header: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    manufacturer_id: Mapped[int | None] = mapped_column(ForeignKey("manufacturers.id"), nullable=True)
+    device_kind_id: Mapped[int | None] = mapped_column(ForeignKey("device_kinds.id"), nullable=True)
+    import_profile_id: Mapped[int | None] = mapped_column(ForeignKey("import_profiles.id"), nullable=True)
+    current_step: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    mapping_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_errors_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_preview_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    __table_args__ = (
+        Index("ix_import_drafts_updated_at", "updated_at"),
+        Index("ix_import_drafts_status", "status"),
+        Index("ix_import_drafts_lookup", "manufacturer_id", "device_kind_id"),
+    )
+
+
+class ProductAccessoryLink(Base):
+    __tablename__ = "product_accessory_links"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    accessory_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="csv")
+    import_run_id: Mapped[int | None] = mapped_column(ForeignKey("import_runs.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    product = relationship("Product", foreign_keys=[product_id], back_populates="accessory_links")
+    accessory_product = relationship("Product", foreign_keys=[accessory_product_id], back_populates="accessory_linked_from")
+
+    __table_args__ = (
+        UniqueConstraint("product_id", "accessory_product_id", name="uq_product_accessory_link_pair"),
+        Index("ix_product_accessory_link_product", "product_id"),
+        Index("ix_product_accessory_link_accessory", "accessory_product_id"),
+        Index("ix_product_accessory_link_run", "import_run_id"),
+    )
+
+
+class ProductAccessoryReference(Base):
+    __tablename__ = "product_accessory_references"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    raw_value: Mapped[str] = mapped_column(String(260), nullable=False)
+    normalized_value: Mapped[str] = mapped_column(String(260), nullable=False)
+    manufacturer_id: Mapped[int | None] = mapped_column(ForeignKey("manufacturers.id"), nullable=True)
+    device_kind_id: Mapped[int | None] = mapped_column(ForeignKey("device_kinds.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    matched_product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    import_run_id: Mapped[int | None] = mapped_column(ForeignKey("import_runs.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    product = relationship("Product", foreign_keys=[product_id], back_populates="accessory_references")
+    matched_product = relationship("Product", foreign_keys=[matched_product_id], back_populates="accessory_matched_references")
+
+    __table_args__ = (
+        Index("ix_product_accessory_ref_product", "product_id"),
+        Index("ix_product_accessory_ref_status", "status"),
+        Index("ix_product_accessory_ref_norm", "normalized_value"),
+        Index("ix_product_accessory_ref_matched", "matched_product_id"),
+        Index("ix_product_accessory_ref_run", "import_run_id"),
     )
 
 
@@ -501,6 +716,24 @@ class Owner(Base):
 
     __table_args__ = (
         Index("ix_owners_active", "active"),
+    )
+
+
+class SparePartCapture(Base):
+    __tablename__ = "spare_part_captures"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id"), nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    image_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_spare_part_capture_created_at", "created_at"),
+        Index("ix_spare_part_capture_owner_id", "owner_id"),
+        Index("ix_spare_part_capture_warehouse_id", "warehouse_id"),
     )
 
 
@@ -649,15 +882,44 @@ class Attachment(Base):
 class RepairOrder(Base):
     __tablename__ = "repair_orders"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repair_no: Mapped[str | None] = mapped_column(String(40), nullable=True, unique=True)
+    article_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|in_repair|returned|closed
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="ENTWURF")
+    outcome: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
+    repair_warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
+    target_warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
+    reservation_ref: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outsmart_row_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    commissioned_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    commission_account_id: Mapped[int | None] = mapped_column(ForeignKey("email_accounts.id"), nullable=True)
+    commission_email_uid: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    commission_message_id: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    commission_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    repair_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    shipping_carrier: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    tracking_no: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    tracking_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    commission_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    closed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     supplier = relationship("Supplier")
+    commission_account = relationship("EmailAccount", foreign_keys=[commission_account_id])
 
-    __table_args__ = (Index("ix_repair_order_status", "status"),)
+    __table_args__ = (
+        Index("ix_repair_order_status", "status"),
+        Index("ix_repair_orders_article_id", "article_id"),
+        Index("ix_repair_orders_supplier_id", "supplier_id"),
+        Index("ix_repair_orders_commission_account_id", "commission_account_id"),
+    )
 
 
 class RepairOrderLine(Base):
@@ -674,14 +936,70 @@ class RepairOrderLine(Base):
     __table_args__ = (Index("ix_repair_order_line_order", "repair_order_id"),)
 
 
+class RepairEvent(Base):
+    __tablename__ = "repair_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repair_order_id: Mapped[int] = mapped_column(ForeignKey("repair_orders.id"), nullable=False)
+    ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False, default="")
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_repair_event_order_ts", "repair_order_id", "ts"),
+        Index("ix_repair_event_type", "event_type"),
+    )
+
+
+class RepairAttachment(Base):
+    __tablename__ = "repair_attachments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repair_event_id: Mapped[int] = mapped_column(ForeignKey("repair_events.id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(260), nullable=False)
+    mime: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    paperless_document_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    outsmart_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_repair_attachment_event", "repair_event_id"),)
+
+
+class RepairMailLink(Base):
+    __tablename__ = "repair_mail_links"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repair_order_id: Mapped[int] = mapped_column(ForeignKey("repair_orders.id"), nullable=False)
+    account_id: Mapped[int] = mapped_column(ForeignKey("email_accounts.id"), nullable=False)
+    uid: Mapped[str] = mapped_column(String(120), nullable=False)
+    message_id: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "uid", name="uq_repair_mail_account_uid"),
+        Index("ix_repair_mail_order", "repair_order_id"),
+    )
+
+
 class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    order_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     po_number: Mapped[str] = mapped_column(String(120), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")  # draft|sent|confirmed|received
+    order_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
+    wanted_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="draft",
+    )  # draft|sent|confirmed|partially_received|received|closed|cancelled
+    condition_set_id: Mapped[int | None] = mapped_column(ForeignKey("supplier_condition_sets.id"), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paperless_document_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confirmed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -689,6 +1007,7 @@ class PurchaseOrder(Base):
 
     __table_args__ = (
         UniqueConstraint("po_number", name="uq_purchase_orders_po_number"),
+        Index("ix_purchase_orders_order_no", "order_no", unique=True),
         Index("ix_purchase_orders_status", "status"),
     )
 
@@ -699,10 +1018,936 @@ class PurchaseOrderLine(Base):
     purchase_order_id: Mapped[int] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    qty_ordered: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    qty_received: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     expected_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     confirmed_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unit_price_expected: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    supplier_product_no: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("ix_purchase_order_lines_order", "purchase_order_id"),)
+
+
+class SupplierConditionSet(Base):
+    __tablename__ = "supplier_condition_sets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    customer_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    agreement_version: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    brand_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    valid_from: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_to: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    skonto_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payment_term_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    skonto_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    basic_discount_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    extra_discount_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    basis_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    freight_free_from: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    min_order_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bonus_target_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bonus_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    applies_to: Mapped[str] = mapped_column(String(30), nullable=False, default="all")
+    manufacturer_id: Mapped[int | None] = mapped_column(ForeignKey("manufacturers.id"), nullable=True)
+    device_kind_id: Mapped[int | None] = mapped_column(ForeignKey("device_kinds.id"), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_supplier_condition_sets_supplier", "supplier_id"),
+        Index("ix_supplier_condition_sets_active", "active"),
+    )
+
+
+class SupplierConditionProgress(Base):
+    __tablename__ = "supplier_condition_progress"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    condition_set_id: Mapped[int] = mapped_column(ForeignKey("supplier_condition_sets.id"), nullable=False)
+    period_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    target_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    current_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    missing_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_calculated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("condition_set_id", "period_key", name="uq_supplier_condition_progress_period"),
+        Index("ix_supplier_condition_progress_condition", "condition_set_id"),
+    )
+
+
+class SupplierConditionTarget(Base):
+    __tablename__ = "supplier_condition_targets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    condition_set_id: Mapped[int] = mapped_column(ForeignKey("supplier_condition_sets.id"), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("condition_set_id", "target_type", name="uq_supplier_condition_target_type"),
+        Index("ix_supplier_condition_targets_condition", "condition_set_id"),
+    )
+
+
+class SupplierConditionBonusTier(Base):
+    __tablename__ = "supplier_condition_bonus_tiers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    condition_set_id: Mapped[int] = mapped_column(ForeignKey("supplier_condition_sets.id"), nullable=False)
+    bonus_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    threshold_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    percent_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount_eur: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_supplier_condition_bonus_tiers_condition", "condition_set_id"),
+        Index("ix_supplier_condition_bonus_tiers_kind", "bonus_kind"),
+    )
+
+
+class SupplierConditionFlatBonus(Base):
+    __tablename__ = "supplier_condition_flat_bonuses"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    condition_set_id: Mapped[int] = mapped_column(ForeignKey("supplier_condition_sets.id"), nullable=False)
+    bonus_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    percent_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("condition_set_id", "bonus_kind", name="uq_supplier_condition_flat_bonus_kind"),
+        Index("ix_supplier_condition_flat_bonuses_condition", "condition_set_id"),
+    )
+
+
+class GoodsReceipt(Base):
+    __tablename__ = "goods_receipts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False)
+    purchase_order_id: Mapped[int | None] = mapped_column(ForeignKey("purchase_orders.id"), nullable=True)
+    receipt_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    receipt_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    delivery_note_no: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    paperless_document_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|posted|closed
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("receipt_no", name="uq_goods_receipts_receipt_no"),
+        Index("ix_goods_receipts_supplier", "supplier_id"),
+        Index("ix_goods_receipts_status", "status"),
+    )
+
+
+class GoodsReceiptLine(Base):
+    __tablename__ = "goods_receipt_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    goods_receipt_id: Mapped[int] = mapped_column(ForeignKey("goods_receipts.id"), nullable=False)
+    purchase_order_line_id: Mapped[int | None] = mapped_column(ForeignKey("purchase_order_lines.id"), nullable=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    qty_received: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    unit_cost_received: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    condition_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_goods_receipt_lines_receipt", "goods_receipt_id"),
+        Index("ix_goods_receipt_lines_po_line", "purchase_order_line_id"),
+    )
+
+
+class PurchaseInvoice(Base):
+    __tablename__ = "purchase_invoices"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False)
+    invoice_no: Mapped[str] = mapped_column(String(160), nullable=False)
+    invoice_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
+    due_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paperless_document_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="draft",
+    )  # draft|matched|approved|booked|paid|disputed
+    net_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tax_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gross_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("supplier_id", "invoice_no", name="uq_purchase_invoice_supplier_invoice"),
+        Index("ix_purchase_invoices_status", "status"),
+        Index("ix_purchase_invoices_supplier", "supplier_id"),
+    )
+
+
+class PurchaseInvoiceLine(Base):
+    __tablename__ = "purchase_invoice_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    purchase_invoice_id: Mapped[int] = mapped_column(ForeignKey("purchase_invoices.id"), nullable=False)
+    goods_receipt_line_id: Mapped[int | None] = mapped_column(ForeignKey("goods_receipt_lines.id"), nullable=True)
+    purchase_order_line_id: Mapped[int | None] = mapped_column(ForeignKey("purchase_order_lines.id"), nullable=True)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    unit_cost_invoiced: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_purchase_invoice_lines_invoice", "purchase_invoice_id"),
+        Index("ix_purchase_invoice_lines_gr_line", "goods_receipt_line_id"),
+        Index("ix_purchase_invoice_lines_po_line", "purchase_order_line_id"),
+    )
+
+
+class ProductPurchasePrice(Base):
+    __tablename__ = "product_purchase_prices"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)  # order|receipt|invoice|manual
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    effective_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
+    qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unit_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extra_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discount_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    effective_unit_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_product_purchase_prices_product", "product_id"),
+        Index("ix_product_purchase_prices_supplier", "supplier_id"),
+        Index("ix_product_purchase_prices_effective", "effective_date"),
+    )
+
+
+class AgreementImportDraft(Base):
+    __tablename__ = "agreement_import_drafts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    condition_set_id: Mapped[int | None] = mapped_column(ForeignKey("supplier_condition_sets.id"), nullable=True)
+    supplier_key: Mapped[str] = mapped_column(String(40), nullable=False, default="seg")
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_filename: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    paperless_document_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="new")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        Index("ix_agreement_import_drafts_supplier", "supplier_id"),
+        Index("ix_agreement_import_drafts_status", "status"),
+        Index("ix_agreement_import_drafts_paperless", "paperless_document_id"),
+    )
+
+
+class PaperlessLink(Base):
+    __tablename__ = "paperless_links"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    object_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    object_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    paperless_document_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    paperless_title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("object_type", "object_id", "paperless_document_id", name="uq_paperless_link_object_document"),
+        Index("ix_paperless_links_object", "object_type", "object_id"),
+    )
+
+
+class DocumentInboxItem(Base):
+    __tablename__ = "document_inbox_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    paperless_document_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    correspondent: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    document_type: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    created_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="new")  # new|matched|ignored
+    suggested_object_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    suggested_object_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("paperless_document_id", name="uq_document_inbox_paperless_doc"),
+        Index("ix_document_inbox_status", "status"),
+    )
+
+
+class ExternalSyncJob(Base):
+    __tablename__ = "external_sync_jobs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    system_name: Mapped[str] = mapped_column(String(40), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    log_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_external_sync_jobs_system", "system_name"),
+        Index("ix_external_sync_jobs_status", "status"),
+    )
+
+
+class ExternalLink(Base):
+    __tablename__ = "external_links"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    system_name: Mapped[str] = mapped_column(String(40), nullable=False)
+    object_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    object_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    external_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    external_row_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    deep_link_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("system_name", "object_type", "object_id", name="uq_external_link_object"),
+        Index("ix_external_links_external_key", "external_key"),
+    )
+
+
+class Party(Base):
+    __tablename__ = "parties"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    party_type: Mapped[str] = mapped_column(String(30), nullable=False, default="company")
+    display_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    addresses = relationship("Address", back_populates="party")
+
+    __table_args__ = (
+        Index("ix_parties_display_name", "display_name"),
+        Index("ix_parties_active", "active"),
+    )
+
+
+class Address(Base):
+    __tablename__ = "addresses"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    party_id: Mapped[int] = mapped_column(ForeignKey("parties.id"), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    street: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    house_no: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    zip_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    country_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    party = relationship("Party", back_populates="addresses")
+
+    __table_args__ = (
+        Index("ix_addresses_party", "party_id"),
+        Index("ix_addresses_default", "party_id", "is_default"),
+    )
+
+
+class MasterCustomer(Base):
+    __tablename__ = "master_customers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    party_id: Mapped[int] = mapped_column(ForeignKey("parties.id"), nullable=False)
+    customer_no_internal: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    party = relationship("Party")
+
+    __table_args__ = (
+        UniqueConstraint("customer_no_internal", name="uq_master_customers_customer_no_internal"),
+        Index("ix_master_customers_party", "party_id"),
+        Index("ix_master_customers_status", "status"),
+    )
+
+
+class ServiceLocation(Base):
+    __tablename__ = "service_locations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    party_id: Mapped[int | None] = mapped_column(ForeignKey("parties.id"), nullable=True)
+    address_id: Mapped[int] = mapped_column(ForeignKey("addresses.id"), nullable=False)
+    location_label: Mapped[str] = mapped_column(String(240), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    master_customer = relationship("MasterCustomer")
+    party = relationship("Party")
+    address = relationship("Address")
+
+    __table_args__ = (
+        Index("ix_service_locations_customer", "master_customer_id"),
+        Index("ix_service_locations_address", "address_id"),
+        Index("ix_service_locations_active", "active"),
+    )
+
+
+class Case(Base):
+    __tablename__ = "crm_cases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_no: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    priority: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source_system: Mapped[str] = mapped_column(String(20), nullable=False, default="local")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("case_no", name="uq_crm_cases_case_no"),
+        Index("ix_crm_cases_status", "status"),
+        Index("ix_crm_cases_source_system", "source_system"),
+    )
+
+
+class RoleAssignment(Base):
+    __tablename__ = "role_assignments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("crm_cases.id"), nullable=False)
+    role_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    service_location_id: Mapped[int | None] = mapped_column(ForeignKey("service_locations.id"), nullable=True)
+    address_id: Mapped[int | None] = mapped_column(ForeignKey("addresses.id"), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    crm_case = relationship("Case")
+    master_customer = relationship("MasterCustomer")
+    service_location = relationship("ServiceLocation")
+    address = relationship("Address")
+
+    __table_args__ = (
+        UniqueConstraint("case_id", "role_type", name="uq_role_assignments_case_role"),
+        Index("ix_role_assignments_case", "case_id"),
+        Index("ix_role_assignments_customer", "master_customer_id"),
+        Index("ix_role_assignments_location", "service_location_id"),
+    )
+
+
+class ExternalIdentity(Base):
+    __tablename__ = "external_identities"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    master_customer_id: Mapped[int] = mapped_column(ForeignKey("master_customers.id"), nullable=False)
+    system_name: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    master_customer = relationship("MasterCustomer")
+
+    __table_args__ = (
+        UniqueConstraint("system_name", "external_type", "external_key", name="uq_external_identities_key"),
+        Index("ix_external_identities_customer", "master_customer_id"),
+        Index("ix_external_identities_system", "system_name"),
+        Index("ix_external_identities_external_id", "external_id"),
+    )
+
+
+class CustomerContactPerson(Base):
+    __tablename__ = "customer_contact_persons"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    master_customer_id: Mapped[int] = mapped_column(ForeignKey("master_customers.id"), nullable=False)
+    party_id: Mapped[int] = mapped_column(ForeignKey("parties.id"), nullable=False)
+    role_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    master_customer = relationship("MasterCustomer")
+    party = relationship("Party")
+
+    __table_args__ = (
+        Index("ix_customer_contact_persons_customer", "master_customer_id"),
+        Index("ix_customer_contact_persons_party", "party_id"),
+        Index("ix_customer_contact_persons_active", "active"),
+    )
+
+
+class CustomerObject(Base):
+    __tablename__ = "customer_objects"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    service_location_id: Mapped[int | None] = mapped_column(ForeignKey("service_locations.id"), nullable=True)
+    external_object_code: Mapped[str] = mapped_column(String(160), nullable=False)
+    external_row_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    supplier_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    brand_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    model_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    type_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    serial_no: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    warranty_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    installation_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    inspection_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    freefields_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    object_parts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deep_link_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    master_customer = relationship("MasterCustomer")
+    service_location = relationship("ServiceLocation")
+
+    __table_args__ = (
+        UniqueConstraint("external_object_code", name="uq_customer_objects_external_object_code"),
+        Index("ix_customer_objects_customer", "master_customer_id"),
+        Index("ix_customer_objects_location", "service_location_id"),
+        Index("ix_customer_objects_external_row_id", "external_row_id"),
+    )
+
+
+class OutsmartWorkorder(Base):
+    __tablename__ = "outsmart_workorders"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("crm_cases.id"), nullable=True)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    service_location_id: Mapped[int | None] = mapped_column(ForeignKey("service_locations.id"), nullable=True)
+    customer_object_id: Mapped[int | None] = mapped_column(ForeignKey("customer_objects.id"), nullable=True)
+    external_row_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    workorder_no: Mapped[str] = mapped_column(String(160), nullable=False)
+    project_external_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    scheduled_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_end: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    employee_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    short_description: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    work_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    internal_work_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pdf_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    word_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    forms_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photos_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    materials_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workperiods_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workobjects_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    employees_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deep_link_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    crm_case = relationship("Case")
+    master_customer = relationship("MasterCustomer")
+    service_location = relationship("ServiceLocation")
+    customer_object = relationship("CustomerObject")
+
+    __table_args__ = (
+        UniqueConstraint("workorder_no", name="uq_outsmart_workorders_workorder_no"),
+        Index("ix_outsmart_workorders_case", "case_id"),
+        Index("ix_outsmart_workorders_customer", "master_customer_id"),
+        Index("ix_outsmart_workorders_external_row_id", "external_row_id"),
+        Index("ix_outsmart_workorders_status", "status"),
+    )
+
+
+class CrmTimelineEvent(Base):
+    __tablename__ = "crm_timeline_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("crm_cases.id"), nullable=True)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    service_location_id: Mapped[int | None] = mapped_column(ForeignKey("service_locations.id"), nullable=True)
+    customer_object_id: Mapped[int | None] = mapped_column(ForeignKey("customer_objects.id"), nullable=True)
+    outsmart_workorder_id: Mapped[int | None] = mapped_column(ForeignKey("outsmart_workorders.id"), nullable=True)
+    source_system: Mapped[str] = mapped_column(String(40), nullable=False, default="local")
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False, default="note")
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    external_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    meta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    crm_case = relationship("Case")
+    master_customer = relationship("MasterCustomer")
+    service_location = relationship("ServiceLocation")
+    customer_object = relationship("CustomerObject")
+    outsmart_workorder = relationship("OutsmartWorkorder")
+
+    __table_args__ = (
+        Index("ix_crm_timeline_case", "case_id"),
+        Index("ix_crm_timeline_customer", "master_customer_id"),
+        Index("ix_crm_timeline_workorder", "outsmart_workorder_id"),
+        Index("ix_crm_timeline_event_ts", "event_ts"),
+    )
+
+
+class OfferDraft(Base):
+    __tablename__ = "offer_drafts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("crm_cases.id"), nullable=True)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    ordering_party_assignment_id: Mapped[int | None] = mapped_column(ForeignKey("role_assignments.id"), nullable=True)
+    service_location_assignment_id: Mapped[int | None] = mapped_column(ForeignKey("role_assignments.id"), nullable=True)
+    invoice_recipient_assignment_id: Mapped[int | None] = mapped_column(ForeignKey("role_assignments.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    sevdesk_order_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    sevdesk_order_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    sevdesk_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    pdf_url_local: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    crm_case = relationship("Case")
+    master_customer = relationship("MasterCustomer")
+
+    __table_args__ = (
+        Index("ix_offer_drafts_case", "case_id"),
+        Index("ix_offer_drafts_customer", "master_customer_id"),
+        Index("ix_offer_drafts_status", "status"),
+        Index("ix_offer_drafts_order_id", "sevdesk_order_id"),
+    )
+
+
+class OfferDraftLine(Base):
+    __tablename__ = "offer_draft_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    offer_draft_id: Mapped[int] = mapped_column(ForeignKey("offer_drafts.id"), nullable=False)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    qty: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    unit: Mapped[str] = mapped_column(String(40), nullable=False, default="Stk")
+    unit_price_net: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tax_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.19)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    offer_draft = relationship("OfferDraft")
+    product = relationship("Product")
+
+    __table_args__ = (
+        Index("ix_offer_draft_lines_offer", "offer_draft_id"),
+        Index("ix_offer_draft_lines_product", "product_id"),
+    )
+
+
+class InvoiceDraft(Base):
+    __tablename__ = "invoice_drafts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("crm_cases.id"), nullable=True)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    invoice_recipient_assignment_id: Mapped[int | None] = mapped_column(ForeignKey("role_assignments.id"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
+    offer_draft_id: Mapped[int | None] = mapped_column(ForeignKey("offer_drafts.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    sevdesk_invoice_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    sevdesk_invoice_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    sevdesk_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    pdf_url_local: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
+    invoice_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    crm_case = relationship("Case")
+    master_customer = relationship("MasterCustomer")
+    offer_draft = relationship("OfferDraft")
+
+    __table_args__ = (
+        Index("ix_invoice_drafts_case", "case_id"),
+        Index("ix_invoice_drafts_customer", "master_customer_id"),
+        Index("ix_invoice_drafts_status", "status"),
+        Index("ix_invoice_drafts_invoice_id", "sevdesk_invoice_id"),
+    )
+
+
+class InvoiceDraftLine(Base):
+    __tablename__ = "invoice_draft_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    invoice_draft_id: Mapped[int] = mapped_column(ForeignKey("invoice_drafts.id"), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    qty: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    unit: Mapped[str] = mapped_column(String(40), nullable=False, default="Stk")
+    unit_price_net: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tax_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.19)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    invoice_draft = relationship("InvoiceDraft")
+    product = relationship("Product")
+
+    __table_args__ = (
+        Index("ix_invoice_draft_lines_invoice", "invoice_draft_id"),
+        Index("ix_invoice_draft_lines_product", "product_id"),
+    )
+
+
+class IncomingVoucherDraft(Base):
+    __tablename__ = "incoming_voucher_drafts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False)
+    purchase_invoice_id: Mapped[int | None] = mapped_column(ForeignKey("purchase_invoices.id"), nullable=True)
+    linked_document_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    paperless_document_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    purchase_order_id: Mapped[int | None] = mapped_column(ForeignKey("purchase_orders.id"), nullable=True)
+    goods_receipt_id: Mapped[int | None] = mapped_column(ForeignKey("goods_receipts.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    sevdesk_voucher_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    sevdesk_voucher_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    description: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    voucher_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    net_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tax_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gross_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    supplier = relationship("Supplier")
+    purchase_invoice = relationship("PurchaseInvoice")
+    purchase_order = relationship("PurchaseOrder")
+    goods_receipt = relationship("GoodsReceipt")
+
+    __table_args__ = (
+        Index("ix_incoming_voucher_drafts_supplier", "supplier_id"),
+        Index("ix_incoming_voucher_drafts_invoice", "purchase_invoice_id"),
+        Index("ix_incoming_voucher_drafts_status", "status"),
+        Index("ix_incoming_voucher_drafts_voucher_id", "sevdesk_voucher_id"),
+    )
+
+
+class IncomingVoucherDraftLine(Base):
+    __tablename__ = "incoming_voucher_draft_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    incoming_voucher_draft_id: Mapped[int] = mapped_column(ForeignKey("incoming_voucher_drafts.id"), nullable=False)
+    account_datev_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    tax_rule_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    tax_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.19)
+    sum_net: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sum_gross: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cost_center_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    incoming_voucher_draft = relationship("IncomingVoucherDraft")
+
+    __table_args__ = (
+        Index("ix_incoming_voucher_draft_lines_voucher", "incoming_voucher_draft_id"),
+    )
+
+
+class DunningCase(Base):
+    __tablename__ = "dunning_cases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    invoice_draft_id: Mapped[int | None] = mapped_column(ForeignKey("invoice_drafts.id"), nullable=True)
+    sevdesk_invoice_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("master_customers.id"), nullable=False)
+    current_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    due_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    amount_due: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    next_action_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_contact_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    invoice_draft = relationship("InvoiceDraft")
+    customer = relationship("MasterCustomer")
+
+    __table_args__ = (
+        UniqueConstraint("invoice_draft_id", name="uq_dunning_cases_invoice_draft"),
+        Index("ix_dunning_cases_customer", "customer_id"),
+        Index("ix_dunning_cases_status", "status"),
+        Index("ix_dunning_cases_next_action", "next_action_at"),
+    )
+
+
+class DunningAction(Base):
+    __tablename__ = "dunning_actions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dunning_case_id: Mapped[int] = mapped_column(ForeignKey("dunning_cases.id"), nullable=False)
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    action_type: Mapped[str] = mapped_column(String(20), nullable=False, default="note")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mail_outbox_id: Mapped[int | None] = mapped_column(ForeignKey("email_outbox.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    dunning_case = relationship("DunningCase")
+    mail_outbox = relationship("EmailOutbox")
+
+    __table_args__ = (
+        Index("ix_dunning_actions_case", "dunning_case_id"),
+        Index("ix_dunning_actions_type", "action_type"),
+        Index("ix_dunning_actions_created", "created_at"),
+    )
+
+
+class AiPromptDefinition(Base):
+    __tablename__ = "ai_prompt_definitions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    user_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    output_schema_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("task_name", "version", name="uq_ai_prompt_definitions_task_version"),
+        Index("ix_ai_prompt_definitions_task", "task_name"),
+        Index("ix_ai_prompt_definitions_active", "active"),
+    )
+
+
+class AiDecisionLog(Base):
+    __tablename__ = "ai_decision_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(120), nullable=False, default="local-heuristic")
+    risk_class: Mapped[str] = mapped_column(String(20), nullable=False, default="gruen")
+    input_refs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="suggested")
+    approved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    override_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    related_object_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    related_object_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    approved_by = relationship("User")
+
+    __table_args__ = (
+        Index("ix_ai_decision_logs_task", "task_name"),
+        Index("ix_ai_decision_logs_status", "status"),
+        Index("ix_ai_decision_logs_object", "related_object_type", "related_object_id"),
+        Index("ix_ai_decision_logs_created", "created_at"),
+    )
+
+
+class AiReviewQueueItem(Base):
+    __tablename__ = "ai_review_queue_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ai_decision_log_id: Mapped[int] = mapped_column(ForeignKey("ai_decision_logs.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    object_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    object_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    priority: Mapped[str] = mapped_column(String(20), nullable=False, default="mittel")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    ai_decision_log = relationship("AiDecisionLog")
+
+    __table_args__ = (
+        Index("ix_ai_review_queue_status", "status"),
+        Index("ix_ai_review_queue_priority", "priority"),
+        Index("ix_ai_review_queue_object", "object_type", "object_id"),
+    )
+
+
+class SupervisorFinding(Base):
+    __tablename__ = "supervisor_findings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    finding_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="mittel")
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    suggested_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    related_object_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    related_object_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ai_decision_log_id: Mapped[int | None] = mapped_column(ForeignKey("ai_decision_logs.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    ai_decision_log = relationship("AiDecisionLog")
+
+    __table_args__ = (
+        Index("ix_supervisor_findings_type", "finding_type"),
+        Index("ix_supervisor_findings_status", "status"),
+        Index("ix_supervisor_findings_severity", "severity"),
+        Index("ix_supervisor_findings_object", "related_object_type", "related_object_id"),
+    )
+
+
+class ProcedureGuidelineSection(Base):
+    __tablename__ = "procedure_guideline_sections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    section_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    content_markdown: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    updated_by = relationship("User")
+
+    __table_args__ = (
+        UniqueConstraint("section_key", "version", name="uq_procedure_guideline_section_version"),
+        Index("ix_procedure_guideline_sections_key", "section_key"),
+        Index("ix_procedure_guideline_sections_active", "active"),
+    )
+
+
+class AiEvalCase(Base):
+    __tablename__ = "ai_eval_cases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    input_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    expected_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    __table_args__ = (
+        Index("ix_ai_eval_cases_task", "task_name"),
+        Index("ix_ai_eval_cases_active", "active"),
+    )
+
+
+class AiEvalRun(Base):
+    __tablename__ = "ai_eval_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    passed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_ai_eval_runs_task", "task_name"),
+        Index("ix_ai_eval_runs_started", "started_at"),
+    )
 
 
 class Stocktake(Base):

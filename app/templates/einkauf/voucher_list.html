@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>Voucher</h1>
+      <div class="hint">Lokale Eingangsrechnungsprüfung mit sevDesk-Voucher-Erzeugung.</div>
+    </div>
+    {% if role_flags.is_admin %}<a class="btn primary" href="/einkauf/voucher/vorbereiten">Voucher vorbereiten</a>{% endif %}
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 150px 1.1fr 1fr 140px 140px 140px;">
+      <div>Referenz</div><div>Lieferant</div><div>Eingangsrechnung</div><div>Status</div><div>Brutto</div><div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 150px 1.1fr 1fr 140px 140px 140px;">
+        <div>{{ row.sevdesk_voucher_id or ('VOU-' ~ '%04d'|format(row.id)) }}</div>
+        <div>{{ supplier_map.get(row.supplier_id).name if supplier_map.get(row.supplier_id) else '-' }}</div>
+        <div>{% if invoice_map.get(row.purchase_invoice_id) %}<a href="/einkauf/rechnungen/{{ row.purchase_invoice_id }}">{{ invoice_map.get(row.purchase_invoice_id).invoice_no }}</a>{% else %}-{% endif %}</div>
+        <div>{{ incoming_voucher_status_label(row.status) }}</div>
+        <div>{{ row.gross_total|eur_cents if row.gross_total is not none else '-' }}</div>
+        <div><a class="btn small" href="/einkauf/voucher/{{ row.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Noch keine Voucher-Entwürfe vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}

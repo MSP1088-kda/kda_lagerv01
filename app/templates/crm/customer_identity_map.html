@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>CRM: Externe Identitäten</h1>
+
+  <form method="get" action="/crm/identitaeten" class="form compact">
+    <div class="grid3">
+      <div>
+        <label for="crm_identity_q">Suche</label>
+        <input id="crm_identity_q" type="text" name="q" value="{{ q or '' }}" placeholder="Kunde, Schlüssel, externe ID">
+      </div>
+      <div>
+        <label for="crm_identity_system">System</label>
+        <select id="crm_identity_system" name="system">
+          <option value="">Alle</option>
+          {% for item in system_choices %}
+            <option value="{{ item }}" {% if system == item %}selected{% endif %}>{{ crm_external_system_label(item) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="row" style="align-items:end;">
+        <button class="btn primary" type="submit">Filtern</button>
+      </div>
+    </div>
+  </form>
+
+  {% for item in rows %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title"><a href="/crm/kunden/{{ item.customer.id }}">{{ item.customer.customer_no_internal }}</a> | {{ item.party.display_name }}</div>
+      <div class="box-body">
+        <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+          <div class="muted">{{ item.default_address.city if item.default_address else '-' }}</div>
+          {% if sevdesk_enabled %}<a class="btn small" href="/crm/kunden/{{ item.customer.id }}?sevdesk_q={{ item.customer.customer_no_internal }}">sevDesk suchen</a>{% endif %}
+        </div>
+        <div class="table" style="margin-top:10px;">
+          <div class="tr th" style="grid-template-columns: 140px 180px 1.4fr 1fr 120px;">
+            <div>System</div>
+            <div>Typ</div>
+            <div>Schlüssel</div>
+            <div>Externe ID</div>
+            <div>Status</div>
+          </div>
+          {% for identity in item.identities %}
+            <div class="tr" style="grid-template-columns: 140px 180px 1.4fr 1fr 120px;">
+              <div>{{ crm_external_system_label(identity.system_name) }}</div>
+              <div>{{ crm_external_type_label(identity.external_type) }}</div>
+              <div>{{ identity.external_key }}</div>
+              <div>{{ identity.external_id or '-' }}</div>
+              <div>{{ 'Primär' if identity.is_primary else '-' }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+  {% if not rows %}<div class="muted">Keine externen Identitäten gefunden.</div>{% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>OutSmart ist der führende externe Kundenschlüssel.</li>
+  <li>Mehrere sevDesk-Kontakte können lokal demselben Master-Kunden zugeordnet werden.</li>
+</ul>
+{% endblock %}

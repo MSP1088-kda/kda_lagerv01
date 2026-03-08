@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block content %}
+{% import "macros/forms.html" as f %}
+{% set fd = form_data or {} %}
+{% set fe = form_errors or {} %}
+<div class="panel mobile-form-shell">
+  <h1>Wareneingang</h1>
+  {% if done %}
+  <div class="flash-item flash-info">Eingebucht.</div>
+  {% endif %}
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="/m/einbuchen" class="form compact" data-first-error="{{ first_error_field_id or '' }}">
+    {% if selected_product %}
+    <div class="mobile-product-box">
+      <div class="mobile-product-title">{{ selected_product.sales_name if selected_product.sales_name else selected_product.name }}</div>
+      <div class="muted">
+        {% if selected_product.material_no %}MatNr: {{ selected_product.material_no }}{% endif %}
+        {% if selected_product.ean %}{% if selected_product.material_no %} | {% endif %}EAN: {{ selected_product.ean }}{% endif %}
+      </div>
+    </div>
+    <input type="hidden" id="m_receipt_product_id" name="product_id" value="{{ selected_product.id }}">
+    <div class="row">
+      <a class="btn" href="/m?action=einbuchen">Produkt ändern</a>
+    </div>
+    {% else %}
+    <label for="m_receipt_product_filter">Produkt filtern</label>
+    <input id="m_receipt_product_filter" type="text" placeholder="Tippen zum Filtern...">
+    <label for="m_receipt_product_id">Produkt</label>
+    <select id="m_receipt_product_id" name="product_id" class="{% if fe.get('product_id') %}is-error{% endif %}" required>
+      <option value="">Bitte wählen</option>
+      {% for p in products %}
+      <option value="{{ p.id }}" {% if f.old(fd, 'product_id', '')|int == p.id %}selected{% endif %}>
+        {{ p.sales_name if p.item_type == 'appliance' and p.sales_name else p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    {{ f.field_error(fe, 'product_id') }}
+    {% endif %}
+
+    <label for="m_receipt_quantity">Menge</label>
+    <input id="m_receipt_quantity" type="number" name="quantity" min="1" inputmode="numeric" value="{{ f.old(fd, 'quantity', '1') }}" class="{% if fe.get('quantity') %}is-error{% endif %}" autofocus required>
+    {{ f.field_error(fe, 'quantity') }}
+
+    <label for="m_receipt_warehouse_to_id">Lagerort</label>
+    {% if receipt_lock_warehouse %}
+    {% set selected_wh = f.old(fd, 'warehouse_to_id', '0')|int %}
+    {% set wh_name = namespace(value='-') %}
+    {% for w in warehouses %}
+      {% if w.id == selected_wh %}{% set wh_name.value = w.name %}{% endif %}
+    {% endfor %}
+    <input type="hidden" name="warehouse_to_id" value="{{ selected_wh }}">
+    <input id="m_receipt_warehouse_to_id" type="text" value="{{ wh_name.value }}" disabled>
+    <div class="hint">Lager ist über Standards gesperrt.</div>
+    {% else %}
+    <select id="m_receipt_warehouse_to_id" name="warehouse_to_id" class="{% if fe.get('warehouse_to_id') %}is-error{% endif %}" required>
+      <option value="0">Bitte wählen</option>
+      {% for w in warehouses %}
+      <option value="{{ w.id }}" {% if f.old(fd, 'warehouse_to_id', '0')|int == w.id %}selected{% endif %}>{{ w.name }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    {{ f.field_error(fe, 'warehouse_to_id') }}
+
+    <details class="collapse-box mobile-more"{% if fe.get('condition') or fe.get('supplier_id') or fe.get('delivery_note_no') or fe.get('unit_cost') or fe.get('note') %} open{% endif %}>
+      <summary class="box-title">Mehr</summary>
+      <div class="box-body">
+        <label for="m_receipt_condition">Zustand</label>
+        <select id="m_receipt_condition" name="condition" class="{% if fe.get('condition') %}is-error{% endif %}">
+          {% for c in condition_defs %}
+          <option value="{{ c.code }}" {% if f.old(fd, 'condition', 'A_WARE') == c.code %}selected{% endif %}>{{ c.label_de }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'condition') }}
+
+        <label for="m_receipt_supplier_id">Lieferant (optional)</label>
+        <select id="m_receipt_supplier_id" name="supplier_id" class="{% if fe.get('supplier_id') %}is-error{% endif %}">
+          <option value="0">-</option>
+          {% for s in suppliers %}
+          <option value="{{ s.id }}" {% if f.old(fd, 'supplier_id', '0')|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'supplier_id') }}
+
+        <label for="m_receipt_delivery_note_no">Belegnummer (optional)</label>
+        <input id="m_receipt_delivery_note_no" type="text" name="delivery_note_no" value="{{ f.old(fd, 'delivery_note_no', '') }}" class="{% if fe.get('delivery_note_no') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'delivery_note_no') }}
+
+        <label for="m_receipt_unit_cost">Preis pro Stück (optional)</label>
+        <input id="m_receipt_unit_cost" type="text" name="unit_cost" value="{{ f.old(fd, 'unit_cost', '') }}" placeholder="z. B. 129,90" class="{% if fe.get('unit_cost') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'unit_cost') }}
+
+        <label for="m_receipt_note">Notiz (optional)</label>
+        <textarea id="m_receipt_note" name="note" rows="2">{{ f.old(fd, 'note', '') }}</textarea>
+      </div>
+    </details>
+
+    <div class="mobile-sticky-bar">
+      <a class="btn" href="/m">Zurück</a>
+      <button class="btn primary" type="submit">Buchen</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Pflicht: Produkt, Menge, Lagerort.</li>
+  <li>Weitere Felder sind unter "Mehr".</li>
+  <li>Nach Erfolg bleibt die Seite offen für den nächsten Wareneingang.</li>
+</ul>
+{% endblock %}

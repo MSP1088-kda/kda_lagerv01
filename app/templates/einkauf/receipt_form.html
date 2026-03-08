@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{{ page_title }}</h1>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {{ f.render_errors(fe) }}
+  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+    <div class="grid3">
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">Bitte wählen</option>
+          {% for s in suppliers %}
+            <option value="{{ s.id }}" {% if fd.get('supplier_id', row.supplier_id if row else selected_supplier_id)|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Bestellung</label>
+        <select name="purchase_order_id">
+          <option value="0">-</option>
+          {% for po in purchase_orders %}
+            <option value="{{ po.id }}" {% if fd.get('purchase_order_id', selected_purchase_order_id)|int == po.id %}selected{% endif %}>{{ po.order_no or po.po_number }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Lager</label>
+        <select name="warehouse_id">
+          <option value="0">Bitte wählen</option>
+          {% for w in warehouses %}
+            <option value="{{ w.id }}" {% if fd.get('warehouse_id', selected_warehouse_id)|int == w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Wareneingangsdatum</label>
+        <input type="date" name="receipt_date" value="{{ fd.get('receipt_date', receipt_date_value) }}">
+      </div>
+      <div>
+        <label>Lieferschein-Nr.</label>
+        <input type="text" name="delivery_note_no" value="{{ fd.get('delivery_note_no', row.delivery_note_no if row else '') }}">
+      </div>
+      <div>
+        <label>Paperless-Dokument-ID</label>
+        <input type="text" name="paperless_document_id" value="{{ fd.get('paperless_document_id', row.paperless_document_id if row else '') }}">
+      </div>
+    </div>
+
+    <h2>Positionen</h2>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 1.4fr 120px 140px 160px 1fr 120px;">
+        <div>Produkt</div>
+        <div>Menge</div>
+        <div>EK</div>
+        <div>Zustand</div>
+        <div>Notiz</div>
+        <div>Bestell-Zeile</div>
+      </div>
+      {% for line in line_rows %}
+        <div class="tr" style="grid-template-columns: 1.4fr 120px 140px 160px 1fr 120px; align-items:start;">
+          <div>
+            <select name="line_product_id">
+              <option value="0">-</option>
+              {% for p in products %}
+                <option value="{{ p.id }}" {% if line.product_id|int == p.id %}selected{% endif %}>{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div><input type="number" name="line_qty_received" value="{{ line.qty_received }}" min="0"></div>
+          <div><input type="text" name="line_unit_cost_received" value="{{ line.unit_cost_received }}" placeholder="0,00"></div>
+          <div>
+            <select name="line_condition_code">
+              {% for c in condition_defs %}
+                <option value="{{ c.code }}" {% if line.condition_code == c.code %}selected{% endif %}>{{ c.label_de }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div><input type="text" name="line_note" value="{{ line.note }}"></div>
+          <div>
+            <select name="line_purchase_order_line_id">
+              <option value="0">-</option>
+              {% for opt in po_line_options %}
+                <option value="{{ opt.id }}" {% if line.purchase_order_line_id|int == opt.id %}selected{% endif %}>{{ opt.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <button class="btn primary" type="submit">Wareneingang buchen</button>
+      <a class="btn" href="/einkauf/wareneingaenge">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Wenn eine Bestellung gewählt ist, sollten die Bestellzeilen referenziert werden.</li>
+  <li>Jede Position erzeugt eine Journalbuchung im Bestand.</li>
+  <li>Der EK wird parallel in der Preishistorie gespeichert.</li>
+</ul>
+{% endblock %}

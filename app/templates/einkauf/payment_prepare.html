@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Zahlung vorbereiten</h1>
+  <div class="box"><div class="box-body">
+    <div><b>Ziel:</b> {{ target_label }}</div>
+    <div><b>sevDesk-ID:</b> {{ sevdesk_object_id or '-' }}</div>
+    <div><b>Vorschlagsbetrag:</b> {{ amount_cents|eur_cents }}</div>
+  </div></div>
+
+  <form method="post" action="/finanzen/zahlungen/vorbereiten" class="form" style="margin-top:10px;">
+    <input type="hidden" name="target_type" value="{{ target_type }}">
+    <input type="hidden" name="target_id" value="{{ target.id }}">
+    <div class="grid2">
+      <div>
+        <label>Konto</label>
+        <select name="check_account_id">
+          <option value="">-</option>
+          {% for row in check_accounts %}
+            {% set account_id = row.id or row.ID or row.objectId %}
+            <option value="{{ account_id }}">{{ row.name or row.displayName or account_id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Vorhandene Transaktion</label>
+        <select name="transaction_id">
+          <option value="">-</option>
+          {% for row in transactions %}
+            {% set tx_id = row.id or row.ID %}
+            <option value="{{ tx_id }}">{{ row.payeeName or row.text or row.reference or tx_id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="grid3">
+      <div><label>Datum</label><input type="date" name="booking_date" value="{{ booking_date_value or '' }}"></div>
+      <div><label>Betrag</label><input type="text" name="amount" value="{{ amount_cents|eur_cents|replace(' €', '') }}"></div>
+      <div>
+        <label>Typ</label>
+        <select name="booking_type">
+          {% for key in booking_type_choices %}
+            <option value="{{ key }}">{{ sevdesk_payment_type_label(key) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      <button class="btn primary" type="submit">In sevDesk buchen</button>
+      <a class="btn" href="/finanzen/zahlungen">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

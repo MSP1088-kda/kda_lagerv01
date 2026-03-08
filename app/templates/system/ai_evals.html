@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>KI-Evals</h1>
+  <form method="post" action="/system/ki-evals/ausfuehren" class="form compact">
+    <div class="grid2">
+      <div>
+        <label>Aufgabe</label>
+        <select name="task_name">
+          <option value="">Alle aktiven Aufgaben</option>
+          {% for case in cases %}
+            <option value="{{ case.task_name }}">{{ ai_task_label(case.task_name) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="row" style="align-items:end; gap:8px; flex-wrap:wrap;">
+        <button class="btn primary" type="submit">Evals ausführen</button>
+        <a class="btn" href="/system/integrationen/openai">OpenAI</a>
+      </div>
+    </div>
+  </form>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Aktive Fälle</div>
+    <div class="box-body">
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 1fr 100px 1fr;">
+          <div>Aufgabe</div>
+          <div>Aktiv</div>
+          <div>Erwartung</div>
+        </div>
+        {% for row in cases %}
+          <div class="tr" style="grid-template-columns: 1fr 100px 1fr; align-items:start;">
+            <div>{{ ai_task_label(row.task_name) }}</div>
+            <div>{{ 'Ja' if row.active else 'Nein' }}</div>
+            <div><pre>{{ row.expected_json }}</pre></div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Letzte Läufe</div>
+    <div class="box-body">
+      {% for row in runs %}
+        <details style="margin-bottom:8px;">
+          <summary>{{ row.task_name }} | {{ row.passed_count }} ok / {{ row.failed_count }} Fehler | {{ format_date(row.started_at) }}</summary>
+          <pre>{{ row.summary_json or '{}' }}</pre>
+        </details>
+      {% endfor %}
+      {% if not runs %}<div class="muted">Noch keine Eval-Läufe vorhanden.</div>{% endif %}
+    </div>
+  </div>
+
+  {% if latest_run %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Letzter Lauf</div>
+      <div class="box-body"><pre>{{ latest_run.summary_json or '{}' }}</pre></div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Evals machen KI-Aufgaben messbar und zeigen Regressionen sofort.</li>
+  <li>Erwartungen werden als Teilmenge geprüft, damit Fälle schlank bleiben.</li>
+  <li>Die Läufe ergänzen das KI-Log, ersetzen aber keine fachliche Prüfung.</li>
+</ul>
+{% endblock %}

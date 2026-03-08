@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>DATEV / Export</h1>
+  <div class="grid2" style="align-items:start;">
+    <div class="box"><div class="box-title">Konfiguration</div><div class="box-body">
+      <div><b>Bookkeeping-Version:</b> {{ settings.bookkeeping_system_version or '-' }}</div>
+      <form method="post" action="/finanzen/datev" class="form" style="margin-top:10px;">
+        <input type="hidden" name="action" value="config">
+        <label>Wirtschaftsjahr beginnt</label>
+        <input type="date" name="accounting_year_begin" value="{{ export_config.accountingYearBegin or '' }}">
+        <label><input type="checkbox" name="enshrined_only" {% if export_config.enshrinedOnly %}checked{% endif %}> Nur enshrined Belege</label>
+        <button class="btn primary" type="submit">Konfiguration speichern</button>
+      </form>
+    </div></div>
+    <div class="box"><div class="box-title">Export starten</div><div class="box-body">
+      <form method="post" action="/finanzen/datev" class="form compact">
+        <input type="hidden" name="action" value="csv">
+        <div class="grid2"><div><label>Von</label><input type="date" name="date_from"></div><div><label>Bis</label><input type="date" name="date_to"></div></div>
+        <button class="btn primary" type="submit">DATEV CSV ZIP</button>
+      </form>
+      <form method="post" action="/finanzen/datev" class="form compact" style="margin-top:10px;">
+        <input type="hidden" name="action" value="xml">
+        <div class="grid2"><div><label>Von</label><input type="date" name="date_from"></div><div><label>Bis</label><input type="date" name="date_to"></div></div>
+        <button class="btn" type="submit">DATEV XML ZIP</button>
+      </form>
+    </div></div>
+  </div>
+
+  <div class="box" style="margin-top:10px;"><div class="box-title">Letzte Jobs</div><div class="box-body">
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 120px 140px 180px 1fr;">
+        <div>Typ</div><div>Job</div><div>Zeit</div><div>Status / Download</div>
+      </div>
+      {% for row in export_jobs %}
+        <div class="tr" style="grid-template-columns: 120px 140px 180px 1fr; align-items:start;">
+          <div>{{ row.action or '-' }}</div><div>{{ row.job_id or '-' }}</div><div>{{ row.created_at or '-' }}</div><div>{{ row.download_hash or row.progress.status or row.download_info.url or '-' }}</div>
+        </div>
+      {% endfor %}
+      {% if not export_jobs %}<div class="muted">Noch keine Exportjobs vorhanden.</div>{% endif %}
+    </div>
+  </div></div>
+</div>
+{% endblock %}

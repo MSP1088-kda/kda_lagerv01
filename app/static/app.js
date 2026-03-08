@@ -145,17 +145,21 @@
       let detail = String(form.getAttribute('data-loading-detail') || '').trim();
       let delay = (method === 'get') ? 450 : 220;
 
-      if(actionPath === '/catalog/products/import'){
+      if(actionPath === '/catalog/import'){
         if(!message) message = 'Import-Kontext wird geladen...';
         if(!detail) detail = 'Auswahl wird übernommen.';
         delay = 120;
-      }else if(actionPath === '/catalog/products/import/preview'){
+      }else if(actionPath === '/catalog/import/upload'){
         if(!message) message = 'CSV-Datei wird geprüft...';
         if(!detail) detail = 'Datei wird hochgeladen und Vorschau vorbereitet.';
         delay = 0;
-      }else if(actionPath === '/catalog/products/import/run'){
+      }else if(/^\/catalog\/import\/\d+\/map$/.test(actionPath)){
+        if(!message) message = 'Mapping wird gespeichert...';
+        if(!detail) detail = 'Zuordnungen werden validiert.';
+        delay = 0;
+      }else if(/^\/catalog\/import\/\d+\/run$/.test(actionPath)){
         if(!message) message = 'CSV-Import läuft...';
-        if(!detail) detail = 'Produkte und Attribute werden verarbeitet. Bitte Seite nicht schließen.';
+        if(!detail) detail = 'Produkte, Merkmale und Zubehör werden verarbeitet. Bitte Seite nicht schließen.';
         delay = 0;
       }else{
         if(!message){
@@ -886,6 +890,679 @@
     });
   }
 
+  function initCatalogMobileFilterPanel(){
+    const form = document.querySelector('form[data-catalog-v2-filter="1"]');
+    if(!form) return;
+    const toggleBtn = form.querySelector('[data-catalog-filter-toggle="1"]');
+    const panel = form.querySelector('[data-catalog-filter-panel="1"]');
+    if(!toggleBtn || !panel) return;
+
+    const mq = window.matchMedia('(max-width: 900px)');
+    let userTouched = false;
+
+    const setCollapsed = function(nextCollapsed){
+      const collapsed = !!nextCollapsed;
+      panel.setAttribute('data-collapsed', collapsed ? '1' : '0');
+      toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      toggleBtn.textContent = collapsed ? 'Filter' : 'Filter ausblenden';
+    };
+
+    const syncMode = function(){
+      if(mq.matches){
+        if(!userTouched){
+          setCollapsed(true);
+        }
+      }else{
+        setCollapsed(false);
+        userTouched = false;
+      }
+    };
+
+    toggleBtn.addEventListener('click', function(){
+      userTouched = true;
+      const isCollapsed = panel.getAttribute('data-collapsed') === '1';
+      setCollapsed(!isCollapsed);
+    });
+
+    if(typeof mq.addEventListener === 'function'){
+      mq.addEventListener('change', syncMode);
+    }else if(typeof mq.addListener === 'function'){
+      mq.addListener(syncMode);
+    }
+    syncMode();
+  }
+
+  function mobileActionPath(action){
+    const key = String(action || '').trim().toLowerCase();
+    if(key === 'ausbuchen') return '/m/ausbuchen';
+    if(key === 'umlagerung') return '/m/umlagerung';
+    if(key === 'bestellen') return '/m/bestellen';
+    return '/m/einbuchen';
+  }
+
+  function initMobileHomeQuickSearch(){
+    const page = document.querySelector('[data-mobile-home="1"]');
+    if(!page) return;
+    const searchInput = document.getElementById('mSearch');
+    const kindSelect = document.getElementById('mKindId');
+    const resultsWrap = document.getElementById('mResults');
+    if(!searchInput || !resultsWrap) return;
+
+    const actionButtons = Array.from(page.querySelectorAll('[data-mobile-action]'));
+    let currentAction = String(page.getAttribute('data-mobile-action') || 'einbuchen').trim().toLowerCase();
+    if(!currentAction){
+      currentAction = 'einbuchen';
+    }
+    let debounceTimer = null;
+    let requestSeq = 0;
+    let lastItems = [];
+
+    const renderMessage = function(text){
+      resultsWrap.innerHTML = '';
+      const hint = document.createElement('div');
+      hint.className = 'muted';
+      hint.textContent = text;
+      resultsWrap.appendChild(hint);
+    };
+
+    const openProductForAction = function(productId){
+      const id = parseInt(String(productId || '0'), 10) || 0;
+      if(id <= 0) return;
+      const href = mobileActionPath(currentAction) + '?product_id=' + encodeURIComponent(String(id));
+      navigateTo(href);
+    };
+
+    const setAction = function(nextAction){
+      currentAction = String(nextAction || 'einbuchen').trim().toLowerCase() || 'einbuchen';
+      actionButtons.forEach(function(btn){
+        const btnAction = String(btn.getAttribute('data-mobile-action') || '').trim().toLowerCase();
+        btn.classList.toggle('active', btnAction === currentAction);
+      });
+    };
+
+    const renderItems = function(items){
+      resultsWrap.innerHTML = '';
+      if(!items.length){
+        renderMessage('Keine Treffer gefunden.');
+        return;
+      }
+      items.forEach(function(item){
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'mobile-result-btn';
+        btn.addEventListener('click', function(){
+          openProductForAction(item.id);
+        });
+
+        const title = document.createElement('div');
+        title.className = 'mobile-result-title';
+        title.textContent = String(item.display_name || 'Unbenanntes Produkt');
+        btn.appendChild(title);
+
+        const parts = [];
+        const manufacturerName = String(item.manufacturer_name || '').trim();
+        const kindName = String(item.kind_name || '').trim();
+        const ean = String(item.ean || '').trim();
+        if(manufacturerName) parts.push(manufacturerName);
+        if(kindName) parts.push(kindName);
+        if(ean) parts.push('EAN ' + ean);
+        if(typeof item.stock_total === 'number'){
+          parts.push('Bestand ' + String(item.stock_total));
+        }
+
+        const meta = document.createElement('div');
+        meta.className = 'mobile-result-meta';
+        meta.textContent = parts.join(' | ');
+        btn.appendChild(meta);
+        resultsWrap.appendChild(btn);
+      });
+    };
+
+    const runSearch = function(){
+      const q = String(searchInput.value || '').trim();
+      if(q.length < 2){
+        lastItems = [];
+        renderMessage('Tippe mindestens 2 Zeichen, um Treffer zu sehen.');
+        return;
+      }
+      const seq = ++requestSeq;
+      const params = new URLSearchParams();
+      params.set('q', q);
+      if(kindSelect){
+        const kindId = String(kindSelect.value || '').trim();
+        if(kindId && kindId !== '0'){
+          params.set('kind_id', kindId);
+        }
+      }
+      fetch('/api/products/quicksearch?' + params.toString(), {
+        headers: { 'Accept': 'application/json' }
+      }).then(function(resp){
+        if(!resp.ok){
+          throw new Error('HTTP ' + String(resp.status));
+        }
+        return resp.json();
+      }).then(function(data){
+        if(seq !== requestSeq){
+          return;
+        }
+        const items = Array.isArray(data.items) ? data.items : [];
+        lastItems = items;
+        renderItems(items);
+      }).catch(function(){
+        if(seq !== requestSeq){
+          return;
+        }
+        lastItems = [];
+        renderMessage('Suche ist gerade nicht verfügbar.');
+      });
+    };
+
+    const queueSearch = function(){
+      if(debounceTimer){
+        clearTimeout(debounceTimer);
+      }
+      debounceTimer = setTimeout(runSearch, 200);
+    };
+
+    searchInput.addEventListener('input', function(){
+      queueSearch();
+    });
+    searchInput.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        if(lastItems.length === 1){
+          openProductForAction(lastItems[0].id);
+          return;
+        }
+        runSearch();
+      }
+    });
+    if(kindSelect){
+      kindSelect.addEventListener('change', function(){
+        queueSearch();
+      });
+    }
+
+    actionButtons.forEach(function(btn){
+      btn.addEventListener('click', function(){
+        const nextAction = String(btn.getAttribute('data-mobile-action') || '').trim().toLowerCase();
+        if(!nextAction) return;
+        setAction(nextAction);
+        if(lastItems.length === 1){
+          openProductForAction(lastItems[0].id);
+        }
+      });
+    });
+
+    setAction(currentAction);
+  }
+
+  function initMobileCatalog(){
+    const page = document.querySelector('[data-mobile-catalog="1"]');
+    if(!page) return;
+    const searchInput = document.getElementById('mCatalogSearch');
+    const kindSelect = document.getElementById('mCatalogKind');
+    const featureToggle = document.getElementById('mCatalogFeatureToggle');
+    const featureWrap = document.getElementById('mCatalogFeatureWrap');
+    const featureFields = document.getElementById('mCatalogFeatureFields');
+    const resultsWrap = document.getElementById('mCatalogResults');
+    if(!searchInput || !kindSelect || !featureToggle || !featureWrap || !featureFields || !resultsWrap) return;
+
+    const nextPath = String(page.getAttribute('data-next') || '').trim();
+    let debounceTimer = null;
+    let requestSeq = 0;
+    let featureOpen = false;
+
+    const setFeatureOpen = function(nextOpen){
+      featureOpen = !!nextOpen;
+      featureWrap.hidden = !featureOpen;
+      featureWrap.setAttribute('data-open', featureOpen ? '1' : '0');
+      featureToggle.setAttribute('aria-expanded', featureOpen ? 'true' : 'false');
+      featureToggle.textContent = featureOpen ? 'Merkmale ausblenden' : 'Merkmale';
+    };
+
+    const syncFeatureToggle = function(){
+      const hasRows = !!featureFields.querySelector('[data-feature-id]');
+      const hasKind = String(kindSelect.value || '').trim() !== '' && String(kindSelect.value || '0') !== '0';
+      const visible = hasRows && hasKind;
+      featureToggle.hidden = !visible;
+      if(!visible){
+        setFeatureOpen(false);
+      }
+    };
+
+    const renderState = function(text){
+      resultsWrap.innerHTML = '';
+      const state = document.createElement('div');
+      state.className = 'm-catalog-state';
+      state.textContent = text;
+      resultsWrap.appendChild(state);
+    };
+
+    const cardTargetUrl = function(productId){
+      const id = parseInt(String(productId || '0'), 10) || 0;
+      if(id <= 0){
+        return '';
+      }
+      if(nextPath){
+        const joiner = nextPath.indexOf('?') >= 0 ? '&' : '?';
+        return nextPath + joiner + 'product_id=' + encodeURIComponent(String(id));
+      }
+      return '/catalog/products/' + encodeURIComponent(String(id));
+    };
+
+    const renderItems = function(items){
+      resultsWrap.innerHTML = '';
+      if(!items.length){
+        renderState('Keine Treffer.');
+        return;
+      }
+      items.forEach(function(item){
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'mobile-catalog-card';
+        btn.addEventListener('click', function(){
+          const href = cardTargetUrl(item.id);
+          if(href){
+            navigateTo(href);
+          }
+        });
+
+        const media = document.createElement('div');
+        media.className = 'mobile-catalog-card-media';
+        const imageUrl = String(item.image_url || '').trim();
+        if(imageUrl){
+          const img = document.createElement('img');
+          img.setAttribute('src', imageUrl);
+          img.setAttribute('alt', 'Produktbild');
+          img.setAttribute('loading', 'lazy');
+          media.appendChild(img);
+        }else{
+          const empty = document.createElement('div');
+          empty.className = 'mobile-catalog-card-media-empty';
+          empty.textContent = 'Kein Bild';
+          media.appendChild(empty);
+        }
+        btn.appendChild(media);
+
+        const title = document.createElement('div');
+        title.className = 'mobile-catalog-card-title';
+        title.textContent = String(item.title || 'Unbenanntes Produkt');
+        btn.appendChild(title);
+        resultsWrap.appendChild(btn);
+      });
+    };
+
+    const createFilterSelect = function(row, name, labelText, options, selectedValue){
+      const wrap = document.createElement('div');
+      wrap.className = 'mobile-catalog-feature-row';
+      wrap.setAttribute('data-feature-id', String(row.id || '0'));
+      wrap.setAttribute('data-feature-type', String(row.data_type || 'text'));
+
+      const label = document.createElement('label');
+      const selectId = 'mCatalogDyn_' + String(name || '').replace(/[^a-zA-Z0-9_]/g, '_');
+      label.setAttribute('for', selectId);
+      label.textContent = labelText;
+      wrap.appendChild(label);
+
+      const select = document.createElement('select');
+      select.id = selectId;
+      select.name = name;
+      select.setAttribute('data-feature-input', '1');
+
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '-';
+      select.appendChild(empty);
+
+      (Array.isArray(options) ? options : []).forEach(function(opt){
+        const option = document.createElement('option');
+        const value = String((opt && opt.value) || '');
+        option.value = value;
+        option.textContent = String((opt && opt.label) || value);
+        if(opt && opt.disabled){
+          option.disabled = true;
+        }
+        if(value && value === String(selectedValue || '')){
+          option.selected = true;
+        }
+        select.appendChild(option);
+      });
+
+      wrap.appendChild(select);
+      return wrap;
+    };
+
+    const renderFeatureFilters = function(filters){
+      featureFields.innerHTML = '';
+      const rows = Array.isArray(filters) ? filters : [];
+      if(!rows.length){
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = 'Keine Merkmale für die aktuelle Auswahl.';
+        featureFields.appendChild(empty);
+        syncFeatureToggle();
+        return;
+      }
+
+      rows.forEach(function(row){
+        const id = parseInt(String((row && row.id) || '0'), 10) || 0;
+        if(id <= 0){
+          return;
+        }
+        const dataType = String((row && row.data_type) || 'text');
+        const label = String((row && row.label) || ('Merkmal ' + String(id)));
+        if(dataType === 'number'){
+          const minWrap = createFilterSelect(
+            row,
+            'f_' + String(id) + '_min',
+            label + ' (Min)',
+            row.min_options || [],
+            String((row && row.min) || '')
+          );
+          const maxWrap = createFilterSelect(
+            row,
+            'f_' + String(id) + '_max',
+            label + ' (Max)',
+            row.max_options || [],
+            String((row && row.max) || '')
+          );
+          featureFields.appendChild(minWrap);
+          featureFields.appendChild(maxWrap);
+          return;
+        }
+        if(dataType === 'bool'){
+          const boolWrap = createFilterSelect(
+            row,
+            'f_' + String(id),
+            label,
+            row.bool_options || [],
+            String((row && row.value) || '')
+          );
+          featureFields.appendChild(boolWrap);
+          return;
+        }
+        const textWrap = createFilterSelect(
+          row,
+          'f_' + String(id),
+          label,
+          row.options || [],
+          String((row && row.value) || '')
+        );
+        featureFields.appendChild(textWrap);
+      });
+      syncFeatureToggle();
+    };
+
+    const collectParams = function(includeFilters){
+      const params = new URLSearchParams();
+      const q = String(searchInput.value || '').trim();
+      const kindId = String(kindSelect.value || '').trim();
+      if(q){
+        params.set('q', q);
+      }
+      if(kindId && kindId !== '0'){
+        params.set('kind_id', kindId);
+      }
+      params.set('limit', '30');
+      if(includeFilters){
+        params.set('include_filters', '1');
+      }
+
+      const featureInputs = Array.from(featureFields.querySelectorAll('[data-feature-input="1"]'));
+      featureInputs.forEach(function(input){
+        if(!(input instanceof HTMLSelectElement) && !(input instanceof HTMLInputElement)){
+          return;
+        }
+        const name = String(input.name || '').trim();
+        const value = String(input.value || '').trim();
+        if(!name || !value){
+          return;
+        }
+        params.set(name, value);
+      });
+      return params;
+    };
+
+    const runRequest = function(includeFilters){
+      const seq = ++requestSeq;
+      renderState('Lade...');
+      const params = collectParams(includeFilters);
+      fetch('/api/mobile/catalog?' + params.toString(), {
+        headers: { 'Accept': 'application/json' }
+      }).then(function(resp){
+        if(!resp.ok){
+          throw new Error('HTTP ' + String(resp.status));
+        }
+        return resp.json();
+      }).then(function(data){
+        if(seq !== requestSeq){
+          return;
+        }
+        if(includeFilters && Array.isArray(data.filters)){
+          renderFeatureFilters(data.filters);
+        }else{
+          syncFeatureToggle();
+        }
+        const items = Array.isArray(data.items) ? data.items : [];
+        renderItems(items);
+      }).catch(function(){
+        if(seq !== requestSeq){
+          return;
+        }
+        renderState('Katalog ist gerade nicht verfügbar.');
+      });
+    };
+
+    const queueRequest = function(includeFilters){
+      if(debounceTimer){
+        clearTimeout(debounceTimer);
+      }
+      debounceTimer = setTimeout(function(){
+        runRequest(includeFilters);
+      }, 240);
+    };
+
+    searchInput.addEventListener('input', function(){
+      queueRequest(false);
+    });
+    searchInput.addEventListener('keydown', function(e){
+      if(e.key !== 'Enter'){
+        return;
+      }
+      e.preventDefault();
+      runRequest(false);
+    });
+    kindSelect.addEventListener('change', function(){
+      renderFeatureFilters([]);
+      queueRequest(true);
+    });
+    featureFields.addEventListener('change', function(e){
+      const target = e.target;
+      if(!(target instanceof Element)) return;
+      if(!target.matches('[data-feature-input="1"]')) return;
+      queueRequest(false);
+    });
+    featureToggle.addEventListener('click', function(){
+      setFeatureOpen(!featureOpen);
+    });
+
+    setFeatureOpen(false);
+    syncFeatureToggle();
+    runRequest(true);
+  }
+
+  function initMobileSparePartForm(){
+    const form = document.querySelector('[data-mobile-spare-form="1"]');
+    if(!form) return;
+
+    const ownerSelect = document.getElementById('m_spare_owner_id');
+    const fileInput = document.getElementById('m_spare_image_file');
+    const previewWrap = form.querySelector('[data-spare-preview="1"]');
+    const previewImg = form.querySelector('[data-spare-preview-img="1"]');
+    const previewEmpty = form.querySelector('[data-spare-preview-empty="1"]');
+    const ownerStorageKey = 'kda.mobile.spare.owner_id';
+    let previewUrl = '';
+
+    const optionExists = function(selectEl, value){
+      if(!selectEl) return false;
+      const target = String(value || '').trim();
+      if(!target || target === '0') return false;
+      return Array.from(selectEl.options || []).some(function(opt){
+        return String(opt.value || '') === target;
+      });
+    };
+
+    if(ownerSelect){
+      const urlParams = new URLSearchParams(window.location.search || '');
+      if(!urlParams.has('owner_id') && !String(ownerSelect.value || '').trim()){
+        try{
+          const remembered = window.localStorage ? String(window.localStorage.getItem(ownerStorageKey) || '').trim() : '';
+          if(optionExists(ownerSelect, remembered)){
+            ownerSelect.value = remembered;
+          }
+        }catch(_e){}
+      }
+
+      ownerSelect.addEventListener('change', function(){
+        try{
+          const val = String(ownerSelect.value || '').trim();
+          if(window.localStorage && val && val !== '0'){
+            window.localStorage.setItem(ownerStorageKey, val);
+          }
+        }catch(_e){}
+      });
+    }
+
+    const clearPreview = function(){
+      if(previewUrl){
+        try{
+          URL.revokeObjectURL(previewUrl);
+        }catch(_e){}
+        previewUrl = '';
+      }
+      if(previewImg){
+        previewImg.setAttribute('src', '');
+        previewImg.hidden = true;
+      }
+      if(previewEmpty){
+        previewEmpty.hidden = false;
+      }
+      if(previewWrap){
+        previewWrap.classList.remove('has-image');
+      }
+    };
+
+    const setPreview = function(file){
+      clearPreview();
+      if(!file || !previewImg){
+        return;
+      }
+      try{
+        previewUrl = URL.createObjectURL(file);
+      }catch(_e){
+        previewUrl = '';
+      }
+      if(!previewUrl){
+        return;
+      }
+      previewImg.setAttribute('src', previewUrl);
+      previewImg.hidden = false;
+      if(previewEmpty){
+        previewEmpty.hidden = true;
+      }
+      if(previewWrap){
+        previewWrap.classList.add('has-image');
+      }
+    };
+
+    if(fileInput){
+      fileInput.addEventListener('change', function(){
+        const file = (fileInput.files && fileInput.files.length) ? fileInput.files[0] : null;
+        setPreview(file);
+      });
+    }
+
+    form.addEventListener('submit', function(){
+      if(!ownerSelect) return;
+      try{
+        const val = String(ownerSelect.value || '').trim();
+        if(window.localStorage && val && val !== '0'){
+          window.localStorage.setItem(ownerStorageKey, val);
+        }
+      }catch(_e){}
+    });
+  }
+
+  function initMobileTransferForm(){
+    const form = document.querySelector('[data-mobile-transfer-form="1"]');
+    if(!form) return;
+    const fromSelect = document.getElementById('m_transfer_from_warehouse_id');
+    const toSelect = document.getElementById('m_transfer_to_warehouse_id');
+    const swapBtn = form.querySelector('[data-transfer-swap]');
+    if(!fromSelect || !toSelect) return;
+
+    const storageKey = 'kda.mobile.transfer.to_warehouse_id';
+
+    const optionExists = function(selectEl, value){
+      const target = String(value || '').trim();
+      if(!target) return false;
+      return Array.from(selectEl.options || []).some(function(opt){
+        return String(opt.value || '') === target;
+      });
+    };
+
+    const pickAlternativeTarget = function(fromValue){
+      const fromRaw = String(fromValue || '');
+      const first = Array.from(toSelect.options || []).find(function(opt){
+        const val = String(opt.value || '');
+        return val && val !== '0' && val !== fromRaw;
+      });
+      if(first){
+        toSelect.value = first.value;
+      }
+    };
+
+    const syncTargetAgainstSource = function(){
+      if(String(fromSelect.value || '') === String(toSelect.value || '')){
+        pickAlternativeTarget(fromSelect.value);
+      }
+    };
+
+    const urlParams = new URLSearchParams(window.location.search || '');
+    if(!urlParams.has('to_warehouse_id')){
+      try{
+        const remembered = window.localStorage ? String(window.localStorage.getItem(storageKey) || '').trim() : '';
+        if(remembered && optionExists(toSelect, remembered) && remembered !== String(fromSelect.value || '')){
+          toSelect.value = remembered;
+        }
+      }catch(_e){}
+    }
+    syncTargetAgainstSource();
+
+    if(swapBtn){
+      swapBtn.addEventListener('click', function(){
+        const currentFrom = String(fromSelect.value || '');
+        const currentTo = String(toSelect.value || '');
+        fromSelect.value = currentTo;
+        toSelect.value = currentFrom;
+        syncTargetAgainstSource();
+      });
+    }
+
+    fromSelect.addEventListener('change', function(){
+      syncTargetAgainstSource();
+    });
+
+    form.addEventListener('submit', function(){
+      try{
+        if(window.localStorage && String(toSelect.value || '').trim()){
+          window.localStorage.setItem(storageKey, String(toSelect.value || '').trim());
+        }
+      }catch(_e){}
+    });
+  }
+
   function initImportMapCascadeDefaults(){
     const form = document.querySelector('form[data-import-map-form="1"]');
     if(!form) return;
@@ -949,6 +1626,89 @@
 
     syncKindOptions();
     syncTypeOptions();
+  }
+
+  function initImportMapDuplicateWarning(){
+    const form = document.querySelector('form[data-import-map-form="1"]');
+    if(!form) return;
+    const warningBox = document.getElementById('mapDuplicateWarning');
+    if(!warningBox) return;
+
+    const parseIndexFromName = function(name){
+      const raw = String(name || '');
+      const idx = raw.replace('feature_use_', '');
+      const parsed = Number(idx);
+      return Number.isFinite(parsed) ? parsed : -1;
+    };
+
+    const normalizeNewLabel = function(value){
+      return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+    };
+
+    const syncWarning = function(){
+      const checkboxes = Array.from(form.querySelectorAll('input[type="checkbox"][name^="feature_use_"]'));
+      const seen = new Map();
+      const duplicates = [];
+
+      checkboxes.forEach(function(chk){
+        if(!(chk instanceof HTMLInputElement) || !chk.checked){
+          return;
+        }
+        const idx = parseIndexFromName(chk.name);
+        if(idx < 0){
+          return;
+        }
+        const existing = form.querySelector('select[name="feature_existing_key_' + idx + '"]');
+        const newLabelInput = form.querySelector('input[name="feature_new_label_' + idx + '"]');
+        const selectedExisting = existing ? String(existing.value || '').trim() : '';
+        let key = '';
+        if(selectedExisting && selectedExisting !== '__neu__'){
+          key = 'exist:' + selectedExisting.toLowerCase();
+        }else{
+          const newLabel = normalizeNewLabel(newLabelInput ? newLabelInput.value : '');
+          if(newLabel){
+            key = 'new:' + newLabel;
+          }
+        }
+        if(!key){
+          return;
+        }
+        if(seen.has(key)){
+          duplicates.push(key.replace(/^(exist:|new:)/, ''));
+        }else{
+          seen.set(key, idx);
+        }
+      });
+
+      if(duplicates.length){
+        const uniq = Array.from(new Set(duplicates));
+        warningBox.textContent = 'Warnung: Doppelte Merkmalsziele gewählt: ' + uniq.join(', ');
+        warningBox.hidden = false;
+      }else{
+        warningBox.textContent = '';
+        warningBox.hidden = true;
+      }
+    };
+
+    form.addEventListener('change', function(e){
+      const target = e.target;
+      if(!(target instanceof Element)) return;
+      if(target.matches('input[name^="feature_use_"], select[name^="feature_existing_key_"], input[name^="feature_new_label_"]')){
+        syncWarning();
+      }
+    });
+    form.addEventListener('keyup', function(e){
+      const target = e.target;
+      if(!(target instanceof Element)) return;
+      if(target.matches('input[name^="feature_new_label_"]')){
+        syncWarning();
+      }
+    });
+    syncWarning();
   }
 
   function initImportUploadCascade(){
@@ -1172,20 +1932,6 @@
     }
   }
 
-  function initRepairCreateProductToggle(){
-    const checkbox = document.getElementById('repair_create_product_chk');
-    const box = document.getElementById('repair_create_product_box');
-    const select = document.getElementById('repair_product_id');
-    if(!checkbox || !box || !select) return;
-    const sync = function(){
-      const on = !!checkbox.checked;
-      box.hidden = !on;
-      select.required = !on;
-    };
-    checkbox.addEventListener('change', sync);
-    sync();
-  }
-
   function initFirstErrorFocus(){
     const marker = document.querySelector('[data-first-error]');
     const fromMarker = marker ? String(marker.getAttribute('data-first-error') || '').trim() : '';
@@ -1225,7 +1971,7 @@
       '2': '/inventory/transactions/new?tx_type=issue',
       '3': '/inventory/reparaturen/new',
       '4': '/inventory/reparaturen',
-      '5': '/purchase/orders',
+      '5': '/einkauf/bestellungen',
       '6': '/catalog/products'
     };
     const href = map[e.key];
@@ -1460,6 +2206,30 @@
     return true;
   }
 
+  function handleEinkaufLetterHotkeys(e){
+    if(e.altKey || e.ctrlKey || e.metaKey) return false;
+    if(isTypingTarget(document.activeElement)) return false;
+    const path = String(window.location && window.location.pathname || '');
+    if(!(path.startsWith('/einkauf') || document.querySelector('[data-dashboard-hotkeys="1"]'))){
+      return false;
+    }
+    const map = {
+      'n': '/einkauf/bestellungen/neu',
+      'N': '/einkauf/bestellungen/neu',
+      'w': '/einkauf/wareneingaenge/neu',
+      'W': '/einkauf/wareneingaenge/neu',
+      'r': '/einkauf/rechnungen/neu',
+      'R': '/einkauf/rechnungen/neu',
+      'd': '/einkauf/dokumente',
+      'D': '/einkauf/dokumente'
+    };
+    const href = map[e.key];
+    if(!href) return false;
+    e.preventDefault();
+    navigateTo(href);
+    return true;
+  }
+
   function handleCtrlSave(e){
     const wantsSave = (e.key === 's' || e.key === 'S') && (e.ctrlKey || e.metaKey);
     if(!wantsSave || e.altKey) return false;
@@ -1543,6 +2313,72 @@
       if(!btn || btn.disabled) return false;
       e.preventDefault();
       btn.click();
+      return true;
+    }
+    return false;
+  }
+
+  function submitFormById(formId){
+    const id = String(formId || '').trim();
+    if(!id) return false;
+    const form = document.getElementById(id);
+    if(!(form instanceof HTMLFormElement)) return false;
+    const blockingBtn = document.querySelector('button[form=\"' + id + '\"][disabled]');
+    if(blockingBtn){
+      return false;
+    }
+    if(typeof form.requestSubmit === 'function'){
+      form.requestSubmit();
+    }else{
+      form.submit();
+    }
+    return true;
+  }
+
+  function handleRepairListHotkeys(e){
+    const page = document.querySelector('[data-page=\"repair-list\"]');
+    if(!page) return false;
+    if(e.altKey || e.ctrlKey || e.metaKey) return false;
+    if(isTypingTarget(document.activeElement)) return false;
+    if(e.key === 'n' || e.key === 'N'){
+      const btn = document.getElementById('repairNewBtn');
+      if(!btn) return false;
+      e.preventDefault();
+      btn.click();
+      return true;
+    }
+    return false;
+  }
+
+  function handleRepairDetailHotkeys(e){
+    const page = document.querySelector('[data-page=\"repair-detail\"]');
+    if(!page) return false;
+
+    if((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'Enter')){
+      if(submitFormById('repairNoteForm')){
+        e.preventDefault();
+        return true;
+      }
+      return false;
+    }
+
+    if(e.altKey || e.ctrlKey || e.metaKey) return false;
+    if(isTypingTarget(document.activeElement)) return false;
+
+    const map = {
+      'a': 'repairActionAForm',
+      'b': 'repairActionBForm',
+      'r': 'repairActionRForm',
+      'e': 'repairActionEForm',
+      'v': 'repairActionVForm',
+      'l': 'repairActionLForm',
+      's': 'repairActionSForm'
+    };
+    const key = String(e.key || '').toLowerCase();
+    const formId = map[key];
+    if(!formId) return false;
+    if(submitFormById(formId)){
+      e.preventDefault();
       return true;
     }
     return false;
@@ -1737,6 +2573,10 @@
       return;
     }
 
+    if(handleEinkaufLetterHotkeys(e)){
+      return;
+    }
+
     if(handleItemTypeChooserHotkeys(e)){
       return;
     }
@@ -1746,6 +2586,14 @@
     }
 
     if(handleQuickPageHotkeys(e)){
+      return;
+    }
+
+    if(handleRepairListHotkeys(e)){
+      return;
+    }
+
+    if(handleRepairDetailHotkeys(e)){
       return;
     }
 
@@ -1781,20 +2629,6 @@
       if(e.key === 'i' || e.key === 'I'){
         if(openKbdBookSelection()){
           e.preventDefault();
-          return;
-        }
-        const form = document.getElementById('repairSendForm');
-        if(form){
-          e.preventDefault();
-          form.submit();
-          return;
-        }
-      }
-      if(e.key === 'z' || e.key === 'Z'){
-        const form = document.getElementById('repairReturnForm');
-        if(form){
-          e.preventDefault();
-          form.submit();
           return;
         }
       }
@@ -1875,15 +2709,24 @@
   initLoadbeePanel();
   initProductAttributeReload();
   initCatalogListCascadeFilter();
+  initCatalogMobileFilterPanel();
   initImportUploadCascade();
   initImportMapCascadeDefaults();
+  initImportMapDuplicateWarning();
   initTxFormAdjustActions();
   initProductDetailPanels();
   initTraitRangeSliders();
-  initRepairCreateProductToggle();
+  initMobileHomeQuickSearch();
+  initMobileCatalog();
+  initMobileSparePartForm();
+  initMobileTransferForm();
   initFirstErrorFocus();
   attachSelectFilter('tx_product_filter', 'tx_product_id');
   attachSelectFilter('reservation_product_filter', 'reservation_product_id');
   attachSelectFilter('set_item_product_filter', 'set_item_product_id');
   attachSelectFilter('repair_product_filter', 'repair_product_id');
+  attachSelectFilter('m_receipt_product_filter', 'm_receipt_product_id');
+  attachSelectFilter('m_issue_product_filter', 'm_issue_product_id');
+  attachSelectFilter('m_transfer_product_filter', 'm_transfer_product_id');
+  attachSelectFilter('m_order_product_filter', 'm_order_product_id');
 })();

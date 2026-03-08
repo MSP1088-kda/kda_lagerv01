@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{{ page_title }}</h1>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+    <div class="grid3">
+      <div>
+        <label for="order_supplier_id">Lieferant</label>
+        <select id="order_supplier_id" name="supplier_id" class="{% if fe.get('supplier_id') %}is-error{% endif %}">
+          <option value="0">Bitte wählen</option>
+          {% for s in suppliers %}
+            <option value="{{ s.id }}" {% if fd.get('supplier_id', row.supplier_id if row else 0)|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'supplier_id') }}
+      </div>
+      <div>
+        <label for="order_order_date">Bestelldatum</label>
+        <input id="order_order_date" type="date" name="order_date" value="{{ fd.get('order_date', order_date_value) }}">
+      </div>
+      <div>
+        <label for="order_wanted_date">Wunschtermin</label>
+        <input id="order_wanted_date" type="date" name="wanted_date" value="{{ fd.get('wanted_date', wanted_date_value) }}">
+      </div>
+      <div>
+        <label for="order_order_no">Bestellnummer</label>
+        <input id="order_order_no" type="text" name="order_no" value="{{ fd.get('order_no', row.order_no if row and row.order_no else '') }}" placeholder="Leer = automatisch">
+      </div>
+      <div>
+        <label for="order_condition_set_id">Konditionssatz</label>
+        <select id="order_condition_set_id" name="condition_set_id">
+          <option value="0">-</option>
+          {% for item in condition_sets %}
+            <option value="{{ item.id }}" {% if fd.get('condition_set_id', row.condition_set_id if row else 0)|int == item.id %}selected{% endif %}>{{ suppliers_by_id.get(item.supplier_id).name if suppliers_by_id.get(item.supplier_id) else '-' }} | {{ item.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="order_paperless_document_id">Paperless-Dokument-ID</label>
+        <input id="order_paperless_document_id" type="text" name="paperless_document_id" value="{{ fd.get('paperless_document_id', row.paperless_document_id if row else '') }}">
+      </div>
+    </div>
+
+    <label for="order_note">Notiz</label>
+    <textarea id="order_note" name="note" rows="2">{{ fd.get('note', row.note if row else '') }}</textarea>
+
+    <h2>Positionen</h2>
+    <div class="table">
+      <div class="tr th" style="grid-template-columns: 1.5fr 120px 150px 180px 1.2fr;">
+        <div>Produkt</div>
+        <div>Menge</div>
+        <div>Erwarteter EK</div>
+        <div>Lieferantenartikelnummer</div>
+        <div>Notiz</div>
+      </div>
+      {% for line in line_rows %}
+        <div class="tr" style="grid-template-columns: 1.5fr 120px 150px 180px 1.2fr; align-items:start;">
+          <div>
+            <select name="line_product_id">
+              <option value="0">-</option>
+              {% for p in products %}
+                <option value="{{ p.id }}" {% if line.product_id|int == p.id %}selected{% endif %}>{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div><input type="number" name="line_qty_ordered" value="{{ line.qty_ordered }}" min="0"></div>
+          <div><input type="text" name="line_unit_price_expected" value="{{ line.unit_price_expected }}" placeholder="0,00"></div>
+          <div><input type="text" name="line_supplier_product_no" value="{{ line.supplier_product_no }}"></div>
+          <div><input type="text" name="line_note" value="{{ line.note }}"></div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/einkauf/bestellungen">Zurück</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Leere Positionszeilen werden ignoriert.</li>
+  <li>Wenn keine Bestellnummer eingetragen ist, vergibt das System automatisch eine.</li>
+  <li>Bestellungen mit gebuchten Mengen sollten nicht mehr strukturell umgebaut werden.</li>
+</ul>
+{% endblock %}

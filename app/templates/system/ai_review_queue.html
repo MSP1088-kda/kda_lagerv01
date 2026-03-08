@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>KI-Freigaben</h1>
+  <div class="hint">Gelbe und rote KI-Vorschläge brauchen eine bewusste Freigabe, Ablehnung oder einen Override.</div>
+
+  {% for row in rows %}
+    {% set decision = decisions.get(row.ai_decision_log_id) %}
+    <details class="box" style="margin-top:10px;" {% if row.status == 'open' %}open{% endif %}>
+      <summary class="box-title">{{ row.title }} | {{ ai_review_status_label(row.status) }} | {{ row.priority|title }}</summary>
+      <div class="box-body">
+        {% if decision %}
+          <div><b>Aufgabe:</b> {{ ai_task_label(decision.task_name) }}</div>
+          <div><b>Risiko:</b> {{ ai_risk_label(decision.risk_class) }}</div>
+          <div><b>Vertrauen:</b> {{ '%.2f'|format(decision.confidence or 0) }}</div>
+          {% if ai_object_url(decision.related_object_type, decision.related_object_id) %}<div><a href="{{ ai_object_url(decision.related_object_type, decision.related_object_id) }}">Bezugsobjekt öffnen</a></div>{% endif %}
+          <div style="margin-top:10px;"><b>Ausgabe</b></div>
+          <pre>{{ ai_decision_output(decision) | tojson(indent=2) }}</pre>
+        {% endif %}
+        {% if row.status == 'open' %}
+        <form method="post" action="/system/ki-freigaben/{{ row.ai_decision_log_id }}" class="form" style="margin-top:10px;">
+          <label>Notiz</label>
+          <textarea name="note" rows="3"></textarea>
+          <div class="row" style="gap:8px; flex-wrap:wrap;">
+            <button class="btn primary" type="submit" name="action" value="approve">Freigeben</button>
+            <button class="btn" type="submit" name="action" value="reject">Ablehnen</button>
+            <button class="btn" type="submit" name="action" value="override">Override dokumentieren</button>
+          </div>
+        </form>
+        {% endif %}
+      </div>
+    </details>
+  {% endfor %}
+  {% if not rows %}<div class="muted">Aktuell keine offenen oder erledigten KI-Freigaben vorhanden.</div>{% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Freigeben bestätigt den Vorschlag, führt aber keine rote Aktion automatisch aus.</li>
+  <li>Ablehnen und Override bleiben im Audit sichtbar.</li>
+  <li>Jede Freigabe ist an Benutzer und Zeitpunkt gebunden.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Eingangsrechnung {{ row.invoice_no }}</h1>
+  <div class="box">
+    <div class="box-title">Kopf</div>
+    <div class="box-body">
+      <div><b>Lieferant:</b> {{ supplier.name if supplier else '-' }}</div>
+      <div><b>Status:</b> {{ purchase_invoice_status_label(row.status) }}</div>
+      <div><b>Datum:</b> {{ format_date(row.invoice_date or row.created_at) }}</div>
+      <div><b>Fälligkeit:</b> {{ format_date(row.due_date) }}</div>
+      <div><b>Netto:</b> {{ row.net_total|eur_cents if row.net_total is not none else '-' }}</div>
+      <div><b>Steuer:</b> {{ row.tax_total|eur_cents if row.tax_total is not none else '-' }}</div>
+      <div><b>Brutto:</b> {{ row.gross_total|eur_cents if row.gross_total is not none else '-' }}</div>
+      <div class="row" style="margin-top:10px;">
+        <form method="post" action="/einkauf/rechnungen/{{ row.id }}/status" class="inline">
+          <select name="status">
+            {% for key in ('draft','matched','approved','booked','paid','disputed') %}
+              <option value="{{ key }}" {% if row.status == key %}selected{% endif %}>{{ purchase_invoice_status_label(key) }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn small" type="submit">Status speichern</button>
+        </form>
+        <a class="btn" href="/einkauf/rechnungen">Zurück</a>
+      </div>
+    </div>
+  </div>
+
+  <h2>3-Wege-Abgleich</h2>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1.2fr 100px 140px 140px 140px 140px 1fr;">
+      <div>Produkt</div>
+      <div>Menge</div>
+      <div>Bestellung</div>
+      <div>Wareneingang</div>
+      <div>Rechnung</div>
+      <div>Abweichung</div>
+      <div>Status</div>
+    </div>
+    {% for item in three_way_rows %}
+      <div class="tr" style="grid-template-columns: 1.2fr 100px 140px 140px 140px 140px 1fr;">
+        <div>{{ item.product_label }}</div>
+        <div>{{ item.qty }}</div>
+        <div>{{ item.expected_cost|eur_cents if item.expected_cost is not none else '-' }}</div>
+        <div>{{ item.received_cost|eur_cents if item.received_cost is not none else '-' }}</div>
+        <div>{{ item.invoiced_cost|eur_cents if item.invoiced_cost is not none else '-' }}</div>
+        <div>{{ item.deviation|eur_cents if item.deviation is not none else '-' }}</div>
+        <div>{{ item.status_label }}</div>
+      </div>
+    {% endfor %}
+    {% if not three_way_rows %}<div class="muted">Keine Rechnungszeilen vorhanden.</div>{% endif %}
+  </div>
+
+  <h2>Dokumente</h2>
+  <div class="box">
+    <div class="box-body">
+      <form method="post" action="/einkauf/rechnungen/{{ row.id }}/dokumente/link" class="form compact">
+        <div class="grid2">
+          <div>
+            <label>Dokument aus Dokumenteneingang</label>
+            <select name="document_inbox_id">
+              <option value="0">-</option>
+              {% for item in unmatched_documents %}
+                <option value="{{ item.id }}">{{ item.title or ('Dokument ' ~ item.paperless_document_id) }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Paperless-Dokument-ID direkt</label>
+            <input type="text" name="paperless_document_id">
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn primary" type="submit">Dokument verknüpfen</button>
+          <button class="btn" type="submit" formaction="/einkauf/rechnungen/{{ row.id }}/dokumente/export">Interne Zusammenfassung an Paperless senden</button>
+        </div>
+      </form>
+      <div class="table" style="margin-top:10px;">
+        <div class="tr th" style="grid-template-columns: 120px 1.8fr 180px;">
+          <div>ID</div>
+          <div>Titel</div>
+          <div>Aktion</div>
+        </div>
+        {% for link in paperless_links %}
+          <div class="tr" style="grid-template-columns: 120px 1.8fr 180px;">
+            <div>{{ link.paperless_document_id }}</div>
+            <div>{{ link.paperless_title or '-' }}</div>
+            <div>{% if paperless_base_url %}<a class="btn small" target="_blank" rel="noopener" href="{{ paperless_build_url(link.paperless_document_id) }}">In Paperless öffnen</a>{% else %}-{% endif %}</div>
+          </div>
+        {% endfor %}
+        {% if not paperless_links %}<div class="muted">Keine Dokumente verknüpft.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der 3-Wege-Abgleich vergleicht erwarteten, erhaltenen und fakturierten EK.</li>
+  <li>Preisabweichungen werden als Differenz pro Stück dargestellt.</li>
+  <li>Dokumente bleiben in Paperless, hier werden nur Links gepflegt.</li>
+</ul>
+{% endblock %}

@@ -2,35 +2,97 @@
 {% block content %}
 <div class="panel">
   <h1>CSV-Import Ergebnis</h1>
+  {% set status_label = 'Unbekannt' %}
+  {% if draft.status == 'uploaded' %}{% set status_label = 'Hochgeladen' %}{% endif %}
+  {% if draft.status == 'mapping' %}{% set status_label = 'Zuordnung' %}{% endif %}
+  {% if draft.status == 'validated' %}{% set status_label = 'Validiert' %}{% endif %}
+  {% if draft.status == 'imported' %}{% set status_label = 'Importiert' %}{% endif %}
+  {% if draft.status == 'failed' %}{% set status_label = 'Fehlgeschlagen' %}{% endif %}
+  {% if draft.status == 'validated_with_warnings' %}{% set status_label = 'Mit Hinweisen' %}{% endif %}
+  <div class="hint">Entwurf: <b>#{{ draft.id }}</b> | Status: <b>{{ status_label }}</b></div>
 
-  <div class="mono">
-    Angelegt: {{ created_count }}<br>
+  <div class="mono" style="margin-top:10px;">
+    Eingefügt: {{ created_count }}<br>
     Aktualisiert: {{ updated_count }}<br>
     Übersprungen: {{ skipped_count }}<br>
+    Hinweise: {{ warning_count }}<br>
     Fehler: {{ error_count }}<br>
+    Zubehör verknüpft: {{ accessory_linked_count }}<br>
+    Zubehör offen: {{ accessory_open_count }}<br>
+    Später aufgelöst: {{ resolved_accessory_count }}<br>
   </div>
+
+  {% if profile_updated %}
+  <div class="hint">Profil wurde aktualisiert.</div>
+  {% if new_profile_columns %}
+  <div class="hint">Neu im Profil: {{ new_profile_columns|join(', ') }}</div>
+  {% endif %}
+  {% endif %}
+
+  <h2>Hinweise (maximal 50)</h2>
+  {% if warnings_preview %}
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1fr;">
+      <div>Hinweis</div>
+    </div>
+    {% for w in warnings_preview %}
+    <div class="tr" style="grid-template-columns: 1fr;">
+      <div>{{ w }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted">Keine Hinweise.</div>
+  {% endif %}
 
   <h2>Fehlerliste (maximal 50)</h2>
   {% if errors_preview %}
-  <div class="mono">
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 1fr;">
+      <div>Fehler</div>
+    </div>
     {% for e in errors_preview %}
-      - {{ e }}<br>
+    <div class="tr" style="grid-template-columns: 1fr;">
+      <div>{{ e }}</div>
+    </div>
     {% endfor %}
   </div>
   {% else %}
   <div class="muted">Keine Fehler aufgetreten.</div>
   {% endif %}
 
+  <h2>Offene Zubehörreferenzen (maximal 50)</h2>
+  {% if open_accessory_preview %}
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 120px 1fr 140px;">
+      <div>Produkt-ID</div>
+      <div>Wert</div>
+      <div>Status</div>
+    </div>
+    {% for row in open_accessory_preview %}
+    <div class="tr" style="grid-template-columns: 120px 1fr 140px;">
+      <div>{{ row.product_id }}</div>
+      <div>{{ row.token }}</div>
+      <div>{{ row.status }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted">Keine offenen Zubehörreferenzen.</div>
+  {% endif %}
+
   <div class="row">
-    <a class="btn primary" href="/catalog/products">Zur Produktliste</a>
-    <a class="btn" href="/catalog/products/import">Neuen Import starten</a>
+    <a class="btn primary" href="/catalog/products">Zum Produktkatalog</a>
+    <a class="btn" href="/catalog/import">Noch einen Import starten</a>
+    <a class="btn" href="{{ reopen_url }}">Diesen Entwurf erneut öffnen</a>
   </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Der Import schreibt per EAN-Upsert: vorhandene Produkte werden aktualisiert.</li>
-  <li>Prüfe die Fehlerliste bei fehlender EAN oder ungültigen Wertformaten.</li>
+  <li>Die Kennzahlen zeigen, was neu, aktualisiert, übersprungen oder fehlerhaft war.</li>
+  <li>Offene Zubehörreferenzen bleiben sichtbar und können später automatisch oder manuell geklärt werden.</li>
+  <li>Der Entwurf bleibt erhalten und ist über „Entwurf erneut öffnen“ direkt erreichbar.</li>
 </ul>
 {% endblock %}

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Eingangsrechnungen</h1>
+  <form method="get" action="/einkauf/rechnungen" class="form compact">
+    <div class="grid3">
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">Alle</option>
+          {% for s in suppliers %}
+            <option value="{{ s.id }}" {% if supplier_id|int == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status">
+          <option value="">Alle</option>
+          {% for key in ('draft','matched','approved','booked','paid','disputed') %}
+            <option value="{{ key }}" {% if status == key %}selected{% endif %}>{{ purchase_invoice_status_label(key) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Suche</label>
+        <input id="q" type="text" name="q" value="{{ q }}" placeholder="Rechnungsnummer">
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn primary" type="submit">Filtern</button>
+      <a class="btn" href="/einkauf/rechnungen">Zurücksetzen</a>
+      <a class="btn" href="/einkauf/rechnungen/neu">Neue Rechnung</a>
+    </div>
+  </form>
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 160px 1.3fr 140px 140px 140px 150px;">
+      <div>Rechnung</div>
+      <div>Lieferant</div>
+      <div>Datum</div>
+      <div>Status</div>
+      <div>Brutto</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 160px 1.3fr 140px 140px 140px 150px;">
+        <div>{{ row.invoice_no }}</div>
+        <div>{{ supplier_map.get(row.supplier_id).name if supplier_map.get(row.supplier_id) else '-' }}</div>
+        <div>{{ format_date(row.invoice_date or row.created_at) }}</div>
+        <div>{{ purchase_invoice_status_label(row.status) }}</div>
+        <div>{{ row.gross_total|eur_cents if row.gross_total is not none else '-' }}</div>
+        <div><a class="btn small" href="/einkauf/rechnungen/{{ row.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Keine Eingangsrechnungen gefunden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Rechnungen können gegen Bestell- und Wareneingangszeilen abgeglichen werden.</li>
+  <li>Abweichungen werden erst im Detail sauber aufgelöst.</li>
+  <li>Rechnungen ohne Zuordnung bleiben im Status Entwurf.</li>
+</ul>
+{% endblock %}

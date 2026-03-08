@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel mobile-catalog" data-mobile-catalog="1" data-next="{{ next_path or '' }}">
+  <h1>Katalog</h1>
+
+  <div class="form compact mobile-catalog-controls">
+    <label for="mCatalogSearch">Suche</label>
+    <input id="mCatalogSearch" type="text" value="{{ q }}" placeholder="Bezeichnung, EAN, Materialnummer" autocomplete="off" autofocus>
+
+    <label for="mCatalogKind">Geräteart</label>
+    <select id="mCatalogKind" name="kind_id">
+      <option value="0">Alle Gerätearten</option>
+      {% for k in kinds %}
+      <option value="{{ k.id }}" {% if kind_id == k.id %}selected{% endif %}>{{ k.name }}</option>
+      {% endfor %}
+    </select>
+
+    <button id="mCatalogFeatureToggle" class="btn" type="button" data-open="0">Merkmale</button>
+    <div id="mCatalogFeatureWrap" class="mobile-catalog-feature-wrap" data-open="0" hidden>
+      <div id="mCatalogFeatureFields" class="mobile-catalog-feature-fields">
+        {% if feature_filters %}
+          {% for ff in feature_filters %}
+            {% if ff.data_type == 'number' %}
+            <div class="mobile-catalog-feature-row" data-feature-id="{{ ff.id }}" data-feature-type="number">
+              <label for="mCatalogF{{ ff.id }}Min">{{ ff.label }} (Min)</label>
+              <select id="mCatalogF{{ ff.id }}Min" name="f_{{ ff.id }}_min" data-feature-input="1">
+                <option value="">-</option>
+                {% for opt in ff.min_options %}
+                <option value="{{ opt.value }}" {% if ff.min == opt.value %}selected{% endif %} {% if opt.disabled %}disabled{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+              </select>
+              <label for="mCatalogF{{ ff.id }}Max">{{ ff.label }} (Max)</label>
+              <select id="mCatalogF{{ ff.id }}Max" name="f_{{ ff.id }}_max" data-feature-input="1">
+                <option value="">-</option>
+                {% for opt in ff.max_options %}
+                <option value="{{ opt.value }}" {% if ff.max == opt.value %}selected{% endif %} {% if opt.disabled %}disabled{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% elif ff.data_type == 'bool' %}
+            <div class="mobile-catalog-feature-row" data-feature-id="{{ ff.id }}" data-feature-type="bool">
+              <label for="mCatalogF{{ ff.id }}">{{ ff.label }}</label>
+              <select id="mCatalogF{{ ff.id }}" name="f_{{ ff.id }}" data-feature-input="1">
+                <option value="">-</option>
+                {% for opt in ff.bool_options %}
+                <option value="{{ opt.value }}" {% if ff.value == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% else %}
+            <div class="mobile-catalog-feature-row" data-feature-id="{{ ff.id }}" data-feature-type="text">
+              <label for="mCatalogF{{ ff.id }}">{{ ff.label }}</label>
+              <select id="mCatalogF{{ ff.id }}" name="f_{{ ff.id }}" data-feature-input="1">
+                <option value="">-</option>
+                {% for opt in ff.options %}
+                <option value="{{ opt.value }}" {% if ff.value == opt.value %}selected{% endif %} {% if opt.disabled %}disabled{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% endif %}
+          {% endfor %}
+        {% else %}
+        <div class="muted">Keine Merkmale für die aktuelle Auswahl.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div id="mCatalogResults" class="mobile-catalog-results" aria-live="polite">
+    <div class="muted">Lade...</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Suche reagiert live beim Tippen.</li>
+  <li>Mit "Merkmale" blendest du zusätzliche Filter ein.</li>
+  <li>Ein Tipp auf eine Karte öffnet Produktdetails oder führt direkt zur nächsten mobilen Aktion.</li>
+</ul>
+{% endblock %}

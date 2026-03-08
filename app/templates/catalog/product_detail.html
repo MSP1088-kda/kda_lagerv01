@@ -1,7 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel" data-page="product-detail">
-  {% set detail_heading = product.manufacturer_name or product.sales_name or product.name or ('Produkt #' ~ product.id) %}
+  {% set title_1 = (product.product_title_1 or '')|trim %}
+  {% set title_2 = (product.product_title_2 or '')|trim %}
+  {% if title_1 and title_2 %}
+  {% set detail_heading = title_1 ~ ' ' ~ title_2 %}
+  {% else %}
+  {% set detail_heading = title_1 or title_2 or product.manufacturer_name or product.sales_name or product.name or ('Produkt #' ~ product.id) %}
+  {% endif %}
   <h1>{{ detail_heading }}{% if not product.active %} <span class="muted">(archiviert)</span>{% endif %}</h1>
   {% set ofd = order_form_data or {} %}
   {% if receipt_saved %}
@@ -15,6 +21,9 @@
     </div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Artikelart</div><div>{{ item_type_labels.get(product.item_type, 'Material') }}</div></div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Geräteart</div><div>{{ device_kind_name }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Herstellerbezeichnung</div><div>{{ product.manufacturer_name or '-' }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Produkttitel 1</div><div>{{ product.product_title_1 or '-' }}</div></div>
+    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Produkttitel 2</div><div>{{ product.product_title_2 or '-' }}</div></div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Materialnummer</div><div>{{ product.material_no or '-' }}</div></div>
     <div class="tr" style="grid-template-columns: 220px 1fr;"><div>EAN</div><div>{{ product.ean or '-' }}</div></div>
     {% for row in attribute_detail_rows %}
@@ -62,13 +71,31 @@
   <details class="box collapse-box" style="margin-top:10px;">
     <summary class="box-title">Bilder</summary>
     <div class="box-body">
-      {% if image_urls %}
+      {% if image_slots %}
+      {% set image_stats = namespace(configured=0, valid=0) %}
+      {% for slot in image_slots %}
+        {% if slot.has_value %}{% set image_stats.configured = image_stats.configured + 1 %}{% endif %}
+        {% if slot.url %}{% set image_stats.valid = image_stats.valid + 1 %}{% endif %}
+      {% endfor %}
+      <div class="hint">Belegt: {{ image_stats.configured }} von {{ image_slots|length }} | Gültig: {{ image_stats.valid }}</div>
       <div class="image-grid">
-        {% for url in image_urls %}
-        <a class="image-card" href="{{ url }}" data-product-image-open="1">
-          <img src="{{ url }}" alt="Produktbild {{ loop.index }}" loading="lazy">
-          <span>Bild {{ loop.index }}</span>
+        {% for slot in image_slots %}
+        {% if slot.url %}
+        <a class="image-card" href="{{ slot.url }}" data-product-image-open="1">
+          <img src="{{ slot.url }}" alt="Produktbild {{ slot.index }}" loading="lazy">
+          <span>Bild {{ slot.index }}</span>
         </a>
+        {% elif slot.has_value %}
+        <div class="image-card image-card-empty">
+          <div class="image-card-empty-note">Ungültiger Bild-Link</div>
+          <span>Bild {{ slot.index }}</span>
+        </div>
+        {% else %}
+        <div class="image-card image-card-empty">
+          <div class="image-card-empty-note">Kein Bild hinterlegt</div>
+          <span>Bild {{ slot.index }}</span>
+        </div>
+        {% endif %}
         {% endfor %}
       </div>
       {% else %}
@@ -117,6 +144,63 @@
       {% endif %}
     </div>
   </details>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Zubehör</div>
+    <div class="box-body">
+      <h3>Verknüpftes Zubehör</h3>
+      {% if accessory_links %}
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 110px 1fr 120px;">
+          <div>Produkt-ID</div>
+          <div>Artikel</div>
+          <div>Quelle</div>
+        </div>
+        {% for row in accessory_links %}
+        {% set ap = accessory_products.get(row.accessory_product_id) %}
+        <div class="tr" style="grid-template-columns: 110px 1fr 120px;">
+          <div>#{{ row.accessory_product_id }}</div>
+          <div>
+            {% if ap %}
+            <a href="/catalog/products/{{ ap.id }}">{{ ap.name or ap.sales_name or ('Produkt #' ~ ap.id) }}</a>
+            {% if ap.material_no %}<span class="muted"> | {{ ap.material_no }}</span>{% endif %}
+            {% if ap.ean %}<span class="muted"> | EAN {{ ap.ean }}</span>{% endif %}
+            {% else %}
+            <span class="muted">Produkt nicht mehr vorhanden</span>
+            {% endif %}
+          </div>
+          <div>{{ row.source or '-' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="muted">Kein verknüpftes Zubehör vorhanden.</div>
+      {% endif %}
+
+      <h3 style="margin-top:12px;">Offene Zubehörhinweise</h3>
+      {% if accessory_open_refs %}
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 1fr 140px;">
+          <div>Wert</div>
+          <div>Status</div>
+        </div>
+        {% for row in accessory_open_refs %}
+        {% set status_label = 'Offen' %}
+        {% if row.status == 'pending' %}{% set status_label = 'Offen' %}{% endif %}
+        {% if row.status == 'not_found' %}{% set status_label = 'Nicht gefunden' %}{% endif %}
+        {% if row.status == 'ambiguous' %}{% set status_label = 'Mehrdeutig' %}{% endif %}
+        {% if row.status == 'linked' %}{% set status_label = 'Verknüpft' %}{% endif %}
+        <div class="tr" style="grid-template-columns: 1fr 140px;">
+          <div>{{ row.raw_value }}</div>
+          <div>{{ status_label }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="muted">Keine offenen Zubehörhinweise vorhanden.</div>
+      {% endif %}
+    </div>
+  </div>
 
   <div class="box" style="margin-top:10px;">
     <div class="box-title">Bestand nach Zustand</div>
@@ -200,6 +284,46 @@
     </div>
   </div>
 
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Einkauf</div>
+    <div class="box-body">
+      <div>Letzter EK: {{ purchase_summary.last_ek|eur_cents if purchase_summary.last_ek is not none else '-' }}</div>
+      <div>Durchschnitts-EK: {{ purchase_summary.avg_ek|eur_cents if purchase_summary.avg_ek is not none else '-' }}</div>
+      <div>Letzter Lieferant: {{ purchase_summary.last_supplier.name if purchase_summary.last_supplier else '-' }}</div>
+      <div class="row" style="margin-top:8px;">
+        <a class="btn" href="/einkauf/bestellungen/neu?product_id={{ product.id }}">Neue Bestellung</a>
+        {% if user.role == "admin" and outsmart_enabled %}
+        <form method="post" action="/catalog/products/{{ product.id }}/outsmart/export" class="inline">
+          <button class="btn" type="submit">Als Material an OutSmart senden</button>
+        </form>
+        {% endif %}
+        {% if outsmart_material_link and outsmart_material_link.deep_link_url %}
+        <a class="btn" href="{{ outsmart_material_link.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>
+        {% endif %}
+      </div>
+      {% if outsmart_material_link %}
+      <div class="hint">OutSmart-Link: {{ outsmart_material_link.external_key }}{% if outsmart_material_link.external_row_id %} | Zeile {{ outsmart_material_link.external_row_id }}{% endif %}</div>
+      {% endif %}
+      <div class="table" style="margin-top:10px;">
+        <div class="tr th" style="grid-template-columns: 120px 140px 140px 1fr;">
+          <div>Datum</div>
+          <div>Quelle</div>
+          <div>EK</div>
+          <div>Lieferant</div>
+        </div>
+        {% for row in purchase_summary.recent_prices %}
+          <div class="tr" style="grid-template-columns: 120px 140px 140px 1fr;">
+            <div>{{ row.effective_date.strftime('%d.%m.%Y') if row.effective_date else '-' }}</div>
+            <div>{{ row.source_type }}</div>
+            <div>{{ row.effective_unit_cost|eur_cents if row.effective_unit_cost is not none else (row.unit_cost|eur_cents if row.unit_cost is not none else '-') }}</div>
+            <div>{{ purchase_price_supplier_map.get(row.supplier_id).name if purchase_price_supplier_map.get(row.supplier_id) else '-' }}</div>
+          </div>
+        {% endfor %}
+        {% if not purchase_summary.recent_prices %}<div class="muted">Noch keine EK-Historie vorhanden.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
   <div class="row" style="margin-top:10px;">
     <a class="btn" href="/catalog/products">Zurück zur Produktliste</a>
     {% if sets_enabled %}
@@ -222,8 +346,10 @@
         {% endif %}
         {% if role_flags.can_inventory and product.active %}
           <a id="detailReceiptBtn" class="btn primary" href="/inventory/transactions/new?tx_type=receipt&product_id={{ product.id }}&return_to={{ return_to_q }}">Einbuchen</a>
+          <a id="detailRepairBtn" class="btn" href="/inventory/reparaturen/new?article_id={{ product.id }}">Reparatur starten</a>
         {% elif role_flags.can_inventory %}
           <button id="detailReceiptBtn" class="btn primary" type="button" disabled>Einbuchen</button>
+          <button id="detailRepairBtn" class="btn" type="button" disabled>Reparatur starten</button>
         {% endif %}
       </div>
     </div>
@@ -236,7 +362,7 @@
   <div id="orderCreatePanel" class="box" hidden>
     <div class="box-title">Bestellung anlegen</div>
     <div class="box-body">
-      <form method="post" action="/purchase/orders/from_product" class="form compact">
+      <form method="post" action="/einkauf/bestellungen/aus-produkt" class="form compact">
         <input type="hidden" name="product_id" value="{{ product.id }}">
         <div class="grid3">
           <div>
@@ -272,7 +398,7 @@
   </div>
   {% endif %}
 
-  {% set lb_open = false %}
+  {% set lb_open = loadbee_auto_open or loadbee_load_mode == 'auto' %}
   {% if loadbee_enabled and product.item_type == 'appliance' and loadbee_gtin %}
   <div class="loadbee-wrap">
     <div class="loadbee-head">
@@ -402,6 +528,7 @@
   <li>E: Bearbeiten.</li>
   <li>A: Archivieren/Reaktivieren.</li>
   <li>I: Einbuchen.</li>
+  <li>Reparatur starten öffnet den Reparaturauftrag mit vorausgewähltem Artikel.</li>
   <li>Taste P öffnet die schnelle Preisbearbeitung, Taste B die Bestellmaske.</li>
   <li>Mit Taste R wird checkAvailability neu ausgelöst (Hersteller-Details neu laden).</li>
   <li>Debug-Modus aktivierst du unter System → Hersteller-Details (loadbee).</li>

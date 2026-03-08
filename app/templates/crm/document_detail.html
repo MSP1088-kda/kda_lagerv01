@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Dokument prüfen</h1>
+
+  <div class="grid2" style="align-items:start;">
+    <div class="box">
+      <div class="box-title">Dokument</div>
+      <div class="box-body">
+        <div><b>Paperless-ID:</b> {{ item.paperless_document_id }}</div>
+        <div><b>Titel:</b> {{ item.title or '-' }}</div>
+        <div><b>Korrespondent:</b> {{ item.correspondent or '-' }}</div>
+        <div><b>Dokumenttyp:</b> {{ item.document_type or '-' }}</div>
+        <div><b>Status:</b> {{ document_inbox_status_label(item.status) }}</div>
+        {% if current_target_url %}<div><b>Aktuelles Ziel:</b> <a href="{{ current_target_url }}">{{ current_target_label }}</a></div>{% endif %}
+        {% if paperless_url %}<div style="margin-top:8px;"><a class="btn small" href="{{ paperless_url }}" target="_blank" rel="noopener">In Paperless öffnen</a></div>{% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Trefferliste</div>
+      <div class="box-body">
+        {% if candidates.customers %}
+          <div><b>Kunden</b></div>
+          {% for row in candidates.customers[:5] %}<div><a href="/crm/kunden/{{ row.id }}">{{ row.customer_no_internal }}</a></div>{% endfor %}
+        {% endif %}
+        {% if candidates.cases %}
+          <div style="margin-top:8px;"><b>Vorgänge</b></div>
+          {% for row in candidates.cases[:5] %}<div><a href="/crm/vorgaenge/{{ row.id }}">{{ row.case_no }} | {{ row.title }}</a></div>{% endfor %}
+        {% endif %}
+        {% if candidates.repairs %}
+          <div style="margin-top:8px;"><b>Reparaturen</b></div>
+          {% for row in candidates.repairs[:5] %}<div><a href="/inventory/reparaturen/{{ row.id }}">{{ row.repair_no or ('REP-' ~ row.id) }}</a></div>{% endfor %}
+        {% endif %}
+        {% if not candidates.customers and not candidates.cases and not candidates.repairs and not candidates.orders and not candidates.receipts and not candidates.invoices %}
+          <div class="muted">Keine Treffer erkannt.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <form method="post" action="/crm/dokumente/{{ item.id }}/zuweisen" class="form" style="margin-top:10px;">
+    <label>Zieltyp</label>
+    <select name="object_type">
+      <option value="customer">Kunde</option>
+      <option value="case">Vorgang</option>
+      <option value="repair_order">Reparaturauftrag</option>
+      <option value="purchase_order">Bestellung</option>
+      <option value="goods_receipt">Wareneingang</option>
+      <option value="purchase_invoice">Eingangsrechnung</option>
+      <option value="supplier">Lieferant</option>
+      <option value="ignored">Ignorieren</option>
+    </select>
+
+    <div class="grid2">
+      <div>
+        <label>Kunde</label>
+        <select name="customer_id">
+          <option value="0">-</option>
+          {% for row in candidates.customers %}<option value="{{ row.id }}">{{ row.customer_no_internal }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Vorgang</label>
+        <select name="case_id">
+          <option value="0">-</option>
+          {% for row in candidates.cases %}<option value="{{ row.id }}">{{ row.case_no }} | {{ row.title }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Reparaturauftrag</label>
+        <select name="repair_order_id">
+          <option value="0">-</option>
+          {% for row in candidates.repairs %}<option value="{{ row.id }}">{{ row.repair_no or ('REP-' ~ row.id) }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Bestellung</label>
+        <select name="purchase_order_id">
+          <option value="0">-</option>
+          {% for row in candidates.orders %}<option value="{{ row.id }}">{{ row.order_no or row.po_number }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Wareneingang</label>
+        <select name="goods_receipt_id">
+          <option value="0">-</option>
+          {% for row in candidates.receipts %}<option value="{{ row.id }}">{{ row.receipt_no or ('WE-' ~ row.id) }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Eingangsrechnung</label>
+        <select name="purchase_invoice_id">
+          <option value="0">-</option>
+          {% for row in candidates.invoices %}<option value="{{ row.id }}">{{ row.invoice_no }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Lieferant</label>
+        <select name="supplier_id">
+          <option value="0">-</option>
+          {% for row in suppliers %}<option value="{{ row.id }}">{{ row.name }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <label>Manuelle Ziel-ID</label>
+    <input type="number" name="manual_object_id" value="" min="1">
+
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      <button class="btn primary" type="submit">Zuordnung speichern</button>
+      <a class="btn" href="/crm/dokumente">Zurück zur Inbox</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Trefferliste bündelt erkannte Kunden, Vorgänge und Einkaufsbezüge ohne lange Suchwege.</li>
+  <li>Beim Speichern wird die Fachzuordnung im Hauptsystem und der Paperless-Link zusammen gepflegt.</li>
+  <li>Ignorierte Dokumente bleiben sichtbar, werden aber nicht mehr als offen behandelt.</li>
+</ul>
+{% endblock %}

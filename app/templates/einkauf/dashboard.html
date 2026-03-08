@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel" data-dashboard-hotkeys="1">
+  <h1>Einkauf</h1>
+  <div class="hint">Kennzahlen, Schnellaktionen und offener Klärungsbedarf im Einkauf.</div>
+
+  <div class="grid3" style="margin-top:10px;">
+    <div class="box"><div class="box-title">Offene Bestellungen</div><div class="box-body"><div class="big">{{ stats.open_orders }}</div></div></div>
+    <div class="box"><div class="box-title">Offene Wareneingänge</div><div class="box-body"><div class="big">{{ stats.open_receipts }}</div></div></div>
+    <div class="box"><div class="box-title">Rechnungen ohne Zuordnung</div><div class="box-body"><div class="big">{{ stats.unmatched_invoices }}</div></div></div>
+    <div class="box"><div class="box-title">Preisabweichungen</div><div class="box-body"><div class="big">{{ stats.price_deviations }}</div></div></div>
+    <div class="box"><div class="box-title">Konditionsziele in Gefahr</div><div class="box-body"><div class="big">{{ stats.risky_conditions }}</div></div></div>
+    <div class="box"><div class="box-title">Dokumente neu</div><div class="box-body"><div class="big">{{ stats.new_documents }}</div></div></div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Schnellaktionen</div>
+    <div class="box-body row">
+      <a class="btn primary" href="/einkauf/bestellungen/neu">Neue Bestellung</a>
+      <a class="btn" href="/einkauf/wareneingaenge/neu">Wareneingang buchen</a>
+      <a class="btn" href="/einkauf/rechnungen/neu">Eingangsrechnung erfassen</a>
+      <a class="btn" href="/einkauf/dokumente">Dokumenteneingang</a>
+      <a class="btn" href="/einkauf/konditionsziele">Konditionsziele</a>
+      <a class="btn" href="/einkauf/konditionen/import">SEG Jahresvereinbarung importieren</a>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px;">
+    <div class="box">
+      <div class="box-title">Knappste Konditionsziele</div>
+      <div class="box-body">
+        <div class="table">
+          <div class="tr th" style="grid-template-columns: 1.5fr 1fr 1fr 1fr;">
+            <div>Lieferant</div>
+            <div>Ziel</div>
+            <div>Aktuell</div>
+            <div>Fehlt</div>
+          </div>
+          {% for item in condition_rows[:8] %}
+            <div class="tr" style="grid-template-columns: 1.5fr 1fr 1fr 1fr;">
+              <div>{{ suppliers.get(item.condition_set.supplier_id).name if suppliers.get(item.condition_set.supplier_id) else '-' }}</div>
+              <div>{{ item.target_value|eur_cents if item.target_value else '-' }}</div>
+              <div>{{ item.current_value|eur_cents if item.current_value else '0,00 €' }}</div>
+              <div>{{ item.missing_value|eur_cents if item.missing_value else '0,00 €' }}</div>
+            </div>
+          {% endfor %}
+          {% if not condition_rows %}<div class="muted">Keine aktiven Ziele.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Neueste Dokumente</div>
+      <div class="box-body">
+        <div class="table">
+          <div class="tr th" style="grid-template-columns: 1.8fr 1fr 1fr 150px;">
+            <div>Titel</div>
+            <div>Korrespondent</div>
+            <div>Status</div>
+            <div>Aktion</div>
+          </div>
+          {% for row in inbox_rows[:8] %}
+            <div class="tr" style="grid-template-columns: 1.8fr 1fr 1fr 150px;">
+              <div>{{ row.title or ('Dokument ' ~ row.paperless_document_id) }}</div>
+              <div>{{ row.correspondent or '-' }}</div>
+              <div>{{ document_inbox_status_label(row.status) }}</div>
+              <div><a class="btn small" href="/einkauf/dokumente/{{ row.id }}">Zuordnen</a></div>
+            </div>
+          {% endfor %}
+          {% if not inbox_rows %}<div class="muted">Keine Dokumente im Dokumenteneingang.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>N öffnet eine neue Bestellung.</li>
+  <li>W öffnet einen neuen Wareneingang.</li>
+  <li>R öffnet eine neue Eingangsrechnung.</li>
+  <li>D springt in den Dokumenteneingang.</li>
+</ul>
+{% endblock %}

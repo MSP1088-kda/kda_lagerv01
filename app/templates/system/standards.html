@@ -3,12 +3,13 @@
 <div class="panel">
   <h1>System: Standards</h1>
   {% import "macros/forms.html" as f %}
-  {% set fd = form_data or {} %}
-  {% set fe = form_errors or {} %}
-  {% set defaults = receipt_defaults or {} %}
-  {{ f.render_errors(fe) }}
+{% set fd = form_data or {} %}
+{% set fe = form_errors or {} %}
+{% set defaults = receipt_defaults or {} %}
+{% set repair_defaults = repair_defaults or {} %}
+{{ f.render_errors(fe) }}
 
-  <form method="post" action="/system/standards" class="form" data-first-error="{% if fe.get('warehouse_id') %}std_warehouse{% elif fe.get('condition') %}std_condition{% elif fe.get('supplier_id') %}std_supplier{% elif fe.get('quantity') %}std_quantity{% endif %}">
+  <form method="post" action="/system/standards" class="form" data-first-error="{% if fe.get('warehouse_id') %}std_warehouse{% elif fe.get('condition') %}std_condition{% elif fe.get('supplier_id') %}std_supplier{% elif fe.get('quantity') %}std_quantity{% elif fe.get('repair_warehouse_id') %}std_repair_warehouse{% elif fe.get('scrap_warehouse_id') %}std_scrap_warehouse{% elif fe.get('repair_mailbox_account_id') %}std_repair_mailbox{% endif %}">
     <div class="grid2">
       <div>
         <label for="std_warehouse">Standard-Lager (Pflicht)</label>
@@ -54,6 +55,43 @@
       Lager bei Einbuchen sperren
     </label>
 
+    <h2>Reparatur-Standards</h2>
+    <div class="grid2">
+      <div>
+        <label for="std_repair_warehouse">Lagerort Reparatur (extern)</label>
+        <select id="std_repair_warehouse" name="repair_warehouse_id" class="{% if fe.get('repair_warehouse_id') %}is-error{% endif %}" required>
+          <option value="0">Bitte wählen</option>
+          {% for w in warehouses %}
+            {% set selected_repair_wh = f.old(fd, 'repair_warehouse_id', repair_defaults.get('repair_warehouse_id', 0)) | int %}
+            <option value="{{ w.id }}" {% if selected_repair_wh == w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'repair_warehouse_id') }}
+      </div>
+      <div>
+        <label for="std_scrap_warehouse">Lagerort Verschrottet</label>
+        <select id="std_scrap_warehouse" name="scrap_warehouse_id" class="{% if fe.get('scrap_warehouse_id') %}is-error{% endif %}" required>
+          <option value="0">Bitte wählen</option>
+          {% for w in warehouses %}
+            {% set selected_scrap_wh = f.old(fd, 'scrap_warehouse_id', repair_defaults.get('scrap_warehouse_id', 0)) | int %}
+            <option value="{{ w.id }}" {% if selected_scrap_wh == w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'scrap_warehouse_id') }}
+      </div>
+      <div>
+        <label for="std_repair_mailbox">Reparatur-Postfach (IMAP)</label>
+        <select id="std_repair_mailbox" name="repair_mailbox_account_id" class="{% if fe.get('repair_mailbox_account_id') %}is-error{% endif %}">
+          <option value="0">Standardkonto verwenden</option>
+          {% for a in email_accounts %}
+            {% set selected_mailbox = f.old(fd, 'repair_mailbox_account_id', repair_defaults.get('repair_mailbox_account_id', 0)) | int %}
+            <option value="{{ a.id }}" {% if selected_mailbox == a.id %}selected{% endif %}>{{ a.label }} ({{ a.email }})</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'repair_mailbox_account_id') }}
+      </div>
+    </div>
+
     <div class="row">
       <button class="btn primary" type="submit">Speichern</button>
       <a class="btn" href="/settings/company">Zurück</a>
@@ -66,6 +104,7 @@
 <ul>
   <li>Hier legst du Standardwerte für den Wareneingang fest.</li>
   <li>Mit aktivierter Sperre ist das Lager im Einbuch-Formular fest vorgegeben.</li>
+  <li>Für Reparaturen legst du externes Reparaturlager, Schrottlager und optional ein Postfach fest.</li>
   <li>Strg+K und /menu zeigen die Seite ebenfalls an.</li>
 </ul>
 {% endblock %}

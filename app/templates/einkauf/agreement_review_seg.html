@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel agreement-panel">
+  {% import "macros/forms.html" as f %}
+  {% set fv = form_values or {} %}
+  {% set fe = form_errors or {} %}
+  <h1>SEG Jahresvereinbarung prüfen</h1>
+  <div class="hint">So wenig wie möglich tippen. Nur fehlende oder unklare Felder ergänzen.</div>
+  {{ f.render_errors(fe) }}
+
+  <div class="row" style="margin-top:10px; gap:8px;">
+    {% if confidence_ready %}
+      <span class="agreement-badge agreement-badge-ok">Prüfung abgeschlossen - Übernahme möglich</span>
+    {% else %}
+      <span class="agreement-badge agreement-badge-warn">Prüfung unvollständig - bitte markierte Felder prüfen</span>
+    {% endif %}
+    <span class="agreement-badge">Konfidenz {{ '%.0f'|format((validation.parser_confidence or 0) * 100) }} %</span>
+  </div>
+
+  {% if validation.guardrail_blocked %}
+    <div class="flash-item flash-warn" style="margin-top:10px;">
+      Diese Importmaske ist nur für SEG Hausgeräte Jahresvereinbarungen gedacht.
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <a class="btn" href="/einkauf/konditionen/import">Abbrechen</a>
+      <a class="btn primary" href="/einkauf/konditionen/import/{{ draft.id }}/review?force_seg=1">Trotzdem als SEG prüfen</a>
+    </div>
+  {% endif %}
+
+  <form method="post" action="/einkauf/konditionen/import/{{ draft.id }}/review" class="form compact" style="margin-top:10px;">
+    <input type="hidden" name="force_seg" value="{{ fv.get('force_seg', '') }}">
+
+    <div class="box">
+      <div class="box-title">Dokument</div>
+      <div class="box-body agreement-review-grid">
+        <div><b>Quelle:</b> {{ 'Paperless' if draft.source_type == 'paperless' else 'Upload' }}</div>
+        <div><b>Datei / Titel:</b> {{ draft.source_filename or '-' }}</div>
+        <div><b>Paperless-ID:</b> {{ draft.paperless_document_id or '-' }}</div>
+        <div class="row">
+          {% if paperless_url %}<a class="btn small" target="_blank" rel="noopener" href="{{ paperless_url }}">Dokument öffnen</a>{% endif %}
+          {% if source_open_url %}<a class="btn small" target="_blank" rel="noopener" href="{{ source_open_url }}">Upload öffnen</a>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Vertrag</div>
+      <div class="box-body agreement-review-grid">
+        <div>
+          <label>Lieferant</label>
+          <input type="text" value="{{ supplier_row.name if supplier_row else 'SEG Hausgeräte GmbH' }}" readonly>
+          {% if not supplier_row %}
+            <label class="check"><input type="checkbox" name="create_supplier_if_missing" {% if fv.get('create_supplier_if_missing') %}checked{% endif %}> Lieferant beim Übernehmen anlegen</label>
+          {% endif %}
+        </div>
+        <div class="{% if 'brand' in validation.missing_fields or fe.get('brand') %}review-field-missing{% endif %}">
+          <label for="agreement_brand">Marke</label>
+          <input id="agreement_brand" type="text" name="brand" value="{{ fv.get('brand', '') }}">
+          {% if not manufacturer_row %}
+            <label class="check"><input type="checkbox" name="create_brand_if_missing" {% if fv.get('create_brand_if_missing') %}checked{% endif %}> Marke beim Übernehmen anlegen</label>
+          {% endif %}
+        </div>
+        <div class="{% if 'Kundennummer' in validation.missing_fields %}review-field-missing{% endif %}">
+          <label for="agreement_customer_no">Kundennummer</label>
+          <input id="agreement_customer_no" type="text" name="customer_no" value="{{ fv.get('customer_no', '') }}">
+        </div>
+        <div>
+          <label for="agreement_version">Versionsnummer</label>
+          <input id="agreement_version" type="text" name="agreement_version" value="{{ fv.get('agreement_version', '') }}">
+        </div>
+        <div class="{% if 'Gültig ab' in validation.missing_fields or fe.get('valid_from') %}review-field-missing{% endif %}">
+          <label for="agreement_valid_from">Gültig ab</label>
+          <input id="agreement_valid_from" type="date" name="valid_from" value="{{ fv.get('valid_from', '') }}">
+        </div>
+        <div class="{% if 'Gültig bis' in validation.missing_fields or fe.get('valid_to') %}review-field-missing{% endif %}">
+          <label for="agreement_valid_to">Gültig bis</label>
+          <input id="agreement_valid_to" type="date" name="valid_to" value="{{ fv.get('valid_to', '') }}">
+        </div>
+      </div>
+    </div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Ziele</div>
+      <div class="box-body agreement-review-grid">
+        <div class="{% if 'Zielumsatz Solo' in validation.missing_fields or fe.get('targets') %}review-field-missing{% endif %}">
+          <label for="agreement_target_solo">Solo</label>
+          <input id="agreement_target_solo" type="text" name="target_solo" value="{{ fv.get('target_solo', '') }}" placeholder="0,00">
+        </div>
+        <div class="{% if 'Zielumsatz Einbau' in validation.missing_fields or fe.get('targets') %}review-field-missing{% endif %}">
+          <label for="agreement_target_einbau">Einbau</label>
+          <input id="agreement_target_einbau" type="text" name="target_einbau" value="{{ fv.get('target_einbau', '') }}" placeholder="0,00">
+        </div>
+        <div class="{% if 'Zielumsatz Gesamt' in validation.missing_fields or fe.get('targets') %}review-field-missing{% endif %}">
+          <label for="agreement_target_gesamt">Gesamt</label>
+          <input id="agreement_target_gesamt" type="text" name="target_gesamt" value="{{ fv.get('target_gesamt', '') }}" placeholder="0,00">
+        </div>
+      </div>
+    </div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Rabatt und Zahlungsbedingungen</div>
+      <div class="box-body agreement-review-grid">
+        <div class="{% if 'Grundrabatt' in validation.missing_fields or fe.get('discount') %}review-field-missing{% endif %}">
+          <label for="agreement_base_percent">Grundrabatt %</label>
+          <input id="agreement_base_percent" type="text" name="base_percent" value="{{ fv.get('base_percent', '') }}">
+        </div>
+        <div>
+          <label for="agreement_basis_label">Bezugsbasis</label>
+          <input id="agreement_basis_label" type="text" name="basis_label" value="{{ fv.get('basis_label', '') }}" placeholder="z. B. HLP">
+        </div>
+        <div class="{% if 'Skonto-Tage' in validation.missing_fields or fe.get('skonto_days') %}review-field-missing{% endif %}">
+          <label for="agreement_skonto_days">Skonto-Tage</label>
+          <input id="agreement_skonto_days" type="number" name="skonto_days" min="0" value="{{ fv.get('skonto_days', '') }}">
+        </div>
+        <div class="{% if 'Skonto' in validation.missing_fields or fe.get('skonto_percent') %}review-field-missing{% endif %}">
+          <label for="agreement_skonto_percent">Skonto %</label>
+          <input id="agreement_skonto_percent" type="text" name="skonto_percent" value="{{ fv.get('skonto_percent', '') }}">
+        </div>
+        <div class="{% if 'Netto-Tage' in validation.missing_fields or fe.get('net_days') %}review-field-missing{% endif %}">
+          <label for="agreement_net_days">Netto-Tage</label>
+          <input id="agreement_net_days" type="number" name="net_days" min="0" value="{{ fv.get('net_days', '') }}">
+        </div>
+      </div>
+    </div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Bonusregeln</div>
+      <div class="box-body">
+        <div class="agreement-review-grid">
+          <div>
+            <label for="agreement_concentration_bonus_percent">Konzentrationsbonus %</label>
+            <input id="agreement_concentration_bonus_percent" type="text" name="concentration_bonus_percent" value="{{ fv.get('concentration_bonus_percent', '') }}">
+          </div>
+        </div>
+
+        <h3>Jahresbonus-Staffel</h3>
+        <div class="table agreement-tier-table">
+          <div class="tr th" style="grid-template-columns: 1fr 1fr;">
+            <div>Schwelle</div>
+            <div>Prozent</div>
+          </div>
+          {% for row in annual_rows %}
+            <div class="tr" style="grid-template-columns: 1fr 1fr;">
+              <div><input type="text" name="annual_threshold" value="{{ row.threshold }}" placeholder="0,00"></div>
+              <div><input type="text" name="annual_percent" value="{{ row.percent }}" placeholder="0,00"></div>
+            </div>
+          {% endfor %}
+        </div>
+
+        <h3>Erfüllungsbonus-Staffel</h3>
+        <div class="table agreement-tier-table">
+          <div class="tr th" style="grid-template-columns: 1fr 1fr;">
+            <div>Schwelle</div>
+            <div>Betrag</div>
+          </div>
+          {% for row in achievement_rows %}
+            <div class="tr" style="grid-template-columns: 1fr 1fr;">
+              <div><input type="text" name="achievement_threshold" value="{{ row.threshold }}" placeholder="0,00"></div>
+              <div><input type="text" name="achievement_amount" value="{{ row.amount }}" placeholder="0,00"></div>
+            </div>
+          {% endfor %}
+        </div>
+
+        <h3>Staffelbonus</h3>
+        <div class="table agreement-tier-table">
+          <div class="tr th" style="grid-template-columns: 1fr 1fr;">
+            <div>Schwelle</div>
+            <div>Prozent</div>
+          </div>
+          {% for row in tier_rows %}
+            <div class="tr" style="grid-template-columns: 1fr 1fr;">
+              <div><input type="text" name="tier_threshold" value="{{ row.threshold }}" placeholder="0,00"></div>
+              <div><input type="text" name="tier_percent" value="{{ row.percent }}" placeholder="0,00"></div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Parser-Hinweise</div>
+      <div class="box-body agreement-review-grid">
+        <div>
+          <b>Hinweise</b>
+          <ul class="agreement-note-list">
+            {% for note in validation.parser_notes or extracted.parser_notes or [] %}
+              <li>{{ note }}</li>
+            {% endfor %}
+            {% if not (validation.parser_notes or extracted.parser_notes) %}<li>Keine Hinweise.</li>{% endif %}
+          </ul>
+        </div>
+        <div>
+          <b>Herkunftssnippets</b>
+          <div class="agreement-snippets">
+            {% for key, snippet in extracted.source_snippets.items() %}
+              <div class="agreement-snippet">
+                <div class="muted">{{ key }}</div>
+                <div>{{ snippet }}</div>
+              </div>
+            {% endfor %}
+            {% if not extracted.source_snippets %}<div class="muted">Keine Snippets vorhanden.</div>{% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% if duplicate_candidate %}
+      <div class="box" style="margin-top:10px;">
+        <div class="box-title">Doppelter Vertrag erkannt</div>
+        <div class="box-body">
+          <div>Vorhanden: <a href="/einkauf/konditionen/{{ duplicate_candidate.id }}">{{ duplicate_candidate.name }}</a></div>
+          <label class="check"><input type="radio" name="duplicate_mode" value="update" {% if fv.get('duplicate_mode', 'update') == 'update' %}checked{% endif %}> Bestehenden Vertrag aktualisieren</label>
+          <label class="check"><input type="radio" name="duplicate_mode" value="duplicate" {% if fv.get('duplicate_mode') == 'duplicate' %}checked{% endif %}> Trotzdem neuen Vertrag anlegen</label>
+        </div>
+      </div>
+    {% else %}
+      <input type="hidden" name="duplicate_mode" value="{{ fv.get('duplicate_mode', 'duplicate') or 'duplicate' }}">
+    {% endif %}
+
+    <div class="row agreement-actions" style="margin-top:10px;">
+      <button class="btn primary" type="submit" name="action" value="import" {% if validation.guardrail_blocked %}disabled{% endif %}>Übernehmen</button>
+      <button class="btn" type="submit" name="action" value="save">Später</button>
+      <button class="btn" type="submit" name="action" value="reparse">Neu aus Dokument lesen</button>
+      <a class="btn" href="/einkauf/konditionen/import">Abbrechen</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Felder sind bereits aus dem Dokument vorbelegt.</li>
+  <li>Nur rot markierte oder offensichtlich falsche Werte anpassen.</li>
+  <li>Mit „Neu aus Dokument lesen“ wird der Parser erneut auf die Quelle angewendet.</li>
+</ul>
+{% endblock %}

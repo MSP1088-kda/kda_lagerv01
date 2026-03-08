@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel mobile-scan-shell">
+  <h1>{% if scan_source == 'produktschild' %}Produktschild-Scan{% else %}Lieferschein-Scan{% endif %}</h1>
+
+  {% if not ocr_available %}
+  <div class="flash-item flash-warn">OCR ist aktuell nicht verfügbar. Bitte Tesseract im Container installieren.</div>
+  {% endif %}
+
+  <form method="post" action="/m/lieferschein/scan" enctype="multipart/form-data" class="form compact">
+    <label for="scan_source">Scanquelle</label>
+    <select id="scan_source" name="scan_source">
+      <option value="lieferschein" {% if scan_source != 'produktschild' %}selected{% endif %}>Lieferschein</option>
+      <option value="produktschild" {% if scan_source == 'produktschild' %}selected{% endif %}>Produktschild (Verpackung)</option>
+    </select>
+
+    <label for="scan_image">Foto vom {{ scan_source_label }}</label>
+    <input id="scan_image" type="file" name="scan_image" accept="image/*" capture="environment" required>
+
+    <label for="scan_mode">Dokumenttyp</label>
+    <select id="scan_mode" name="scan_mode">
+      <option value="auto" {% if scan_state.get('mode_hint', 'auto') == 'auto' %}selected{% endif %}>Automatisch erkennen</option>
+      <option value="receipt" {% if scan_state.get('mode_hint') == 'receipt' %}selected{% endif %}>Wareneingang (Einbuchen)</option>
+      <option value="issue" {% if scan_state.get('mode_hint') == 'issue' %}selected{% endif %}>Warenausgang (Ausbuchen)</option>
+      <option value="transfer" {% if scan_state.get('mode_hint') == 'transfer' %}selected{% endif %}>Umlagerung</option>
+    </select>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Foto erkennen</button>
+      <a class="btn" href="/m">Zurück</a>
+    </div>
+  </form>
+
+  {% set lines = scan_state.get('lines', []) %}
+  {% if scan_state and scan_state.get('recognized_text') %}
+  <div class="box" style="margin-top:12px;">
+    <div class="box-title">OCR-Ergebnis</div>
+    <div class="box-body">
+      <div><b>Datei:</b> {{ scan_state.get('filename') or '-' }}</div>
+      <div><b>Quelle:</b> {{ scan_source_label }}</div>
+      {% if scan_state.get('mode_detected') %}
+      <div>
+        <b>Erkannter Vorgang:</b>
+        {% if scan_state.get('mode_detected') == 'receipt' %}Einbuchen{% elif scan_state.get('mode_detected') == 'issue' %}Ausbuchen{% elif scan_state.get('mode_detected') == 'transfer' %}Umlagern{% else %}-{% endif %}
+      </div>
+      {% endif %}
+      {% if scan_state.get('references') %}
+      <div><b>Gefundene Referenzen:</b> {{ scan_state.get('references')|join(' | ') }}</div>
+      {% endif %}
+      <label for="scan_ocr_text" style="margin-top:8px;">Erkannter Text</label>
+      <textarea id="scan_ocr_text" rows="6" readonly>{{ scan_state.get('recognized_text') }}</textarea>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if lines %}
+  <form method="post" action="/m/lieferschein/buchen" class="form compact" style="margin-top:12px;">
+    <div class="grid2">
+      <div>
+        <label for="global_supplier_id">Lieferant (für Einbuchungen, optional)</label>
+        <select id="global_supplier_id" name="global_supplier_id">
+          <option value="0">-</option>
+          {% for s in suppliers %}
+          <option value="{{ s.id }}">{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="global_note">Notiz für alle Buchungen (optional)</label>
+        <input id="global_note" type="text" name="global_note" placeholder="z. B. Lieferschein Fotoimport">
+      </div>
+    </div>
+
+    <h2>Erkannte Positionen</h2>
+    {% for line in lines %}
+    <div class="box delivery-line-box">
+      <div class="box-title">
+        <label class="check" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" name="line_{{ loop.index }}_enabled" value="1" checked>
+          <span>{{ line.product_name }}</span>
+        </label>
+      </div>
+      <div class="box-body">
+        <div class="muted">
+          {% if line.material_no %}MatNr: {{ line.material_no }} | {% endif %}
+          Treffer: {{ line.matched_by }}{% if line.score %} ({{ line.score }}){% endif %}
+        </div>
+        {% if line.line_text %}
+        <div class="hint">Textzeile: {{ line.line_text }}</div>
+        {% endif %}
+        {% if line.reservation_id %}
+        <div class="hint">Aktive Kommission gefunden: {{ line.reservation_ref or ('ID ' ~ line.reservation_id) }} | Menge {{ line.reservation_qty }}</div>
+        {% endif %}
+
+        <div class="grid2">
+          <div>
+            <label>Menge</label>
+            <input type="number" name="line_{{ loop.index }}_qty" min="1" inputmode="numeric" value="{{ line.qty }}" required>
+          </div>
+          <div>
+            <label>Buchungstyp</label>
+            <select name="line_{{ loop.index }}_tx_type">
+              <option value="receipt" {% if line.tx_type == 'receipt' %}selected{% endif %}>Einbuchen</option>
+              <option value="issue" {% if line.tx_type == 'issue' %}selected{% endif %}>Ausbuchen</option>
+              <option value="transfer" {% if line.tx_type == 'transfer' %}selected{% endif %}>Umlagern</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div>
+            <label>Quell-Lager (für Ausbuchen/Umlagern)</label>
+            <select name="line_{{ loop.index }}_warehouse_from_id">
+              <option value="0">-</option>
+              {% for w in warehouses %}
+              <option value="{{ w.id }}" {% if line.warehouse_from_id|int == w.id %}selected{% endif %}>{{ w.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Ziel-Lager (für Einbuchen/Umlagern)</label>
+            <select name="line_{{ loop.index }}_warehouse_to_id">
+              <option value="0">-</option>
+              {% for w in warehouses %}
+              <option value="{{ w.id }}" {% if line.warehouse_to_id|int == w.id %}selected{% endif %}>{{ w.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div>
+            <label>Zustand</label>
+            <select name="line_{{ loop.index }}_condition">
+              {% for c in condition_defs %}
+              <option value="{{ c.code }}" {% if line.condition == c.code %}selected{% endif %}>{{ c.label_de }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Referenz (Kommission/Auftrag)</label>
+            <input type="text" name="line_{{ loop.index }}_reference" value="{{ line.reference }}">
+          </div>
+        </div>
+
+        <label>Notiz (optional)</label>
+        <input type="text" name="line_{{ loop.index }}_note" placeholder="Zusatz je Position">
+      </div>
+    </div>
+    {% endfor %}
+
+    <div class="mobile-sticky-bar">
+      <a class="btn" href="{{ scan_return_href }}">Abbrechen</a>
+      <button class="btn primary" type="submit">Ausgewählte Buchungen ausführen</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Lieferschein oder Produktschild wählen, Foto hochladen, OCR prüfen und dann Buchungsvorschläge bestätigen.</li>
+  <li>Bei Kommissions-Treffern wird Ausbuchen mit Referenz automatisch vorgeschlagen.</li>
+  <li>Jede erkannte Position kann vor dem Buchen angepasst oder abgewählt werden.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Integrationen: OutSmart OpenAPI</h1>
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="/system/integrationen/outsmart" class="form" data-first-error="{% if fe.get('host') %}outsmart_host{% endif %}">
+    <label class="check">
+      <input type="checkbox" name="enabled" {% if f.is_checked(fd, 'enabled', settings.enabled) %}checked{% endif %}>
+      OutSmart aktivieren
+    </label>
+
+    <label for="outsmart_host">Basis-URL</label>
+    <input id="outsmart_host" type="url" name="host" value="{{ f.old(fd, 'host', settings.host) }}" placeholder="https://app.out-smart.com/openapi/8" class="{% if fe.get('host') %}is-error{% endif %}">
+    {{ f.field_error(fe, 'host') }}
+    <div class="hint">Letzter erfolgreicher Abgleich: {{ settings.last_sync_at or '-' }}</div>
+
+    <label for="outsmart_bearer">Konten-Bearer-Token</label>
+    <input id="outsmart_bearer" type="password" name="bearer" value="" placeholder="Leer lassen = unverändert" autocomplete="off">
+    <div class="hint">Bearer-Status: {% if settings.bearer_set %}gesetzt{% else %}nicht gesetzt{% endif %}</div>
+
+    <label for="outsmart_token">Kunden-Token (token)</label>
+    <input id="outsmart_token" type="password" name="token" value="" placeholder="Leer lassen = unverändert" autocomplete="off">
+    <div class="hint">Token-Status: {% if settings.token_set %}gesetzt{% else %}nicht gesetzt{% endif %}</div>
+
+    <label for="outsmart_software_token">Software-Token (software_token)</label>
+    <input id="outsmart_software_token" type="password" name="software_token" value="" placeholder="Leer lassen = unverändert" autocomplete="off">
+    <div class="hint">Software-Token-Status: {% if settings.software_token_set %}gesetzt{% else %}nicht gesetzt{% endif %}</div>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Speichern</button>
+      <button class="btn" type="submit" formaction="/system/integrationen/outsmart/test">Verbindung testen</button>
+      <button class="btn" type="submit" formaction="/system/integrationen/outsmart/sync_now">Jetzt abgleichen</button>
+      <a class="btn" href="/system/integrationen/outsmart/import">Initialimport</a>
+      <a class="btn" href="/system/sync-log">Abgleichprotokoll</a>
+      <a class="btn" href="/system/standards">Zurück</a>
+    </div>
+  </form>
+
+  <div class="grid2" style="margin-top:10px;">
+    <div class="box">
+      <div class="box-title">Status</div>
+      <div class="box-body">
+        <div><b>Aktiv:</b> {{ 'Ja' if settings.enabled else 'Nein' }}</div>
+        <div><b>Bearer:</b> {{ 'gesetzt' if settings.bearer_set else 'nicht gesetzt' }}</div>
+        <div><b>Token:</b> {{ 'gesetzt' if settings.token_set else 'nicht gesetzt' }}</div>
+        <div><b>Software-Token:</b> {{ 'gesetzt' if settings.software_token_set else 'nicht gesetzt' }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Import und Sync</div>
+      <div class="box-body">
+        <div>Initialimport baut Kunden, Vorgänge, Objekte und lokale Arbeitsaufträge aus OutSmart auf.</div>
+        <div class="hint" style="margin-top:8px;">Der regelmäßige Abgleich holt danach Termine, Status, Dateien, Formulare, Fotos und Material zurück.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Letzte OutSmart-Jobs</div>
+    <div class="box-body">
+      {% if recent_jobs %}
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 120px 120px 140px 140px 1fr;">
+          <div>Richtung</div>
+          <div>Typ</div>
+          <div>Status</div>
+          <div>Start</div>
+          <div>Protokoll</div>
+        </div>
+        {% for job in recent_jobs %}
+        <div class="tr" style="grid-template-columns: 120px 120px 140px 140px 1fr; align-items:start;">
+          <div>{{ sync_job_direction_label(job.direction) }}</div>
+          <div>{{ sync_job_entity_label(job.entity_type) }}</div>
+          <div>{{ sync_job_status_label(job.status) }}</div>
+          <div>{{ format_date(job.started_at) }}</div>
+          <div>{{ job.log_text or '-' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="muted">Noch keine OutSmart-Jobs protokolliert.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Für OutSmart werden Bearer, token und software_token getrennt gespeichert.</li>
+  <li>Der Initialimport liegt auf einer eigenen Seite, damit der Regelbetrieb schlank bleibt.</li>
+  <li>Der manuelle Abgleich holt Änderungen aus OutSmart zurück und ergänzt zusätzlich die Reparatur-Rückmeldungen.</li>
+</ul>
+{% endblock %}

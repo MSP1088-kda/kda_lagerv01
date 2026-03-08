@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel" data-page="repair-event-detail">
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+
+  {{ f.render_errors(fe) }}
+
+  <div class="row" style="margin-top:0;">
+    <a class="btn" href="/inventory/reparaturen/{{ order.id }}">Zurück zum Auftrag</a>
+  </div>
+
+  <h1>Timeline-Eintrag zu {{ order.repair_no or ('REP-' ~ '%06d'|format(order.id)) }}</h1>
+
+  <div class="box">
+    <div class="box-title">Ereignis</div>
+    <div class="box-body">
+      <div class="repair-summary-grid repair-summary-grid-tight">
+        <div><b>Zeit:</b> {{ event.ts.strftime('%d.%m.%Y %H:%M') if event.ts and event.ts.strftime is defined else (event.ts or '-') }}</div>
+        <div><b>Typ:</b> {{ event_type_label }}</div>
+      </div>
+      <div style="margin-top:10px;"><b>{{ event.title }}</b></div>
+      {% if event.body %}
+      <div style="margin-top:8px; white-space:pre-wrap;">{{ event.body }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if event_meta_items %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Details</div>
+    <div class="box-body repair-summary-grid repair-summary-grid-tight">
+      {% for item in event_meta_items %}
+      <div><b>{{ item.label }}:</b> {{ item.value }}</div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if event_attachments %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Anhänge</div>
+    <div class="box-body">
+      <div class="repair-mail-list">
+        {% for att in event_attachments %}
+        <div class="repair-mail-card">
+          <div><b>{{ att.filename }}</b></div>
+          <div class="row">
+            <a class="btn small" href="/inventory/reparaturen/{{ order.id }}/attachments/{{ att.id }}">Öffnen</a>
+            {% if att.paperless_document_id %}<span class="muted">Paperless #{{ att.paperless_document_id }}</span>{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if event_can_edit_commission %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Beauftragungsdetails ergänzen</div>
+    <div class="box-body">
+      <div class="repair-summary-grid repair-summary-grid-tight">
+        <div><b>Beauftragt am:</b> {{ commission_summary.commissioned_at_label }}</div>
+        <div><b>Reparaturpreis:</b> {{ commission_summary.repair_cost_label }}</div>
+        <div><b>Referenz:</b> {{ commission_summary.commission_reference }}</div>
+        <div><b>Paketdienst:</b> {{ commission_summary.shipping_carrier }}</div>
+        <div><b>Trackingnummer:</b> {{ commission_summary.tracking_no }}</div>
+        <div><b>Tracking-URL:</b> {% if commission_summary.tracking_url != '-' %}<a href="{{ commission_summary.tracking_url }}" target="_blank" rel="noopener noreferrer">{{ commission_summary.tracking_url }}</a>{% else %}-{% endif %}</div>
+      </div>
+      <form method="post" action="/inventory/reparaturen/{{ order.id }}/events/{{ event.id }}/commission" class="form compact" data-first-error="{{ first_error_field_id or '' }}" style="margin-top:10px;">
+        <div class="grid2">
+          <div>
+            <label for="event_commission_email_account_id">E-Mail-/IMAP-Konto</label>
+            <select id="event_commission_email_account_id" name="commission_email_account_id" class="{% if fe.get('commission_email_account_id') %}is-error{% endif %}">
+              <option value="0">Standardkonto</option>
+              {% for acc in mail_accounts %}
+              {% set selected_acc = f.old(fd, 'commission_email_account_id', order.commission_account_id or default_mail_account_id) | int %}
+              <option value="{{ acc.id }}" {% if selected_acc == acc.id %}selected{% endif %}>{{ acc.label }} ({{ acc.email }})</option>
+              {% endfor %}
+            </select>
+            {{ f.field_error(fe, 'commission_email_account_id') }}
+          </div>
+          <div>
+            <label for="event_commission_email_message_id">Importierte IMAP-Mail</label>
+            <select id="event_commission_email_message_id" name="commission_email_message_id" class="{% if fe.get('commission_email_message_id') %}is-error{% endif %}">
+              <option value="0">Keine Mail auswählen</option>
+              {% for item in commission_mail_options %}
+              {% set selected_msg = f.old(fd, 'commission_email_message_id', current_commission_email_message_id) | int %}
+              <option value="{{ item.id }}" {% if selected_msg == item.id %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+            {{ f.field_error(fe, 'commission_email_message_id') }}
+          </div>
+          <div>
+            <label for="event_commission_message_id">Mail-Referenz / Message-ID</label>
+            <input id="event_commission_message_id" type="text" name="commission_message_id" value="{{ f.old(fd, 'commission_message_id', order.commission_message_id or '') }}" class="{% if fe.get('commission_message_id') %}is-error{% endif %}">
+            {{ f.field_error(fe, 'commission_message_id') }}
+          </div>
+          <div>
+            <label for="event_repair_cost">Reparaturpreis</label>
+            <input id="event_repair_cost" type="text" name="repair_cost" value="{{ f.old(fd, 'repair_cost', commission_summary.repair_cost_label if commission_summary.repair_cost_label != '-' else '') | replace(' €', '') }}" class="{% if fe.get('repair_cost') %}is-error{% endif %}">
+            {{ f.field_error(fe, 'repair_cost') }}
+          </div>
+          <div>
+            <label for="event_commission_reference">Dienstleister-Referenz</label>
+            <input id="event_commission_reference" type="text" name="commission_reference" value="{{ f.old(fd, 'commission_reference', order.commission_reference or '') }}">
+          </div>
+          <div>
+            <label for="event_shipping_carrier">Paketdienst</label>
+            <input id="event_shipping_carrier" type="text" name="shipping_carrier" value="{{ f.old(fd, 'shipping_carrier', order.shipping_carrier or '') }}">
+          </div>
+          <div>
+            <label for="event_tracking_no">Trackingnummer</label>
+            <input id="event_tracking_no" type="text" name="tracking_no" value="{{ f.old(fd, 'tracking_no', order.tracking_no or '') }}">
+          </div>
+          <div>
+            <label for="event_tracking_url">Tracking-URL</label>
+            <input id="event_tracking_url" type="text" name="tracking_url" value="{{ f.old(fd, 'tracking_url', order.tracking_url or '') }}" class="{% if fe.get('tracking_url') %}is-error{% endif %}">
+            {{ f.field_error(fe, 'tracking_url') }}
+          </div>
+        </div>
+        <label for="event_commission_note">Hinweis</label>
+        <textarea id="event_commission_note" name="commission_note" rows="4">{{ f.old(fd, 'commission_note', order.commission_note or '') }}</textarea>
+        <label for="event_commission_extra_note">Zusätzliche Dokumentation</label>
+        <textarea id="event_commission_extra_note" name="event_note" rows="3" placeholder="Was wurde ergänzt oder geändert?">{{ f.old(fd, 'event_note', '') }}</textarea>
+        <div class="row">
+          <button class="btn" type="submit">Änderungen dokumentieren</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Ergänzung dokumentieren</div>
+    <div class="box-body">
+      <form method="post" action="/inventory/reparaturen/{{ order.id }}/events/{{ event.id }}/supplement" class="form compact" data-first-error="{{ first_error_field_id or '' }}">
+        <textarea id="event_note_text" name="event_note" rows="4" class="{% if fe.get('event_note') %}is-error{% endif %}" placeholder="Zusätzliche Information, Rückmeldung, interner Hinweis ...">{{ f.old(fd, 'event_note', '') }}</textarea>
+        {{ f.field_error(fe, 'event_note') }}
+        <div class="row">
+          <button class="btn" type="submit">Ergänzung speichern</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {% if event_followups %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Dokumentierte Ergänzungen</div>
+    <div class="box-body">
+      <div class="repair-mail-list">
+        {% for item in event_followups %}
+        {% set follow = item.event %}
+        <div class="repair-mail-card">
+          <div class="repair-timeline-titleline">
+            <a class="repair-timeline-link" href="{{ item.detail_url }}"><b>{{ follow.title }}</b></a>
+            <span class="muted">{{ follow.ts.strftime('%d.%m.%Y %H:%M') if follow.ts and follow.ts.strftime is defined else (follow.ts or '-') }}</span>
+          </div>
+          <div class="muted">{{ item.type_label }}</div>
+          {% if follow.body %}<div style="margin-top:6px; white-space:pre-wrap;">{{ follow.body }}</div>{% endif %}
+          {% for meta_item in item.meta_items %}
+          <div class="muted">{{ meta_item.label }}: {{ meta_item.value }}</div>
+          {% endfor %}
+          {% if item.attachments %}
+          <div class="row">
+            {% for att in item.attachments %}
+            <a class="btn small" href="/inventory/reparaturen/{{ order.id }}/attachments/{{ att.id }}">Anhang: {{ att.filename }}</a>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if event_meta_pretty %}
+  <details class="collapse-box" style="margin-top:10px;">
+    <summary class="box-title">Rohdaten</summary>
+    <div class="box-body">
+      <pre class="mono">{{ event_meta_pretty }}</pre>
+    </div>
+  </details>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Jeder Timeline-Eintrag zeigt hier seine strukturierten Details und Anhänge.</li>
+  <li>Ergänzungen werden als neue Folgeeinträge dokumentiert, nicht still überschrieben.</li>
+  <li>Beauftragungsdetails wie Mail, Preis und Tracking lassen sich direkt aus dem Beauftragungs-Ereignis fortschreiben.</li>
+</ul>
+{% endblock %}

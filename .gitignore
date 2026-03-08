@@ -1,0 +1,15 @@
+# Lokale Laufzeitdaten
+/data/db.sqlite
+/data/*.sqlite
+/data/backups/*
+!/data/backups/.gitkeep
+/data/tmp/*
+!/data/tmp/.gitkeep
+/data/uploads/*
+!/data/uploads/.gitkeep
+/data/secrets/*
+!/data/secrets/.gitkeep
+
+# Python-Artefakte
+__pycache__/
+*.pyc

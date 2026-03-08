@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Importprofile</h1>
+
+  <form method="get" action="/catalog/import/profiles" class="form compact">
+    <div class="grid3">
+      <div>
+        <label>Hersteller</label>
+        <select name="manufacturer_id">
+          <option value="0">Alle</option>
+          {% for m in manufacturers %}
+          <option value="{{ m.id }}" {% if selected_manufacturer_id == m.id %}selected{% endif %}>{{ m.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Geräteart</label>
+        <select name="device_kind_id">
+          <option value="0">Alle</option>
+          {% for k in kinds %}
+          <option value="{{ k.id }}" {% if selected_kind_id == k.id %}selected{% endif %}>{{ k.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="row right" style="align-items:flex-end;">
+        <button class="btn primary" type="submit">Filtern</button>
+        <a class="btn" href="/catalog/import/profiles">Zurücksetzen</a>
+      </div>
+    </div>
+  </form>
+
+  {% if rows %}
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 90px 1.3fr 1fr 1fr 120px 180px;">
+      <div>ID</div>
+      <div>Name</div>
+      <div>Hersteller</div>
+      <div>Geräteart</div>
+      <div>Zuordnungen</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+    <div class="tr" style="grid-template-columns: 90px 1.3fr 1fr 1fr 120px 180px;">
+      <div>#{{ row.id }}</div>
+      <div>{{ row.name }}</div>
+      <div>{{ manufacturer_map.get(row.manufacturer_id or 0, '-') }}</div>
+      <div>{{ kind_map.get(row.device_kind_id or 0, '-') }}</div>
+      <div>{{ map_count.get(row.id, 0) }}</div>
+      <div><a class="btn small" href="/catalog/import/profiles/{{ row.id }}/edit">Bearbeiten</a></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted">Keine Importprofile gefunden.</div>
+  {% endif %}
+
+  <div class="row">
+    <a class="btn" href="/catalog/import">Zurück zum Import</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Importprofile sind dauerhaft je Hersteller und Geräteart gespeichert.</li>
+  <li>Über die Filter findest du schnell passende Profile.</li>
+  <li>Auf der Bearbeitungsseite kannst du Name, CSV-Optionen und Zuordnungen anpassen.</li>
+</ul>
+{% endblock %}

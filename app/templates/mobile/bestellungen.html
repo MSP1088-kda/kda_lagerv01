@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel mobile-orders-list">
+  <h1>Bestellungen</h1>
+  {% if done %}
+  <div class="flash-item flash-info">Bestellung angelegt.</div>
+  {% endif %}
+
+  <form method="get" action="/m/bestellungen" class="form compact mobile-orders-filter">
+    <label for="m_orders_status">Status</label>
+    <select id="m_orders_status" name="status">
+      <option value="offen" {% if status == 'offen' %}selected{% endif %}>Offen</option>
+      <option value="erledigt" {% if status == 'erledigt' %}selected{% endif %}>Erledigt</option>
+      <option value="alle" {% if status == 'alle' %}selected{% endif %}>Alle</option>
+    </select>
+    <div class="row">
+      <button class="btn primary" type="submit">Anzeigen</button>
+      <a class="btn" href="/m/bestellen">Neu</a>
+      <a class="btn" href="/m">Zurück</a>
+    </div>
+  </form>
+
+  {% for order in orders %}
+  <div class="box mobile-order-box">
+    <div class="box-title">
+      {{ order.po_number }} | {{ order.status_label }}
+    </div>
+    <div class="box-body">
+      <div><b>Lieferant:</b> {{ order.supplier_name }}</div>
+      {% if order.note %}
+      <div><b>Notiz:</b> {{ order.note }}</div>
+      {% endif %}
+
+      <div class="mobile-order-lines">
+        {% for line in order.lines %}
+        <div class="mobile-order-line">
+          <div class="mobile-order-line-main">
+            <div class="mobile-order-line-name">{{ line.product_name }}</div>
+            {% if line.product_material_no %}<div class="muted">MatNr: {{ line.product_material_no }}</div>{% endif %}
+            <div class="muted">Menge: {{ line.qty }} | EK: {{ line.unit_cost_label }}</div>
+          </div>
+          <a class="btn small" href="{{ line.einbuchen_href }}">Einbuchen</a>
+        </div>
+        {% endfor %}
+        {% if not order.lines %}
+        <div class="muted">Keine Positionen.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  {% if not orders %}
+  <div class="muted">Keine Bestellungen gefunden.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Filter zeigt offene oder erledigte Bestellungen.</li>
+  <li>"Einbuchen" öffnet den Wareneingang mit vorausgefüllten Werten.</li>
+  <li>Bestellung selbst verändert den Bestand nicht.</li>
+</ul>
+{% endblock %}

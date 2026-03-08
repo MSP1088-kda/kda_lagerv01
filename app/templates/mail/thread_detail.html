@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>{{ thread_subject }}</h1>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+    <a class="btn" href="/mail/eingang">Zurück zum Mail-Eingang</a>
+    <a class="btn" href="/mail/verfassen?thread_id={{ thread.id }}&customer_id={{ customer.id if customer else 0 }}&case_id={{ crm_case.id if crm_case else 0 }}&to_email={{ reply_to|urlencode }}">Antwort verfassen</a>
+    {% if customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}">Kunde öffnen</a>{% endif %}
+    {% if crm_case %}<a class="btn" href="/crm/vorgaenge/{{ crm_case.id }}">Vorgang öffnen</a>{% endif %}
+  </div>
+
+  <div class="grid3" style="align-items:start;">
+    <div class="box" id="assign-thread">
+      <div class="box-title">Thread-Zuordnung</div>
+      <div class="box-body">
+        <div><b>Status:</b> {{ mail_thread_status_label(thread.status) }}</div>
+        <div><b>Kunde:</b> {% if customer %}{{ customer.customer_no_internal }} | {{ customer_party.display_name if customer_party else '-' }}{% else %}-{% endif %}</div>
+        <div><b>Vorgang:</b> {% if crm_case %}{{ crm_case.case_no }} | {{ crm_case.title }}{% else %}-{% endif %}</div>
+        <form method="post" action="/mail/threads/{{ thread.id }}/zuweisen" class="form" style="margin-top:10px;">
+          <label>Kunde</label>
+          <select name="customer_id">
+            <option value="0">-</option>
+            {% for option in customer_options %}
+              <option value="{{ option.id }}"{% if option.id == selected_customer_id %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <label>Vorgang</label>
+          <select name="case_id">
+            <option value="0">-</option>
+            {% for option in case_options %}
+              <option value="{{ option.id }}"{% if option.id == selected_case_id %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn primary" type="submit">Thread speichern</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="box-title">Vorschläge</div>
+      <div class="box-body">
+        {% if suggestion_customer_ids or suggestion_case_ids %}
+          {% if suggestion_customer_ids %}
+            <div><b>Kandidaten Kunde:</b></div>
+            {% for customer_id in suggestion_customer_ids %}<div>{{ suggestion_customer_labels.get(customer_id, customer_id) }}</div>{% endfor %}
+          {% endif %}
+          {% if suggestion_case_ids %}
+            <div style="margin-top:8px;"><b>Kandidaten Vorgang:</b></div>
+            {% for case_id in suggestion_case_ids %}<div>{{ suggestion_case_labels.get(case_id, case_id) }}</div>{% endfor %}
+          {% endif %}
+          {% if suggestion_reasons %}
+            <div style="margin-top:8px;"><b>Treffer:</b></div>
+            {% for reason in suggestion_reasons %}<div class="hint">{{ reason }}</div>{% endfor %}
+          {% endif %}
+        {% else %}
+          <div class="muted">Keine automatischen Vorschläge gefunden.</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="box" id="new-case">
+      <div class="box-title">Neuen Vorgang anlegen</div>
+      <div class="box-body">
+        <form method="post" action="/mail/nachrichten/{{ last_message_row.id if last_message_row else 0 }}/vorgang-neu" class="form">
+          <label>Kunde</label>
+          <select name="customer_id">
+            <option value="0">-</option>
+            {% for option in customer_options %}
+              <option value="{{ option.id }}"{% if option.id == selected_customer_id %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <label>Titel</label>
+          <input type="text" name="title" value="{{ thread_subject }}">
+          <button class="btn" type="submit">Vorgang anlegen</button>
+        </form>
+
+        <form method="post" action="/mail/threads/{{ thread.id }}/status" class="form" style="margin-top:10px;">
+          <label>Thread-Status</label>
+          <select name="status">
+            <option value="open"{% if thread.status == 'open' %} selected{% endif %}>Offen</option>
+            <option value="waiting"{% if thread.status == 'waiting' %} selected{% endif %}>Wartet</option>
+            <option value="closed"{% if thread.status == 'closed' %} selected{% endif %}>Geschlossen</option>
+          </select>
+          <button class="btn" type="submit">Status speichern</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {% if ai_mail_result %}
+    {% set ai_output = ai_mail_result.output %}
+    <details class="box" style="margin-top:10px;" open>
+      <summary class="box-title">KI-Vorschlag</summary>
+      <div class="box-body">
+        <div><b>Aufgabe:</b> {{ ai_task_label(ai_mail_result.log.task_name) }}</div>
+        <div><b>Status:</b> {{ ai_status_label(ai_mail_result.log.status) }} | {{ ai_risk_label(ai_mail_result.risk_class) }}</div>
+        <div><b>Zusammenfassung:</b> {{ ai_output.summary or '-' }}</div>
+        <div><b>Empfehlung:</b> {{ ai_output.action_recommendation or '-' }}</div>
+        {% if ai_output.customer_candidates %}
+          <div style="margin-top:8px;"><b>Kundenkandidaten</b></div>
+          {% for customer_id in ai_output.customer_candidates %}<div>{{ customer_label_map.get(customer_id, customer_id) }}</div>{% endfor %}
+        {% endif %}
+        {% if ai_output.case_candidates %}
+          <div style="margin-top:8px;"><b>Vorgangskandidaten</b></div>
+          {% for case_id in ai_output.case_candidates %}<div>{{ case_label_map.get(case_id, case_id) }}</div>{% endfor %}
+        {% endif %}
+        {% if ai_mail_review and ai_mail_review.status == 'open' %}
+          <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+            <form method="post" action="/system/ki-freigaben/{{ ai_mail_result.log.id }}" class="inline">
+              <input type="hidden" name="action" value="approve">
+              <button class="btn small" type="submit">Freigeben</button>
+            </form>
+            <form method="post" action="/system/ki-freigaben/{{ ai_mail_result.log.id }}" class="inline">
+              <input type="hidden" name="action" value="reject">
+              <button class="btn small" type="submit">Ablehnen</button>
+            </form>
+          </div>
+        {% endif %}
+      </div>
+    </details>
+  {% endif %}
+
+  {% if thread_paperless_links %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Verknüpfte Dokumente</div>
+      <div class="box-body">
+        {% for link in thread_paperless_links %}
+          <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+            <div>{{ link.paperless_title or link.paperless_document_id }}</div>
+            {% if paperless_build_url(link.paperless_document_id) %}<a class="btn small" href="{{ paperless_build_url(link.paperless_document_id) }}" target="_blank" rel="noopener">In Paperless öffnen</a>{% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% for item in messages %}
+    {% set row = item.row %}
+    <div class="box" id="mail-message-{{ row.id }}" style="margin-top:10px;">
+      <div class="box-title">{{ 'Eingang' if row.direction == 'in' else 'Ausgang' }} | {{ row.subject or '(ohne Betreff)' }}</div>
+      <div class="box-body">
+        <div class="grid2">
+          <div>
+            <div><b>Von:</b> {{ row.from_email or row.from_text or '-' }}</div>
+            <div><b>An:</b> {{ row.to_emails or '-' }}</div>
+            <div><b>CC:</b> {{ row.cc_emails or '-' }}</div>
+          </div>
+          <div>
+            <div><b>Zeit:</b> {{ format_date(row.received_at or row.sent_at or row.fetched_at) }}</div>
+            <div><b>Zuordnung:</b> {{ mail_assignment_status_label(row.assignment_status) }}</div>
+            <div><b>Nachricht-ID:</b> {{ row.message_id_header or '-' }}</div>
+          </div>
+        </div>
+
+        {% if row.body_text %}
+          <div style="margin-top:10px; white-space:pre-wrap;">{{ row.body_text }}</div>
+        {% elif row.snippet %}
+          <div style="margin-top:10px;">{{ row.snippet }}</div>
+        {% endif %}
+
+        {% if item.attachments %}
+          <div style="margin-top:10px;"><b>Anhänge</b></div>
+          {% for att in item.attachments %}
+            <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:6px;">
+              <div>{{ att.row.filename }}</div>
+              <div class="row" style="gap:8px; flex-wrap:wrap;">
+                <a class="btn small" href="/mail/anhaenge/{{ att.row.id }}">Download</a>
+                {% if att.paperless_url %}
+                  <a class="btn small" href="{{ att.paperless_url }}" target="_blank" rel="noopener">Paperless</a>
+                {% elif paperless_enabled %}
+                  <form method="post" action="/mail/anhaenge/{{ att.row.id }}/nach-paperless" class="inline">
+                    <button class="btn small" type="submit">Nach Paperless</button>
+                  </form>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        {% endif %}
+
+        {% if row.assignment_status != 'assigned' %}
+          <form method="post" action="/mail/nachrichten/{{ row.id }}/zuweisen" class="form" style="margin-top:10px;">
+            <input type="hidden" name="apply_to_thread" value="1">
+            <label>Kunde</label>
+            <select name="customer_id">
+              <option value="0">-</option>
+              {% for option in customer_options %}
+                <option value="{{ option.id }}"{% if option.id == (row.master_customer_id or selected_customer_id) %} selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+            <label>Vorgang</label>
+            <select name="case_id">
+              <option value="0">-</option>
+              {% for option in case_options %}
+                <option value="{{ option.id }}"{% if option.id == (row.case_id or selected_case_id) %} selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+            {% if item.suggestion.customer_ids or item.suggestion.case_ids %}
+              <div class="hint">
+                Vorschlag:
+                {% for customer_id in item.suggestion.customer_ids %}{{ customer_label_map.get(customer_id, customer_id) }} {% endfor %}
+                {% for case_id in item.suggestion.case_ids %}{{ case_label_map.get(case_id, case_id) }} {% endfor %}
+              </div>
+            {% endif %}
+            <button class="btn" type="submit">Nachricht zuweisen</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Thread-Ansicht bündelt Eingang, Ausgang, Anhänge und Zuordnung an einer Stelle.</li>
+  <li>Manuelle Zuordnung schreibt den Bezug auf Thread und Nachrichten zurück.</li>
+  <li>Anhänge lassen sich direkt aus dem Thread nach Paperless archivieren.</li>
+</ul>
+{% endblock %}

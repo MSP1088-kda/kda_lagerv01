@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+{% import "macros/forms.html" as f %}
+{% set fd = form_data or {} %}
+{% set fe = form_errors or {} %}
+<div class="panel mobile-form-shell">
+  <h1>Warenausgang</h1>
+  {% if done %}
+  <div class="flash-item flash-info">Ausgebucht.</div>
+  {% endif %}
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="/m/ausbuchen" class="form compact" data-first-error="{{ first_error_field_id or '' }}">
+    {% if selected_product %}
+    <div class="mobile-product-box">
+      <div class="mobile-product-title">{{ selected_product.sales_name if selected_product.sales_name else selected_product.name }}</div>
+      <div class="muted">
+        {% if selected_product.material_no %}MatNr: {{ selected_product.material_no }}{% endif %}
+        {% if selected_product.ean %}{% if selected_product.material_no %} | {% endif %}EAN: {{ selected_product.ean }}{% endif %}
+      </div>
+    </div>
+    <input type="hidden" id="m_issue_product_id" name="product_id" value="{{ selected_product.id }}">
+    <div class="row">
+      <a class="btn" href="/m?action=ausbuchen">Produkt ändern</a>
+    </div>
+    {% else %}
+    <label for="m_issue_product_filter">Produkt filtern</label>
+    <input id="m_issue_product_filter" type="text" placeholder="Tippen zum Filtern...">
+    <label for="m_issue_product_id">Produkt</label>
+    <select id="m_issue_product_id" name="product_id" class="{% if fe.get('product_id') %}is-error{% endif %}" required>
+      <option value="">Bitte wählen</option>
+      {% for p in products %}
+      <option value="{{ p.id }}" {% if f.old(fd, 'product_id', '')|int == p.id %}selected{% endif %}>
+        {{ p.sales_name if p.item_type == 'appliance' and p.sales_name else p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    {{ f.field_error(fe, 'product_id') }}
+    {% endif %}
+
+    <label for="m_issue_quantity">Menge</label>
+    <input id="m_issue_quantity" type="number" name="quantity" min="1" inputmode="numeric" value="{{ f.old(fd, 'quantity', '1') }}" class="{% if fe.get('quantity') %}is-error{% endif %}" autofocus required>
+    {{ f.field_error(fe, 'quantity') }}
+
+    <label for="m_issue_warehouse_from_id">Lagerort</label>
+    <select id="m_issue_warehouse_from_id" name="warehouse_from_id" class="{% if fe.get('warehouse_from_id') %}is-error{% endif %}" required>
+      <option value="0">Bitte wählen</option>
+      {% for w in warehouses %}
+      <option value="{{ w.id }}" {% if f.old(fd, 'warehouse_from_id', '0')|int == w.id %}selected{% endif %}>{{ w.name }}</option>
+      {% endfor %}
+    </select>
+    {{ f.field_error(fe, 'warehouse_from_id') }}
+
+    <details class="collapse-box mobile-more"{% if fe.get('condition') or fe.get('reason') or fe.get('note') %} open{% endif %}>
+      <summary class="box-title">Mehr</summary>
+      <div class="box-body">
+        <label for="m_issue_condition">Zustand</label>
+        <select id="m_issue_condition" name="condition" class="{% if fe.get('condition') %}is-error{% endif %}">
+          {% for c in condition_defs %}
+          <option value="{{ c.code }}" {% if f.old(fd, 'condition', 'A_WARE') == c.code %}selected{% endif %}>{{ c.label_de }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'condition') }}
+
+        <label for="m_issue_reason">Grund (optional)</label>
+        <input id="m_issue_reason" type="text" name="reason" value="{{ f.old(fd, 'reason', '') }}" class="{% if fe.get('reason') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'reason') }}
+
+        <label for="m_issue_note">Notiz (optional)</label>
+        <textarea id="m_issue_note" name="note" rows="2">{{ f.old(fd, 'note', '') }}</textarea>
+      </div>
+    </details>
+
+    <div class="mobile-sticky-bar">
+      <a class="btn" href="/m">Zurück</a>
+      <button class="btn primary" type="submit">Buchen</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Pflicht: Produkt, Menge, Lagerort.</li>
+  <li>Bei Bestandsmangel bleibt die Eingabe erhalten und zeigt den Fehler an.</li>
+  <li>Optionale Angaben stehen unter "Mehr".</li>
+</ul>
+{% endblock %}

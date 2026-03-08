@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>Angebote</h1>
+      <div class="hint">Lokale Angebotsentwürfe mit sevDesk-Vollzug.</div>
+    </div>
+    {% if role_flags.is_admin %}<a class="btn primary" href="/crm/angebote/neu">Neues Angebot</a>{% endif %}
+  </div>
+
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 130px 1.2fr 1.1fr 140px 140px 140px;">
+      <div>Referenz</div>
+      <div>Vorgang</div>
+      <div>Kunde</div>
+      <div>Status</div>
+      <div>Gesamt</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+      <div class="tr" style="grid-template-columns: 130px 1.2fr 1.1fr 140px 140px 140px;">
+        <div>{{ row.sevdesk_order_number or ('ANG-' ~ '%04d'|format(row.id)) }}</div>
+        <div>{% if case_map.get(row.case_id) %}<a href="/crm/vorgaenge/{{ row.case_id }}">{{ case_map.get(row.case_id).case_no }}</a>{% else %}-{% endif %}</div>
+        <div>{{ customer_labels.get(row.master_customer_id, '-') }}</div>
+        <div>{{ offer_status_label(row.status) }}</div>
+        <div>{{ totals.get(row.id, 0)|eur_cents }}</div>
+        <div><a class="btn small" href="/crm/angebote/{{ row.id }}">Öffnen</a></div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Noch keine Angebote vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
