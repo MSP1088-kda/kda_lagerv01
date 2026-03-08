@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 
 
 def _clean(value) -> str:
     return str(value or "").strip()
+
+
+def _canonical_identifier(value) -> str:
+    raw = re.sub(r"\s+", "", _clean(value).lower())
+    if not raw:
+        return ""
+    match = re.match(r"^([a-z]+)(\d+)$", raw)
+    if match:
+        prefix, digits = match.groups()
+        return prefix + str(int(digits))
+    if raw.isdigit():
+        return str(int(raw))
+    return raw
 
 
 def _cluster_sort_key(payload: dict) -> tuple:
@@ -30,6 +44,7 @@ def build_customer_init_clusters(
     clusters: list[dict] = []
     by_key: dict[str, dict] = {}
     by_debtor: dict[str, dict] = {}
+    by_debtor_canon: dict[str, list[dict]] = defaultdict(list)
     by_email: dict[str, list[dict]] = defaultdict(list)
     by_phone: dict[str, list[dict]] = defaultdict(list)
     by_name: dict[str, list[dict]] = defaultdict(list)
@@ -55,6 +70,26 @@ def build_customer_init_clusters(
 
     def add_member(cluster: dict, member: dict) -> None:
         cluster["members"].append(member)
+
+    def find_debtor_cluster(value: str) -> dict | None:
+        debtor_norm = _clean(value)
+        if debtor_norm and debtor_norm in by_debtor:
+            return by_debtor[debtor_norm]
+        canon = _canonical_identifier(value)
+        if not canon:
+            return None
+        matches = by_debtor_canon.get(canon, [])
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def cluster_has_strong_sevdesk_contact(cluster: dict) -> bool:
+        for member in cluster.get("members") or []:
+            if member.get("source_system") != "sevdesk" or member.get("source_type") != "contact_stage":
+                continue
+            if "Gleiche Debitor-/Kundennummer" in _clean(member.get("match_reason")):
+                return True
+        return False
 
     for row in outsmart_relations:
         debtor_norm = _clean(row.get("debtor_norm"))
@@ -86,6 +121,9 @@ def build_customer_init_clusters(
         )
         if debtor_norm:
             by_debtor[debtor_norm] = cluster
+            canon = _canonical_identifier(debtor_norm)
+            if canon:
+                by_debtor_canon[canon].append(cluster)
         email_norm = _clean(row.get("email_norm"))
         if email_norm:
             by_email[email_norm].append(cluster)
@@ -101,7 +139,7 @@ def build_customer_init_clusters(
 
     for row in outsmart_projects:
         debtor_norm = _clean(row.get("debtor_norm")) or _clean(row.get("customer_number_norm"))
-        cluster = by_debtor.get(debtor_norm)
+        cluster = find_debtor_cluster(debtor_norm)
         if not cluster:
             continue
         add_member(
@@ -122,7 +160,7 @@ def build_customer_init_clusters(
 
     for row in outsmart_workorders:
         debtor_norm = _clean(row.get("debtor_norm")) or _clean(row.get("customer_number_norm"))
-        cluster = by_debtor.get(debtor_norm)
+        cluster = find_debtor_cluster(debtor_norm)
         if not cluster:
             continue
         add_member(
@@ -158,8 +196,15 @@ def build_customer_init_clusters(
             payload["score"] = float(payload["score"]) + float(points)
             payload["reasons"].append(reason)
 
-        if customer_number_norm and customer_number_norm in by_debtor:
-            add_score(by_debtor[customer_number_norm], 120.0, "Gleiche Debitor-/Kundennummer")
+        if customer_number_norm:
+            cluster = by_debtor.get(customer_number_norm)
+            if cluster is not None:
+                add_score(cluster, 120.0, "Gleiche Debitor-/Kundennummer")
+            else:
+                canon = _canonical_identifier(customer_number_norm)
+                matches = by_debtor_canon.get(canon, []) if canon else []
+                if len(matches) == 1:
+                    add_score(matches[0], 120.0, "Gleiche Debitor-/Kundennummer (kanonisiert)")
         if email_norm:
             for cluster in by_email.get(email_norm, []):
                 add_score(cluster, 60.0, "Gleiche E-Mail")
@@ -177,13 +222,24 @@ def build_customer_init_clusters(
             return None, 0.0, [], False
         ordered = sorted(candidate_scores.values(), key=lambda item: (-float(item["score"]), item["cluster"]["cluster_key"]))
         best = ordered[0]
+        if set(best["reasons"]) == {"Gleicher eindeutiger Name"} and float(best["score"]) <= 25.0 and cluster_has_strong_sevdesk_contact(best["cluster"]):
+            return None, 0.0, [], False
         ambiguous = len(ordered) > 1 and float(ordered[1]["score"]) >= float(best["score"]) - 15.0
         if street_norm and city_norm and not ambiguous:
             float(best["score"])
         return best["cluster"], float(best["score"]), list(best["reasons"]), ambiguous
 
     sevdesk_groups: dict[str, dict] = {}
-    for row in sevdesk_contacts:
+    sevdesk_rows = sorted(
+        sevdesk_contacts,
+        key=lambda row: (
+            0 if find_debtor_cluster(_clean(row.get("customer_number_norm"))) is not None else 1,
+            _clean(row.get("customer_number_norm")).lower(),
+            _clean(row.get("name_norm")).lower(),
+            int(row.get("id") or 0),
+        ),
+    )
+    for row in sevdesk_rows:
         cluster, score, reasons, ambiguous = score_candidates(row)
         if cluster is None:
             anchor = _clean(row.get("customer_number_norm")) or _clean(row.get("email_norm")) or f"contact-{_clean(row.get('sevdesk_contact_id'))}"
