@@ -50,6 +50,8 @@ from .models import (
     CrmTimelineEvent,
     CustomerObject,
     CustomerContactPerson,
+    CustomerInitCluster,
+    CustomerInitClusterMember,
     DeviceKind,
     DeviceType,
     DunningAction,
@@ -85,6 +87,9 @@ from .models import (
     OfferDraft,
     OfferDraftLine,
     OutsmartWorkorder,
+    OutsmartProjectStage,
+    OutsmartRelationStage,
+    OutsmartWorkorderStage,
     Party,
     Product,
     ProductAccessoryLink,
@@ -111,6 +116,10 @@ from .models import (
     RoleAssignment,
     ServicePort,
     ServiceLocation,
+    SevdeskContactStage,
+    SevdeskContactStatsStage,
+    SevdeskInvoiceStage,
+    SevdeskOrderStage,
     SetupState,
     SparePartCapture,
     SystemSetting,
@@ -200,6 +209,8 @@ from .services.email_service import (
     fetch_inbox_once,
 )
 from .services.mail_assignment_service import normalize_subject as mail_normalize_subject, suggest_assignments as mail_suggest_assignments
+from .services.customer_matching_service import build_customer_init_clusters
+from .services.customer_normalization_service import stage_normalized_fields
 from .services.outsmart_service import (
     build_deep_link as outsmart_build_deep_link,
     fetch_objects as outsmart_fetch_objects,
@@ -254,6 +265,9 @@ from .services.sevdesk_service import (
     get_job_download_info as sevdesk_get_job_download_info,
     get_next_customer_number as sevdesk_get_next_customer_number,
     get_transactions as sevdesk_get_transactions,
+    list_contacts as sevdesk_list_contacts,
+    list_invoices as sevdesk_list_invoices,
+    list_orders as sevdesk_list_orders,
     send_invoice as sevdesk_send_invoice,
     send_order as sevdesk_send_order,
     test_connection as sevdesk_test_connection,
@@ -914,6 +928,16 @@ def _customer_view_enabled(request: Request) -> bool:
     return bool(request.session.get("customer_view", True))
 
 
+def _customer_init_mode_global() -> bool:
+    session = get_sessionmaker()()
+    try:
+        return _customer_init_mode(session)
+    except Exception:
+        return False
+    finally:
+        session.close()
+
+
 def _ctx(request: Request, user=None, **kwargs):
     if user is None:
         user = None
@@ -952,6 +976,7 @@ def _ctx(request: Request, user=None, **kwargs):
         "git_sha": GIT_SHA,
         "build_date": BUILD_DATE,
         "customer_view": _customer_view_enabled(request),
+        "customer_init_mode": _customer_init_mode_global(),
         "can_view_costs": _can_view_costs(user),
         "nav_groups": nav_groups,
         "nav_group_lookup": nav_group_lookup,
@@ -967,6 +992,7 @@ def _ctx(request: Request, user=None, **kwargs):
         "sync_job_direction_label": _sync_job_direction_label,
         "sync_job_entity_label": _sync_job_entity_label,
         "sync_job_status_label": _sync_job_status_label,
+        "customer_init_cluster_status_label": _customer_init_cluster_status_label,
         "purchase_status_label": _purchase_status_label,
         "goods_receipt_status_label": _goods_receipt_status_label,
         "purchase_invoice_status_label": _purchase_invoice_status_label,
@@ -15102,6 +15128,12 @@ CRM_ROLE_TYPES = (
 )
 CRM_EXTERNAL_SYSTEM_CHOICES = ("outsmart", "sevdesk", "paperless", "other")
 CRM_MERGE_REJECTIONS_SETTING = "crm_merge_rejections"
+CUSTOMER_INIT_MODE_SETTING = "customer_init_mode"
+CUSTOMER_INIT_LAST_OUTSMART_IMPORT_AT = "customer_init_last_outsmart_import_at"
+CUSTOMER_INIT_LAST_SEVDESK_IMPORT_AT = "customer_init_last_sevdesk_import_at"
+CUSTOMER_INIT_LAST_MATCH_AT = "customer_init_last_match_at"
+CUSTOMER_INIT_LAST_MATERIALIZE_AT = "customer_init_last_materialize_at"
+CUSTOMER_INIT_CLUSTER_STATUS_CHOICES = ("ready", "needs_review", "rejected", "materialized")
 
 
 def _crm_party_type_label(value: str | None) -> str:
@@ -15186,6 +15218,17 @@ def _crm_external_type_label(value: str | None) -> str:
         "other": "Sonstiges",
     }
     key = _crm_normalize_key(value).replace("_", "")
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _customer_init_cluster_status_label(value: str | None) -> str:
+    mapping = {
+        "ready": "Bereit",
+        "needs_review": "Prüfen",
+        "rejected": "Zurückgestellt",
+        "materialized": "Übernommen",
+    }
+    key = _crm_normalize_key(value)
     return mapping.get(key, str(value or "").strip() or "-")
 
 
@@ -15319,7 +15362,7 @@ def _crm_clear_default_addresses(db: Session, party_id: int, keep_address_id: in
 
 
 def _crm_next_customer_no(db: Session) -> str:
-    prefix = "KD-"
+    prefix = "MC-"
     rows = (
         db.query(MasterCustomer.customer_no_internal)
         .filter(MasterCustomer.customer_no_internal.like(f"{prefix}%"))
@@ -16154,6 +16197,7 @@ def crm_customer_detail(
             outsmart_enabled=bool(outsmart_settings.get("enabled")),
             outsmart_relation_link=outsmart_relation_link,
             ai_related_logs=ai_related_logs,
+            customer_init_summary=_customer_init_customer_summary(db, int(customer.id)),
             paperless_links=_paperless_links_for_object(db, "customer", int(customer.id)),
             local_attachments=_attachments_for_entity(db, "customer", int(customer.id)),
             paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
@@ -17688,6 +17732,982 @@ async def crm_merge_candidate_reject(request: Request, user=Depends(require_admi
     db.commit()
     _flash(request, "Merge-Kandidat abgelehnt.", "info")
     return RedirectResponse("/crm/merge-kandidaten", status_code=302)
+
+
+def _customer_init_stage_counts(db: Session) -> dict[str, int]:
+    return {
+        "outsmart_relations": int(db.query(OutsmartRelationStage).count()),
+        "outsmart_projects": int(db.query(OutsmartProjectStage).count()),
+        "outsmart_workorders": int(db.query(OutsmartWorkorderStage).count()),
+        "sevdesk_contacts": int(db.query(SevdeskContactStage).count()),
+        "sevdesk_orders": int(db.query(SevdeskOrderStage).count()),
+        "sevdesk_invoices": int(db.query(SevdeskInvoiceStage).count()),
+    }
+
+
+def _customer_init_cluster_counts(db: Session) -> dict[str, int]:
+    counts = {key: 0 for key in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES}
+    rows = (
+        db.query(CustomerInitCluster.status, func.count(CustomerInitCluster.id))
+        .group_by(CustomerInitCluster.status)
+        .all()
+    )
+    for status, amount in rows:
+        key = _crm_normalize_key(status)
+        if key in counts:
+            counts[key] = int(amount or 0)
+    counts["open"] = counts.get("ready", 0) + counts.get("needs_review", 0)
+    return counts
+
+
+def _customer_init_parse_datetime(raw: str | None) -> dt.datetime | None:
+    return _outsmart_parse_datetime(raw)
+
+
+def _customer_init_amount_cents(payload: dict) -> int | None:
+    for key in ("sumGross", "gross", "amount", "total", "sum", "debit"):
+        raw = str(payload.get(key) or "").strip()
+        if not raw:
+            continue
+        if "," in raw:
+            text = raw.replace(".", "").replace(",", ".")
+        else:
+            text = raw
+        try:
+            return int(round(float(text) * 100))
+        except Exception:
+            continue
+    return None
+
+
+def _customer_init_upsert_outsmart_relation_stage(db: Session, payload: dict) -> str:
+    relation_no = _outsmart_pick(payload, ("RelationNo", "relation_no", "DebtorNo", "debtor_no"))
+    if not relation_no:
+        return "skipped"
+    row = db.query(OutsmartRelationStage).filter(OutsmartRelationStage.relation_no == relation_no).one_or_none()
+    created = row is None
+    if row is None:
+        row = OutsmartRelationStage(relation_no=relation_no, created_at=_utcnow_naive())
+    street = _outsmart_pick(payload, ("Street", "street", "Address", "address"))
+    email = _outsmart_pick(payload, ("Email", "email", "Mail", "mail"))
+    phone = _outsmart_pick(payload, ("Phone", "phone", "PhoneNumber", "phone_number"))
+    debtor_no = _outsmart_pick(payload, ("DebtorNo", "debtor_no", "RelationNo", "relation_no"))
+    normalized = stage_normalized_fields(
+        name=_outsmart_pick(payload, ("Name", "name")),
+        street=street,
+        zip_code=_outsmart_pick(payload, ("ZipCode", "zip_code", "PostalCode", "postal_code")),
+        city=_outsmart_pick(payload, ("City", "city")),
+        email=email,
+        phone=phone,
+        debtor=debtor_no,
+        customer_number=relation_no,
+    )
+    values = {
+        "debtor_no": debtor_no or None,
+        "external_row_id": _outsmart_row_id(payload) or None,
+        "name": _outsmart_pick(payload, ("Name", "name")) or None,
+        "contact": _outsmart_pick(payload, ("Contact", "contact", "ContactName", "contact_name")) or None,
+        "phone": phone or None,
+        "email": email or None,
+        "street": street or None,
+        "house_no": _outsmart_pick(payload, ("HouseNo", "house_no", "StreetNo", "street_no")) or None,
+        "zip_code": _outsmart_pick(payload, ("ZipCode", "zip_code", "PostalCode", "postal_code")) or None,
+        "city": _outsmart_pick(payload, ("City", "city")) or None,
+        "remark": _outsmart_pick(payload, ("Remark", "remark", "Description", "description")) or None,
+        "latitude": float(_outsmart_pick(payload, ("Latitude", "latitude")) or 0) if _outsmart_pick(payload, ("Latitude", "latitude")) else None,
+        "longitude": float(_outsmart_pick(payload, ("Longitude", "longitude")) or 0) if _outsmart_pick(payload, ("Longitude", "longitude")) else None,
+        "raw_json": json.dumps(payload, ensure_ascii=False),
+        "imported_at": _utcnow_naive(),
+        "updated_at": _utcnow_naive(),
+    }
+    values.update(normalized)
+    changed = created
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    db.add(row)
+    db.flush()
+    return "created" if created else "updated" if changed else "skipped"
+
+
+def _customer_init_upsert_outsmart_project_stage(db: Session, payload: dict) -> str:
+    project_code = _outsmart_project_key(payload)
+    if not project_code:
+        return "skipped"
+    row = db.query(OutsmartProjectStage).filter(OutsmartProjectStage.project_code == project_code).one_or_none()
+    created = row is None
+    if row is None:
+        row = OutsmartProjectStage(project_code=project_code, created_at=_utcnow_naive())
+    debtor_number = _outsmart_pick(payload, ("RelationNo", "relation_no", "DebtorNo", "CustomerDebtorNr"))
+    debtor_number_invoice = _outsmart_pick(payload, ("RelationNoInvoice", "debtor_number_invoice", "CustomerDebtorNrInvoice"))
+    normalized = stage_normalized_fields(
+        name=_outsmart_pick(payload, ("ProjectName", "project_name", "Name", "name")),
+        debtor=debtor_number,
+        customer_number=debtor_number_invoice or debtor_number,
+    )
+    values = {
+        "external_row_id": _outsmart_row_id(payload) or None,
+        "debtor_number": debtor_number or None,
+        "debtor_number_invoice": debtor_number_invoice or None,
+        "name": _outsmart_pick(payload, ("ProjectName", "project_name", "Name", "name")) or None,
+        "status": _outsmart_pick(payload, ("Status", "status")) or None,
+        "start_date": _customer_init_parse_datetime(_outsmart_pick(payload, ("DateStart", "date_start", "StartDate", "start_date"))),
+        "end_date": _customer_init_parse_datetime(_outsmart_pick(payload, ("DateEnd", "date_end", "EndDate", "end_date"))),
+        "raw_json": json.dumps(payload, ensure_ascii=False),
+        "imported_at": _utcnow_naive(),
+        "updated_at": _utcnow_naive(),
+    }
+    values.update(normalized)
+    changed = created
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    db.add(row)
+    db.flush()
+    return "created" if created else "updated" if changed else "skipped"
+
+
+def _customer_init_upsert_outsmart_workorder_stage(db: Session, payload: dict) -> str:
+    workorder_no = _outsmart_workorder_key(payload)
+    if not workorder_no:
+        return "skipped"
+    row = db.query(OutsmartWorkorderStage).filter(OutsmartWorkorderStage.workorder_no == workorder_no).one_or_none()
+    created = row is None
+    if row is None:
+        row = OutsmartWorkorderStage(workorder_no=workorder_no, created_at=_utcnow_naive())
+    customer_debtor = _outsmart_pick(payload, ("CustomerDebtorNr", "customer_debtor_nr", "RelationNo", "DebtorNo"))
+    invoice_debtor = _outsmart_pick(payload, ("CustomerDebtorNrInvoice", "customer_debtor_nr_invoice", "debtor_number_invoice"))
+    normalized = stage_normalized_fields(
+        name=_outsmart_pick(payload, ("CustomerName", "customer_name")),
+        street=_outsmart_pick(payload, ("CustomerStreet", "customer_street")),
+        zip_code=_outsmart_pick(payload, ("CustomerZIP", "CustomerZipCode", "customer_zip")),
+        city=_outsmart_pick(payload, ("CustomerCity", "customer_city")),
+        debtor=customer_debtor,
+        customer_number=invoice_debtor or customer_debtor,
+    )
+    values = {
+        "external_row_id": _outsmart_row_id(payload) or None,
+        "customer_debtor_number": customer_debtor or None,
+        "customer_invoice_debtor_number": invoice_debtor or None,
+        "customer_name": _outsmart_pick(payload, ("CustomerName", "customer_name")) or None,
+        "customer_name_invoice": _outsmart_pick(payload, ("CustomerNameInvoice", "customer_name_invoice", "CustomerInvoice")) or None,
+        "project_code": _outsmart_pick(payload, ("ProjectNr", "project_nr", "ProjectNo")) or None,
+        "external_project_code": _outsmart_pick(payload, ("ExternProjectNr", "extern_project_nr")) or None,
+        "street": _outsmart_pick(payload, ("CustomerStreet", "customer_street")) or None,
+        "house_no": _outsmart_pick(payload, ("CustomerStreetNo", "CustomerHouseNo", "customer_house_no")) or None,
+        "zip_code": _outsmart_pick(payload, ("CustomerZIP", "CustomerZipCode", "customer_zip")) or None,
+        "city": _outsmart_pick(payload, ("CustomerCity", "customer_city")) or None,
+        "street_invoice": _outsmart_pick(payload, ("CustomerStreetInvoice", "CustomerInvoiceStreet")) or None,
+        "house_no_invoice": _outsmart_pick(payload, ("CustomerStreetNoInvoice", "CustomerInvoiceHouseNo")) or None,
+        "zip_code_invoice": _outsmart_pick(payload, ("CustomerZIPInvoice", "CustomerInvoiceZipCode")) or None,
+        "city_invoice": _outsmart_pick(payload, ("CustomerCityInvoice", "CustomerInvoiceCity")) or None,
+        "status": _outsmart_pick(payload, ("Status", "status")) or None,
+        "raw_json": json.dumps(payload, ensure_ascii=False),
+        "imported_at": _utcnow_naive(),
+        "updated_at": _utcnow_naive(),
+    }
+    values.update(normalized)
+    changed = created
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    db.add(row)
+    db.flush()
+    return "created" if created else "updated" if changed else "skipped"
+
+
+def _customer_init_upsert_sevdesk_contact_stage(db: Session, payload: dict) -> str:
+    contact_id = sevdesk_extract_object_id(payload) or sevdesk_first_value(payload, ("id", "ID", "objectId"))
+    if not contact_id:
+        return "skipped"
+    row = db.query(SevdeskContactStage).filter(SevdeskContactStage.sevdesk_contact_id == str(contact_id)).one_or_none()
+    created = row is None
+    if row is None:
+        row = SevdeskContactStage(sevdesk_contact_id=str(contact_id), created_at=_utcnow_naive())
+    street = sevdesk_first_value(payload, ("street", "address"))
+    zip_code = sevdesk_first_value(payload, ("zip", "postalCode"))
+    city = sevdesk_first_value(payload, ("city",))
+    email = sevdesk_first_value(payload, ("email", "emailAddress"))
+    phone = sevdesk_first_value(payload, ("phone", "phoneNumber", "mobile"))
+    customer_number = sevdesk_first_value(payload, ("customerNumber", "customerNo", "customer_number"))
+    normalized = stage_normalized_fields(
+        name=sevdesk_first_value(payload, ("name", "displayName")),
+        street=street,
+        zip_code=zip_code,
+        city=city,
+        email=email,
+        phone=phone,
+        customer_number=customer_number,
+    )
+    values = {
+        "customer_number": customer_number or None,
+        "name": sevdesk_first_value(payload, ("name", "displayName")) or None,
+        "first_name": sevdesk_first_value(payload, ("firstName", "first_name")) or None,
+        "last_name": sevdesk_first_value(payload, ("lastName", "last_name")) or None,
+        "street": street or None,
+        "zip_code": zip_code or None,
+        "city": city or None,
+        "email": email or None,
+        "phone": phone or None,
+        "parent_name": sevdesk_first_value(payload, ("parent", "parentName", "organisation")) or None,
+        "category": sevdesk_first_value(payload, ("category", "type")) or None,
+        "raw_json": json.dumps(payload, ensure_ascii=False),
+        "imported_at": _utcnow_naive(),
+        "updated_at": _utcnow_naive(),
+    }
+    values.update(normalized)
+    changed = created
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    db.add(row)
+    db.flush()
+    return "created" if created else "updated" if changed else "skipped"
+
+
+def _customer_init_upsert_sevdesk_order_stage(db: Session, payload: dict) -> str:
+    order_id = sevdesk_extract_object_id(payload) or sevdesk_first_value(payload, ("id", "ID", "orderId"))
+    if not order_id:
+        return "skipped"
+    row = db.query(SevdeskOrderStage).filter(SevdeskOrderStage.sevdesk_order_id == str(order_id)).one_or_none()
+    created = row is None
+    if row is None:
+        row = SevdeskOrderStage(sevdesk_order_id=str(order_id), created_at=_utcnow_naive())
+    contact_id = sevdesk_first_value(payload, ("contact.id", "contact", "contact_id"))
+    if isinstance(payload.get("contact"), dict):
+        contact_id = sevdesk_first_value(payload.get("contact"), ("id", "ID")) or contact_id
+    values = {
+        "order_number": sevdesk_first_value(payload, ("orderNumber", "number")) or None,
+        "contact_id": contact_id or None,
+        "status": sevdesk_first_value(payload, ("status",)) or None,
+        "order_type": sevdesk_first_value(payload, ("orderType", "type")) or None,
+        "order_date": _customer_init_parse_datetime(sevdesk_first_value(payload, ("orderDate", "create", "date"))),
+        "amount_cents": _customer_init_amount_cents(payload),
+        "raw_json": json.dumps(payload, ensure_ascii=False),
+        "imported_at": _utcnow_naive(),
+        "updated_at": _utcnow_naive(),
+    }
+    values.update(stage_normalized_fields(customer_number=contact_id))
+    changed = created
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    db.add(row)
+    db.flush()
+    return "created" if created else "updated" if changed else "skipped"
+
+
+def _customer_init_upsert_sevdesk_invoice_stage(db: Session, payload: dict) -> str:
+    invoice_id = sevdesk_extract_object_id(payload) or sevdesk_first_value(payload, ("id", "ID", "invoiceId"))
+    if not invoice_id:
+        return "skipped"
+    row = db.query(SevdeskInvoiceStage).filter(SevdeskInvoiceStage.sevdesk_invoice_id == str(invoice_id)).one_or_none()
+    created = row is None
+    if row is None:
+        row = SevdeskInvoiceStage(sevdesk_invoice_id=str(invoice_id), created_at=_utcnow_naive())
+    contact_id = sevdesk_first_value(payload, ("contact.id", "contact", "contact_id"))
+    if isinstance(payload.get("contact"), dict):
+        contact_id = sevdesk_first_value(payload.get("contact"), ("id", "ID")) or contact_id
+    values = {
+        "invoice_number": sevdesk_first_value(payload, ("invoiceNumber", "number")) or None,
+        "contact_id": contact_id or None,
+        "status": sevdesk_first_value(payload, ("status",)) or None,
+        "invoice_type": sevdesk_first_value(payload, ("invoiceType", "type")) or None,
+        "invoice_date": _customer_init_parse_datetime(sevdesk_first_value(payload, ("invoiceDate", "create", "date"))),
+        "amount_cents": _customer_init_amount_cents(payload),
+        "raw_json": json.dumps(payload, ensure_ascii=False),
+        "imported_at": _utcnow_naive(),
+        "updated_at": _utcnow_naive(),
+    }
+    values.update(stage_normalized_fields(customer_number=contact_id))
+    changed = created
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    db.add(row)
+    db.flush()
+    return "created" if created else "updated" if changed else "skipped"
+
+
+def _customer_init_upsert_sevdesk_contact_stats_stage(db: Session, *, contact_id: str, counts: dict[str, int]) -> str:
+    if not str(contact_id or "").strip():
+        return "skipped"
+    row = db.query(SevdeskContactStatsStage).filter(SevdeskContactStatsStage.sevdesk_contact_id == str(contact_id)).one_or_none()
+    created = row is None
+    if row is None:
+        row = SevdeskContactStatsStage(sevdesk_contact_id=str(contact_id), created_at=_utcnow_naive())
+    values = {
+        "order_count": int(counts.get("order_count") or 0),
+        "invoice_count": int(counts.get("invoice_count") or 0),
+        "credit_note_count": int(counts.get("credit_note_count") or 0),
+        "voucher_count": int(counts.get("voucher_count") or 0),
+        "raw_json": json.dumps(counts, ensure_ascii=False),
+        "imported_at": _utcnow_naive(),
+        "updated_at": _utcnow_naive(),
+    }
+    changed = created
+    for key, value in values.items():
+        if getattr(row, key) != value:
+            setattr(row, key, value)
+            changed = True
+    db.add(row)
+    db.flush()
+    return "created" if created else "updated" if changed else "skipped"
+
+
+def _sevdesk_list_all(fetch_fn, *, page_size: int = 200, max_rows: int = 5000) -> list[dict]:
+    rows: list[dict] = []
+    offset = 0
+    while len(rows) < max_rows:
+        batch = fetch_fn(limit=page_size, offset=offset)
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    return rows[:max_rows]
+
+
+def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
+    settings = _outsmart_settings(db, include_secret=True)
+    job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="customer_init_outsmart", log_text="Kunden-Initialisierung: OutSmart")
+    summary = {"relations": 0, "projects": 0, "workorders": 0, "errors": 0}
+    try:
+        for payload in _outsmart_extract_rows(outsmart_fetch_relations(settings)):
+            try:
+                state = _customer_init_upsert_outsmart_relation_stage(db, payload)
+                if state != "skipped":
+                    summary["relations"] += 1
+            except Exception:
+                summary["errors"] += 1
+        for payload in _outsmart_extract_rows(outsmart_fetch_projects(settings)):
+            try:
+                state = _customer_init_upsert_outsmart_project_stage(db, payload)
+                if state != "skipped":
+                    summary["projects"] += 1
+            except Exception:
+                summary["errors"] += 1
+        for payload in _outsmart_extract_rows(outsmart_fetch_workorders(settings, status="", update_status=False)):
+            try:
+                state = _customer_init_upsert_outsmart_workorder_stage(db, payload)
+                if state != "skipped":
+                    summary["workorders"] += 1
+            except Exception:
+                summary["errors"] += 1
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _customer_init_mark_now(db, CUSTOMER_INIT_LAST_OUTSMART_IMPORT_AT)
+        return summary
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _customer_init_import_sevdesk(db: Session) -> dict[str, int]:
+    settings = _sevdesk_settings(db, include_secret=True)
+    job = _start_sync_job(db, system_name="sevdesk", direction="pull", entity_type="customer_init_sevdesk", log_text="Kunden-Initialisierung: sevDesk")
+    summary = {"contacts": 0, "orders": 0, "invoices": 0, "stats": 0, "errors": 0}
+    try:
+        contacts = _sevdesk_list_all(lambda **kw: sevdesk_list_contacts(settings, **kw))
+        orders = _sevdesk_list_all(lambda **kw: sevdesk_list_orders(settings, **kw))
+        invoices = _sevdesk_list_all(lambda **kw: sevdesk_list_invoices(settings, **kw))
+        for payload in contacts:
+            try:
+                state = _customer_init_upsert_sevdesk_contact_stage(db, payload)
+                if state != "skipped":
+                    summary["contacts"] += 1
+            except Exception:
+                summary["errors"] += 1
+        for payload in orders:
+            try:
+                state = _customer_init_upsert_sevdesk_order_stage(db, payload)
+                if state != "skipped":
+                    summary["orders"] += 1
+            except Exception:
+                summary["errors"] += 1
+        for payload in invoices:
+            try:
+                state = _customer_init_upsert_sevdesk_invoice_stage(db, payload)
+                if state != "skipped":
+                    summary["invoices"] += 1
+            except Exception:
+                summary["errors"] += 1
+        stats_by_contact: dict[str, dict[str, int]] = {}
+        for payload in orders:
+            contact = sevdesk_first_value(payload, ("contact.id", "contact", "contact_id"))
+            if isinstance(payload.get("contact"), dict):
+                contact = sevdesk_first_value(payload.get("contact"), ("id", "ID")) or contact
+            if not contact:
+                continue
+            entry = stats_by_contact.setdefault(str(contact), {"order_count": 0, "invoice_count": 0, "credit_note_count": 0, "voucher_count": 0})
+            entry["order_count"] += 1
+        for payload in invoices:
+            contact = sevdesk_first_value(payload, ("contact.id", "contact", "contact_id"))
+            if isinstance(payload.get("contact"), dict):
+                contact = sevdesk_first_value(payload.get("contact"), ("id", "ID")) or contact
+            if not contact:
+                continue
+            entry = stats_by_contact.setdefault(str(contact), {"order_count": 0, "invoice_count": 0, "credit_note_count": 0, "voucher_count": 0})
+            invoice_type = _crm_normalize_key(sevdesk_first_value(payload, ("invoiceType", "type")))
+            if "credit" in invoice_type or "gutschrift" in invoice_type:
+                entry["credit_note_count"] += 1
+            else:
+                entry["invoice_count"] += 1
+        for contact_id, counts in stats_by_contact.items():
+            try:
+                state = _customer_init_upsert_sevdesk_contact_stats_stage(db, contact_id=contact_id, counts=counts)
+                if state != "skipped":
+                    summary["stats"] += 1
+            except Exception:
+                summary["errors"] += 1
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _customer_init_mark_now(db, CUSTOMER_INIT_LAST_SEVDESK_IMPORT_AT)
+        return summary
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _customer_init_existing_customer_for_members(db: Session, members: list[dict]) -> tuple[int | None, str]:
+    customer_ids: set[int] = set()
+    for member in members:
+        system_name = _crm_normalize_key(member.get("source_system"))
+        source_type = _crm_normalize_key(member.get("source_type"))
+        key = str(member.get("external_key") or "").strip()
+        secondary = str(member.get("external_secondary_key") or "").strip()
+        if system_name == "outsmart":
+            keys = [value for value in (key, secondary) if value]
+            if keys:
+                identity_rows = db.query(ExternalIdentity).filter(
+                    ExternalIdentity.system_name == "outsmart",
+                    ExternalIdentity.external_key.in_(keys),
+                ).all()
+                customer_ids.update(int(row.master_customer_id) for row in identity_rows if int(row.master_customer_id or 0) > 0)
+                link_rows = db.query(ExternalLink).filter(
+                    ExternalLink.system_name == "outsmart",
+                    ExternalLink.object_type == "master_customer",
+                    ExternalLink.external_key.in_(keys),
+                ).all()
+                customer_ids.update(int(row.object_id) for row in link_rows if int(row.object_id or 0) > 0)
+        if system_name == "sevdesk":
+            keys = [value for value in (key, secondary) if value]
+            if keys:
+                identity_rows = db.query(ExternalIdentity).filter(
+                    ExternalIdentity.system_name == "sevdesk",
+                    or_(ExternalIdentity.external_key.in_(keys), ExternalIdentity.external_id.in_(keys)),
+                ).all()
+                customer_ids.update(int(row.master_customer_id) for row in identity_rows if int(row.master_customer_id or 0) > 0)
+        if system_name == "outsmart" and source_type == "relation_stage" and secondary:
+            identity_rows = db.query(ExternalIdentity).filter(
+                ExternalIdentity.system_name == "outsmart",
+                ExternalIdentity.external_type == "debtor",
+                ExternalIdentity.external_key == secondary,
+            ).all()
+            customer_ids.update(int(row.master_customer_id) for row in identity_rows if int(row.master_customer_id or 0) > 0)
+    if len(customer_ids) == 1:
+        return next(iter(customer_ids)), ""
+    if len(customer_ids) > 1:
+        return None, "Mehrere bestehende Master-Kunden passen zu diesem Cluster."
+    return None, ""
+
+
+def _customer_init_build_clusters(db: Session) -> dict[str, int]:
+    job = _start_sync_job(db, system_name="local", direction="pull", entity_type="customer_init_matching", log_text="Kunden-Initialisierung: Matching")
+    try:
+        payloads = build_customer_init_clusters(
+            outsmart_relations=[
+                {
+                    "id": row.id,
+                    "relation_no": row.relation_no,
+                    "debtor_no": row.debtor_no,
+                    "name": row.name,
+                    "city": row.city,
+                    "zip_code": row.zip_code,
+                    "email_norm": row.email_norm,
+                    "phone_norm": row.phone_norm,
+                    "name_norm": row.name_norm,
+                    "zip_norm": row.zip_norm,
+                    "debtor_norm": row.debtor_norm,
+                }
+                for row in db.query(OutsmartRelationStage).all()
+            ],
+            outsmart_projects=[
+                {
+                    "id": row.id,
+                    "project_code": row.project_code,
+                    "debtor_number_invoice": row.debtor_number_invoice,
+                    "name": row.name,
+                    "status": row.status,
+                    "debtor_norm": row.debtor_norm,
+                    "customer_number_norm": row.customer_number_norm,
+                }
+                for row in db.query(OutsmartProjectStage).all()
+            ],
+            outsmart_workorders=[
+                {
+                    "id": row.id,
+                    "workorder_no": row.workorder_no,
+                    "customer_name": row.customer_name,
+                    "project_code": row.project_code,
+                    "status": row.status,
+                    "debtor_norm": row.debtor_norm,
+                    "customer_number_norm": row.customer_number_norm,
+                }
+                for row in db.query(OutsmartWorkorderStage).all()
+            ],
+            sevdesk_contacts=[
+                {
+                    "id": row.id,
+                    "sevdesk_contact_id": row.sevdesk_contact_id,
+                    "customer_number": row.customer_number,
+                    "name": row.name,
+                    "city": row.city,
+                    "zip_code": row.zip_code,
+                    "name_norm": row.name_norm,
+                    "street_norm": row.street_norm,
+                    "zip_norm": row.zip_norm,
+                    "city_norm": row.city_norm,
+                    "email_norm": row.email_norm,
+                    "phone_norm": row.phone_norm,
+                    "customer_number_norm": row.customer_number_norm,
+                }
+                for row in db.query(SevdeskContactStage).all()
+            ],
+            sevdesk_orders=[
+                {
+                    "id": row.id,
+                    "sevdesk_order_id": row.sevdesk_order_id,
+                    "order_number": row.order_number,
+                    "contact_id": row.contact_id,
+                    "status": row.status,
+                }
+                for row in db.query(SevdeskOrderStage).all()
+            ],
+            sevdesk_invoices=[
+                {
+                    "id": row.id,
+                    "sevdesk_invoice_id": row.sevdesk_invoice_id,
+                    "invoice_number": row.invoice_number,
+                    "contact_id": row.contact_id,
+                    "status": row.status,
+                }
+                for row in db.query(SevdeskInvoiceStage).all()
+            ],
+            sevdesk_stats=[
+                {
+                    "id": row.id,
+                    "sevdesk_contact_id": row.sevdesk_contact_id,
+                    "order_count": row.order_count,
+                    "invoice_count": row.invoice_count,
+                    "credit_note_count": row.credit_note_count,
+                    "voucher_count": row.voucher_count,
+                }
+                for row in db.query(SevdeskContactStatsStage).all()
+            ],
+        )
+        seen_keys: set[str] = set()
+        for payload in payloads:
+            cluster_key = str(payload.get("cluster_key") or "").strip()
+            if not cluster_key:
+                continue
+            seen_keys.add(cluster_key)
+            row = db.query(CustomerInitCluster).filter(CustomerInitCluster.cluster_key == cluster_key).one_or_none()
+            created = row is None
+            if row is None:
+                row = CustomerInitCluster(cluster_key=cluster_key, created_at=_utcnow_naive())
+            existing_customer_id, conflict_note = _customer_init_existing_customer_for_members(db, payload.get("members") or [])
+            if row.status != "materialized":
+                row.status = str(payload.get("status") or "ready")
+            if conflict_note:
+                row.status = "needs_review"
+            row.anchor_system = str(payload.get("anchor_system") or "local")
+            row.anchor_key = str(payload.get("anchor_key") or "").strip() or None
+            row.display_name = str(payload.get("display_name") or "").strip() or None
+            row.confidence = float(payload.get("confidence") or 0.0)
+            row.conflict_note = conflict_note or str(payload.get("conflict_note") or "").strip() or None
+            if existing_customer_id and row.master_customer_id in (None, 0):
+                row.master_customer_id = int(existing_customer_id)
+            row.summary_json = json.dumps(payload.get("summary") or {}, ensure_ascii=False)
+            row.updated_at = _utcnow_naive()
+            db.add(row)
+            db.flush()
+            db.query(CustomerInitClusterMember).filter(CustomerInitClusterMember.cluster_id == int(row.id)).delete()
+            for member in payload.get("members") or []:
+                db.add(
+                    CustomerInitClusterMember(
+                        cluster_id=int(row.id),
+                        source_system=str(member.get("source_system") or "").strip(),
+                        source_type=str(member.get("source_type") or "").strip(),
+                        stage_row_id=int(member.get("stage_row_id") or 0) or None,
+                        external_key=str(member.get("external_key") or "").strip() or None,
+                        external_secondary_key=str(member.get("external_secondary_key") or "").strip() or None,
+                        display_name=str(member.get("display_name") or "").strip() or None,
+                        match_score=float(member.get("match_score") or 0.0) if member.get("match_score") is not None else None,
+                        match_reason=str(member.get("match_reason") or "").strip() or None,
+                        is_anchor=bool(member.get("is_anchor")),
+                        meta_json=json.dumps(member.get("meta") or {}, ensure_ascii=False),
+                        created_at=_utcnow_naive(),
+                    )
+                )
+        stale_rows = (
+            db.query(CustomerInitCluster)
+            .filter(~CustomerInitCluster.cluster_key.in_(list(seen_keys) or ["__none__"]), CustomerInitCluster.status != "materialized")
+            .all()
+        )
+        for row in stale_rows:
+            db.query(CustomerInitClusterMember).filter(CustomerInitClusterMember.cluster_id == int(row.id)).delete()
+            db.delete(row)
+        summary = {
+            "clusters": len(seen_keys),
+            "ready": int(db.query(CustomerInitCluster).filter(CustomerInitCluster.status == "ready").count()),
+            "needs_review": int(db.query(CustomerInitCluster).filter(CustomerInitCluster.status == "needs_review").count()),
+            "materialized": int(db.query(CustomerInitCluster).filter(CustomerInitCluster.status == "materialized").count()),
+        }
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _customer_init_mark_now(db, CUSTOMER_INIT_LAST_MATCH_AT)
+        return summary
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _customer_init_pick_representative_member(db: Session, cluster_id: int) -> dict[str, object]:
+    rows = (
+        db.query(CustomerInitClusterMember)
+        .filter(CustomerInitClusterMember.cluster_id == int(cluster_id))
+        .order_by(CustomerInitClusterMember.is_anchor.desc(), CustomerInitClusterMember.match_score.desc(), CustomerInitClusterMember.id.asc())
+        .all()
+    )
+    for row in rows:
+        if _crm_normalize_key(row.source_type) == "relation_stage" and int(row.stage_row_id or 0) > 0:
+            staged = db.get(OutsmartRelationStage, int(row.stage_row_id))
+            if staged:
+                return {
+                    "display_name": staged.name,
+                    "street": staged.street,
+                    "house_no": staged.house_no,
+                    "zip_code": staged.zip_code,
+                    "city": staged.city,
+                    "email": staged.email,
+                    "phone": staged.phone,
+                }
+    for row in rows:
+        if _crm_normalize_key(row.source_type) == "contact_stage" and int(row.stage_row_id or 0) > 0:
+            staged = db.get(SevdeskContactStage, int(row.stage_row_id))
+            if staged:
+                return {
+                    "display_name": staged.name,
+                    "street": staged.street,
+                    "house_no": None,
+                    "zip_code": staged.zip_code,
+                    "city": staged.city,
+                    "email": staged.email,
+                    "phone": staged.phone,
+                }
+    return {"display_name": None, "street": None, "house_no": None, "zip_code": None, "city": None, "email": None, "phone": None}
+
+
+def _customer_init_upsert_cluster_identities(db: Session, customer: MasterCustomer, cluster: CustomerInitCluster) -> None:
+    members = (
+        db.query(CustomerInitClusterMember)
+        .filter(CustomerInitClusterMember.cluster_id == int(cluster.id))
+        .order_by(CustomerInitClusterMember.is_anchor.desc(), CustomerInitClusterMember.id.asc())
+        .all()
+    )
+    outsmart_primary_exists = any(
+        _crm_normalize_key(row.system_name) == "outsmart" and bool(row.is_primary)
+        for row in db.query(ExternalIdentity).filter(ExternalIdentity.master_customer_id == int(customer.id)).all()
+    )
+    sevdesk_primary_exists = any(
+        _crm_normalize_key(row.system_name) == "sevdesk" and bool(row.is_primary)
+        for row in db.query(ExternalIdentity).filter(ExternalIdentity.master_customer_id == int(customer.id)).all()
+    )
+    for member in members:
+        system_name = _crm_normalize_key(member.source_system)
+        source_type = _crm_normalize_key(member.source_type)
+        key = str(member.external_key or "").strip()
+        secondary = str(member.external_secondary_key or "").strip()
+        if system_name == "outsmart" and source_type == "relation_stage":
+            if key:
+                row = (
+                    db.query(ExternalIdentity)
+                    .filter(
+                        ExternalIdentity.system_name == "outsmart",
+                        ExternalIdentity.external_type == "relation",
+                        ExternalIdentity.external_key == key,
+                    )
+                    .one_or_none()
+                )
+                if row is None:
+                    row = ExternalIdentity(system_name="outsmart", external_type="relation", external_key=key, created_at=_utcnow_naive())
+                row.master_customer_id = int(customer.id)
+                row.external_id = secondary or None
+                row.is_primary = not outsmart_primary_exists
+                db.add(row)
+                outsmart_primary_exists = True
+                _upsert_external_link(
+                    db,
+                    system_name="outsmart",
+                    object_type="master_customer",
+                    object_id=int(customer.id),
+                    external_key=key,
+                    external_row_id=secondary or None,
+                )
+            if secondary:
+                row = (
+                    db.query(ExternalIdentity)
+                    .filter(
+                        ExternalIdentity.system_name == "outsmart",
+                        ExternalIdentity.external_type == "debtor",
+                        ExternalIdentity.external_key == secondary,
+                    )
+                    .one_or_none()
+                )
+                if row is None:
+                    row = ExternalIdentity(system_name="outsmart", external_type="debtor", external_key=secondary, created_at=_utcnow_naive())
+                row.master_customer_id = int(customer.id)
+                row.external_id = key or None
+                row.is_primary = False
+                db.add(row)
+        if system_name == "sevdesk" and source_type == "contact_stage":
+            if key:
+                row = (
+                    db.query(ExternalIdentity)
+                    .filter(
+                        ExternalIdentity.system_name == "sevdesk",
+                        ExternalIdentity.external_type == "contact",
+                        ExternalIdentity.external_key == key,
+                    )
+                    .one_or_none()
+                )
+                if row is None:
+                    row = ExternalIdentity(system_name="sevdesk", external_type="contact", external_key=key, created_at=_utcnow_naive())
+                row.master_customer_id = int(customer.id)
+                row.external_id = key
+                row.is_primary = not sevdesk_primary_exists
+                row.note = "Initialisierung"
+                db.add(row)
+                sevdesk_primary_exists = True
+            if secondary:
+                row = (
+                    db.query(ExternalIdentity)
+                    .filter(
+                        ExternalIdentity.system_name == "sevdesk",
+                        ExternalIdentity.external_type == "customernumber",
+                        ExternalIdentity.external_key == secondary,
+                    )
+                    .one_or_none()
+                )
+                if row is None:
+                    row = ExternalIdentity(system_name="sevdesk", external_type="customernumber", external_key=secondary, created_at=_utcnow_naive())
+                row.master_customer_id = int(customer.id)
+                row.external_id = key or None
+                row.is_primary = False
+                db.add(row)
+
+
+def _customer_init_materialize_cluster(db: Session, cluster: CustomerInitCluster) -> tuple[MasterCustomer, bool]:
+    customer = db.get(MasterCustomer, int(cluster.master_customer_id or 0)) if int(cluster.master_customer_id or 0) > 0 else None
+    source = _customer_init_pick_representative_member(db, int(cluster.id))
+    created = False
+    if customer is None:
+        party = Party(
+            party_type="company",
+            display_name=str(source.get("display_name") or cluster.display_name or cluster.cluster_key),
+            active=True,
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+        db.add(party)
+        db.flush()
+        customer = MasterCustomer(
+            party_id=int(party.id),
+            customer_no_internal=_crm_next_customer_no(db),
+            status="active",
+            note="Automatisch aus Kunden-Initialisierung erzeugt.",
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+        db.add(customer)
+        db.flush()
+        created = True
+    else:
+        party = db.get(Party, int(customer.party_id))
+        if party and not str(party.display_name or "").strip() and str(source.get("display_name") or "").strip():
+            party.display_name = str(source.get("display_name") or "").strip()
+            party.updated_at = _utcnow_naive()
+            db.add(party)
+    if customer and customer.party_id:
+        existing_address = (
+            db.query(CrmAddress)
+            .filter(CrmAddress.party_id == int(customer.party_id))
+            .order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc())
+            .first()
+        )
+        if existing_address is None and any(str(source.get(key) or "").strip() for key in ("street", "zip_code", "city", "email", "phone")):
+            address = CrmAddress(
+                party_id=int(customer.party_id),
+                label="Hauptadresse",
+                street=str(source.get("street") or "").strip() or None,
+                house_no=str(source.get("house_no") or "").strip() or None,
+                zip_code=str(source.get("zip_code") or "").strip() or None,
+                city=str(source.get("city") or "").strip() or None,
+                country_code="DE",
+                email=str(source.get("email") or "").strip() or None,
+                phone=str(source.get("phone") or "").strip() or None,
+                is_default=True,
+                active=True,
+            )
+            db.add(address)
+            db.flush()
+        existing_location = (
+            db.query(ServiceLocation)
+            .filter(ServiceLocation.master_customer_id == int(customer.id))
+            .order_by(ServiceLocation.id.asc())
+            .first()
+        )
+        if existing_location is None:
+            default_address = (
+                db.query(CrmAddress)
+                .filter(CrmAddress.party_id == int(customer.party_id))
+                .order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc())
+                .first()
+            )
+            if default_address:
+                label = _crm_clean_text(f"{str(source.get('city') or '').strip()} {str(source.get('street') or '').strip()}") or "Hauptstandort"
+                db.add(
+                    ServiceLocation(
+                        master_customer_id=int(customer.id),
+                        party_id=int(customer.party_id),
+                        address_id=int(default_address.id),
+                        location_label=label,
+                        active=True,
+                    )
+                )
+    _customer_init_upsert_cluster_identities(db, customer, cluster)
+    cluster.master_customer_id = int(customer.id)
+    cluster.status = "materialized"
+    cluster.updated_at = _utcnow_naive()
+    db.add(cluster)
+    return customer, created
+
+
+def _customer_init_materialize_ready_clusters(db: Session) -> dict[str, int]:
+    job = _start_sync_job(db, system_name="local", direction="pull", entity_type="customer_init_materialize", log_text="Kunden-Initialisierung: Übernahme")
+    created = 0
+    updated = 0
+    skipped = 0
+    try:
+        rows = (
+            db.query(CustomerInitCluster)
+            .filter(CustomerInitCluster.status.in_(("ready", "materialized")))
+            .order_by(CustomerInitCluster.anchor_system.asc(), CustomerInitCluster.id.asc())
+            .all()
+        )
+        for row in rows:
+            if _crm_normalize_key(row.status) == "materialized" and int(row.master_customer_id or 0) > 0:
+                skipped += 1
+                continue
+            customer, was_created = _customer_init_materialize_cluster(db, row)
+            if was_created:
+                created += 1
+            else:
+                updated += 1
+            _crm_add_timeline_event(
+                db,
+                master_customer_id=int(customer.id),
+                source_system="local",
+                event_type="customer_init",
+                title="Kunde aus Initialisierung übernommen",
+                body=str(row.display_name or row.cluster_key),
+                event_ts=_utcnow_naive(),
+                external_ref=row.cluster_key,
+                meta={"cluster_id": int(row.id)},
+            )
+        summary = {"created": created, "updated": updated, "skipped": skipped}
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _customer_init_mark_now(db, CUSTOMER_INIT_LAST_MATERIALIZE_AT)
+        return summary
+    except Exception as exc:
+        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _customer_init_dashboard_context(db: Session) -> dict[str, object]:
+    return {
+        "init_mode": _customer_init_mode(db),
+        "stage_counts": _customer_init_stage_counts(db),
+        "cluster_counts": _customer_init_cluster_counts(db),
+        "recent_jobs": _customer_init_recent_jobs(db, limit=12),
+        "last_outsmart_import_at": _system_setting_get(db, CUSTOMER_INIT_LAST_OUTSMART_IMPORT_AT, ""),
+        "last_sevdesk_import_at": _system_setting_get(db, CUSTOMER_INIT_LAST_SEVDESK_IMPORT_AT, ""),
+        "last_match_at": _system_setting_get(db, CUSTOMER_INIT_LAST_MATCH_AT, ""),
+        "last_materialize_at": _system_setting_get(db, CUSTOMER_INIT_LAST_MATERIALIZE_AT, ""),
+    }
+
+
+def _customer_init_review_rows(db: Session, status: str = "") -> list[dict[str, object]]:
+    query = db.query(CustomerInitCluster)
+    status_norm = _crm_normalize_key(status)
+    if status_norm in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES:
+        query = query.filter(CustomerInitCluster.status == status_norm)
+    rows = query.order_by(
+        case((CustomerInitCluster.status == "needs_review", 0), (CustomerInitCluster.status == "ready", 1), else_=2),
+        CustomerInitCluster.confidence.desc(),
+        CustomerInitCluster.id.asc(),
+    ).all()
+    out: list[dict[str, object]] = []
+    for row in rows:
+        members = (
+            db.query(CustomerInitClusterMember)
+            .filter(CustomerInitClusterMember.cluster_id == int(row.id))
+            .order_by(CustomerInitClusterMember.is_anchor.desc(), CustomerInitClusterMember.match_score.desc(), CustomerInitClusterMember.id.asc())
+            .all()
+        )
+        out.append({"cluster": row, "members": members, "summary": _json_dict(row.summary_json), "customer": db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None})
+    return out
+
+
+def _customer_init_customer_summary(db: Session, customer_id: int) -> dict[str, object]:
+    identities = db.query(ExternalIdentity).filter(ExternalIdentity.master_customer_id == int(customer_id)).all()
+    outsmart_keys = {str(row.external_key or "").strip() for row in identities if _crm_normalize_key(row.system_name) == "outsmart"}
+    sevdesk_keys = {str(row.external_key or row.external_id or "").strip() for row in identities if _crm_normalize_key(row.system_name) == "sevdesk"}
+    outsmart_relations = db.query(OutsmartRelationStage).filter(or_(OutsmartRelationStage.relation_no.in_(list(outsmart_keys) or [""]), OutsmartRelationStage.debtor_no.in_(list(outsmart_keys) or [""]))).all() if outsmart_keys else []
+    sevdesk_contacts = db.query(SevdeskContactStage).filter(or_(SevdeskContactStage.sevdesk_contact_id.in_(list(sevdesk_keys) or [""]), SevdeskContactStage.customer_number.in_(list(sevdesk_keys) or [""]))).all() if sevdesk_keys else []
+    project_count = 0
+    workorder_count = 0
+    if outsmart_relations:
+        debtor_values = [str(row.debtor_no or row.relation_no or "") for row in outsmart_relations if str(row.debtor_no or row.relation_no or "").strip()]
+        if debtor_values:
+            project_count = int(db.query(OutsmartProjectStage).filter(or_(OutsmartProjectStage.debtor_number.in_(debtor_values), OutsmartProjectStage.debtor_number_invoice.in_(debtor_values))).count())
+            workorder_count = int(db.query(OutsmartWorkorderStage).filter(or_(OutsmartWorkorderStage.customer_debtor_number.in_(debtor_values), OutsmartWorkorderStage.customer_invoice_debtor_number.in_(debtor_values))).count())
+    order_count = 0
+    invoice_count = 0
+    if sevdesk_contacts:
+        contact_ids = [str(row.sevdesk_contact_id) for row in sevdesk_contacts]
+        order_count = int(db.query(SevdeskOrderStage).filter(SevdeskOrderStage.contact_id.in_(contact_ids)).count())
+        invoice_count = int(db.query(SevdeskInvoiceStage).filter(SevdeskInvoiceStage.contact_id.in_(contact_ids)).count())
+    cluster = (
+        db.query(CustomerInitCluster)
+        .filter(CustomerInitCluster.master_customer_id == int(customer_id))
+        .order_by(CustomerInitCluster.updated_at.desc(), CustomerInitCluster.id.desc())
+        .first()
+    )
+    return {
+        "cluster": cluster,
+        "outsmart_relations": outsmart_relations[:3],
+        "sevdesk_contacts": sevdesk_contacts[:3],
+        "project_count": project_count,
+        "workorder_count": workorder_count,
+        "order_count": order_count,
+        "invoice_count": invoice_count,
+    }
 
 # ---------------------------
 # Reparaturen
@@ -23733,6 +24753,28 @@ def _int_from_setting(raw: str | None, default: int = 0, minimum: int = 0) -> in
     return max(minimum, value)
 
 
+def _customer_init_mode(db: Session) -> bool:
+    return _bool_from_setting(_system_setting_get(db, CUSTOMER_INIT_MODE_SETTING, "0"), default=False)
+
+
+def _customer_init_set_mode(db: Session, enabled: bool) -> None:
+    _system_setting_set(db, CUSTOMER_INIT_MODE_SETTING, "1" if enabled else "0")
+
+
+def _customer_init_mark_now(db: Session, key: str) -> None:
+    _system_setting_set(db, key, _utcnow_naive().isoformat())
+
+
+def _customer_init_recent_jobs(db: Session, limit: int = 10) -> list[ExternalSyncJob]:
+    return (
+        db.query(ExternalSyncJob)
+        .filter(ExternalSyncJob.entity_type.like("customer_init%"))
+        .order_by(ExternalSyncJob.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 def _receipt_defaults(db: Session) -> dict[str, int | str | bool]:
     warehouse_id = _int_from_setting(_system_setting_get(db, RECEIPT_DEFAULT_WAREHOUSE_ID, "0"), default=0, minimum=0)
     if warehouse_id and not db.get(Warehouse, warehouse_id):
@@ -23947,6 +24989,7 @@ def _outsmart_settings(db: Session, include_secret: bool = False) -> dict[str, s
         "base_url": base_url,
         "host": base_url,
         "last_sync_at": last_sync_at,
+        "push_blocked": _customer_init_mode(db),
         "bearer_set": bool(secrets.get("bearer")),
         "token_set": bool(secrets.get("token")),
         "software_token_set": bool(secrets.get("software_token")),
@@ -24004,6 +25047,7 @@ def _sevdesk_settings(db: Session, include_secret: bool = False) -> dict[str, st
     return {
         "enabled": bool(enabled),
         "base_url": base_url,
+        "push_blocked": _customer_init_mode(db),
         "api_token_set": bool(token),
         "api_token": token if include_secret else "",
         "bookkeeping_system_version": bookkeeping_system_version,
@@ -25763,6 +26807,177 @@ def system_integration_paperless_test_upload(request: Request, user=Depends(requ
     except Exception as exc:
         _flash(request, f"Paperless-Testupload fehlgeschlagen: {exc}", "error")
     return RedirectResponse("/system/integrationen/paperless", status_code=302)
+
+
+@app.get("/system/kunden-initialisierung", response_class=HTMLResponse)
+def system_customer_init_dashboard(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    dashboard = _customer_init_dashboard_context(db)
+    return templates.TemplateResponse(
+        "system/customer_init_dashboard.html",
+        _ctx(
+            request,
+            user=user,
+            dashboard=dashboard,
+            review_preview=_customer_init_review_rows(db, status="needs_review")[:6],
+            ready_preview=_customer_init_review_rows(db, status="ready")[:6],
+        ),
+    )
+
+
+@app.post("/system/kunden-initialisierung/modus")
+async def system_customer_init_mode_toggle(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    action = _crm_normalize_key(form.get("action")) or "activate"
+    if action == "activate":
+        _customer_init_set_mode(db, True)
+        db.commit()
+        _flash(request, "Kunden-Initialisierung aktiviert. Push-Syncs nach OutSmart und sevDesk sind jetzt gesperrt.", "info")
+    elif action == "deactivate":
+        _customer_init_set_mode(db, False)
+        db.commit()
+        _flash(request, "Kunden-Initialisierung deaktiviert.", "info")
+    else:
+        raise HTTPException(status_code=400)
+    return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+
+
+@app.post("/system/kunden-initialisierung/outsmart-import")
+def system_customer_init_outsmart_import(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    if not _customer_init_mode(db):
+        _customer_init_set_mode(db, True)
+    settings = _outsmart_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not bool(settings.get("token")) or not bool(settings.get("software_token")):
+        db.commit()
+        _flash(request, "OutSmart ist nicht vollständig konfiguriert.", "error")
+        return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+    try:
+        summary = _customer_init_import_outsmart(db)
+        db.commit()
+        _flash(request, f"OutSmart-Seed importiert: Relationen {summary['relations']}, Projekte {summary['projects']}, Arbeitsaufträge {summary['workorders']}.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"OutSmart-Import fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+
+
+@app.post("/system/kunden-initialisierung/sevdesk-import")
+def system_customer_init_sevdesk_import(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    if not _customer_init_mode(db):
+        _customer_init_set_mode(db, True)
+    settings = _sevdesk_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not bool(settings.get("api_token")):
+        db.commit()
+        _flash(request, "sevDesk ist nicht vollständig konfiguriert.", "error")
+        return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+    try:
+        summary = _customer_init_import_sevdesk(db)
+        db.commit()
+        _flash(request, f"sevDesk-Seed importiert: Kontakte {summary['contacts']}, Angebote {summary['orders']}, Rechnungen {summary['invoices']}.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"sevDesk-Import fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+
+
+@app.post("/system/kunden-initialisierung/matching")
+def system_customer_init_matching(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    if not _customer_init_mode(db):
+        _customer_init_set_mode(db, True)
+    try:
+        summary = _customer_init_build_clusters(db)
+        db.commit()
+        _flash(request, f"Matching aktualisiert: Cluster {summary['clusters']}, bereit {summary['ready']}, prüfen {summary['needs_review']}.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Matching fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+
+
+@app.post("/system/kunden-initialisierung/materialisieren")
+def system_customer_init_materialize(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    try:
+        summary = _customer_init_materialize_ready_clusters(db)
+        db.commit()
+        _flash(request, f"Master-Kunden erzeugt/aktualisiert: neu {summary['created']}, aktualisiert {summary['updated']}, übersprungen {summary['skipped']}.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Übernahme fehlgeschlagen: {exc}", "error")
+    return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+
+
+@app.post("/system/kunden-initialisierung/abschliessen")
+def system_customer_init_finish(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    counts = _customer_init_cluster_counts(db)
+    if int(counts.get("open") or 0) > 0:
+        _flash(request, "Es gibt noch offene oder ungeprüfte Cluster. Bitte zuerst Review und Übernahme abschließen.", "error")
+        return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+    _customer_init_set_mode(db, False)
+    db.commit()
+    _flash(request, "Kunden-Initialisierung beendet. Push-Syncs sind wieder freigegeben.", "info")
+    return RedirectResponse("/system/kunden-initialisierung", status_code=302)
+
+
+@app.get("/system/kunden-initialisierung/review", response_class=HTMLResponse)
+def system_customer_init_review(
+    request: Request,
+    user=Depends(require_admin),
+    status: str = "open",
+    limit: int = 40,
+    db: Session = Depends(db_session),
+):
+    status_norm = _crm_normalize_key(status)
+    rows = _customer_init_review_rows(db, status="" if status_norm == "open" else status_norm)
+    if status_norm == "open":
+        rows = [row for row in rows if _crm_normalize_key(row["cluster"].status) in ("ready", "needs_review")]
+    return templates.TemplateResponse(
+        "system/customer_init_review.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows[: max(1, min(int(limit or 40), 120))],
+            status=status_norm or "open",
+            cluster_counts=_customer_init_cluster_counts(db),
+        ),
+    )
+
+
+@app.post("/system/kunden-initialisierung/review/{cluster_id}")
+async def system_customer_init_review_update(cluster_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(CustomerInitCluster, cluster_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    action = _crm_normalize_key(form.get("action")) or "ready"
+    existing_customer_id = _to_int(form.get("master_customer_id"), 0)
+    if existing_customer_id > 0:
+        customer = db.get(MasterCustomer, existing_customer_id)
+        if not customer:
+            _flash(request, "Master-Kunde wurde nicht gefunden.", "error")
+            return RedirectResponse("/system/kunden-initialisierung/review", status_code=302)
+        row.master_customer_id = int(customer.id)
+    if action not in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES:
+        raise HTTPException(status_code=400)
+    row.status = action
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    db.commit()
+    _flash(request, "Cluster-Status gespeichert.", "info")
+    return RedirectResponse("/system/kunden-initialisierung/review", status_code=302)
+
+
+@app.post("/system/kunden-initialisierung/review/{cluster_id}/materialisieren")
+def system_customer_init_review_materialize(cluster_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(CustomerInitCluster, cluster_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    try:
+        customer, created = _customer_init_materialize_cluster(db, row)
+        db.commit()
+        _flash(request, f"Cluster übernommen: {customer.customer_no_internal} ({'neu' if created else 'aktualisiert'}).", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Cluster konnte nicht übernommen werden: {exc}", "error")
+    return RedirectResponse("/system/kunden-initialisierung/review", status_code=302)
 
 
 @app.get("/system/integrationen/outsmart", response_class=HTMLResponse)

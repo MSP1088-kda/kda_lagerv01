@@ -92,6 +92,15 @@
     {% endif %}
   </header>
 
+  {% if user and customer_init_mode %}
+  <section class="flash">
+    <div class="flash-item flash-warn">
+      Kunden-Initialisierung aktiv. Push-Syncs nach OutSmart und sevDesk sind vorübergehend gesperrt.
+      {% if role_flags.is_admin %}<a href="/system/kunden-initialisierung">Zur Initialisierung</a>{% endif %}
+    </div>
+  </section>
+  {% endif %}
+
   {% if user %}
   <nav class="nav nav-mobile bottomnav">
     {% set mobile_path = request.url.path %}

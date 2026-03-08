@@ -151,3 +151,27 @@ Hinweis: Die App trägt keine Router-DNS-Einträge automatisch ein.
 ## Lizenz
 
 Mach damit, was du willst. Nur bitte nicht wieder alles in Excel zurückkopieren.
+
+## Kunden-Initialisierung
+
+Vor dem normalen CRM-Betrieb gibt es jetzt einen eigenen Initialisierungsmodus fuer Kunden.
+
+Ablauf:
+
+1. Init-Modus unter `/system/kunden-initialisierung` aktivieren
+2. OutSmart seed-importieren: Relationen, Projekte, Arbeitsauftraege
+3. sevDesk seed-importieren: Kontakte, Angebote, Rechnungen
+4. Matching starten und Cluster im Review-Cockpit pruefen
+5. Master-Kunden uebernehmen und danach den Init-Modus beenden
+
+Wichtige Regeln:
+
+- waehrend des Init-Modus sind Push-Synchronisationen nach `OutSmart` und `sevDesk` gesperrt
+- `OutSmart` bleibt der fuehrende externe Kundenanker
+- `sevDesk`-Dubletten werden zuerst nur lokal konsolidiert
+- lokale Master-Kundennummern laufen als `MC-000001`, `MC-000002`, ...
+
+Wichtige Pfade:
+
+- `/system/kunden-initialisierung`
+- `/system/kunden-initialisierung/review`

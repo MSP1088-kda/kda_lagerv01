@@ -62,6 +62,11 @@ def first_value(payload, keys: tuple[str, ...]) -> str:
     return ""
 
 
+def _ensure_push_allowed(settings: dict[str, str | bool]) -> None:
+    if bool(settings.get("push_blocked")):
+        raise ValueError("sevDesk-Push ist während der Kunden-Initialisierung gesperrt.")
+
+
 def request_json(
     settings: dict[str, str | bool],
     *,
@@ -193,6 +198,7 @@ def find_contact(
 
 
 def create_or_update_contact(settings: dict[str, str | bool], payload_row: dict, contact_id: str | int | None = None):
+    _ensure_push_allowed(settings)
     if str(contact_id or "").strip():
         return _request_candidates(
             settings,
@@ -209,6 +215,7 @@ def create_or_update_contact(settings: dict[str, str | bool], payload_row: dict,
 
 
 def create_order(settings: dict[str, str | bool], payload_row: dict):
+    _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
         method="POST",
@@ -218,6 +225,7 @@ def create_order(settings: dict[str, str | bool], payload_row: dict):
 
 
 def send_order(settings: dict[str, str | bool], order_id: str | int, payload_row: dict | None = None):
+    _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
         method="POST",
@@ -231,6 +239,7 @@ def send_order(settings: dict[str, str | bool], order_id: str | int, payload_row
 
 
 def create_invoice(settings: dict[str, str | bool], payload_row: dict):
+    _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
         method="POST",
@@ -240,6 +249,7 @@ def create_invoice(settings: dict[str, str | bool], payload_row: dict):
 
 
 def send_invoice(settings: dict[str, str | bool], invoice_id: str | int, payload_row: dict | None = None):
+    _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
         method="POST",
@@ -253,6 +263,7 @@ def send_invoice(settings: dict[str, str | bool], invoice_id: str | int, payload
 
 
 def create_voucher(settings: dict[str, str | bool], payload_row: dict):
+    _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
         method="POST",
@@ -262,6 +273,7 @@ def create_voucher(settings: dict[str, str | bool], payload_row: dict):
 
 
 def book_voucher(settings: dict[str, str | bool], voucher_id: str | int, payload_row: dict):
+    _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
         method="POST",
@@ -274,6 +286,7 @@ def book_voucher(settings: dict[str, str | bool], voucher_id: str | int, payload
 
 
 def book_invoice(settings: dict[str, str | bool], invoice_id: str | int, payload_row: dict):
+    _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
         method="POST",
@@ -326,6 +339,7 @@ def get_transactions(
 
 
 def create_transaction(settings: dict[str, str | bool], payload_row: dict):
+    _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
         method="POST",
@@ -360,6 +374,36 @@ def check_customer_number_availability(settings: dict[str, str | bool], customer
     if not raw:
         return False
     return str(raw).strip().lower() in ("1", "true", "yes", "ja", "available")
+
+
+def list_contacts(settings: dict[str, str | bool], *, limit: int = 1000, offset: int = 0) -> list[dict]:
+    payload = _request_candidates(
+        settings,
+        method="GET",
+        paths=("/Contact", "/Contact/Factory/getContacts"),
+        query={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
+    )
+    return _extract_rows(payload)
+
+
+def list_orders(settings: dict[str, str | bool], *, limit: int = 1000, offset: int = 0) -> list[dict]:
+    payload = _request_candidates(
+        settings,
+        method="GET",
+        paths=("/Order", "/Order/Factory/getList"),
+        query={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
+    )
+    return _extract_rows(payload)
+
+
+def list_invoices(settings: dict[str, str | bool], *, limit: int = 1000, offset: int = 0) -> list[dict]:
+    payload = _request_candidates(
+        settings,
+        method="GET",
+        paths=("/Invoice", "/Invoice/Factory/getList"),
+        query={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
+    )
+    return _extract_rows(payload)
 
 
 def update_export_config(settings: dict[str, str | bool], payload_row: dict):

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Review-Cockpit Kunden-Initialisierung</h1>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+    <a class="btn{% if status == 'open' %} active{% endif %}" href="/system/kunden-initialisierung/review?status=open">Offen ({{ cluster_counts.open }})</a>
+    <a class="btn{% if status == 'needs_review' %} active{% endif %}" href="/system/kunden-initialisierung/review?status=needs_review">Prüfen ({{ cluster_counts.needs_review }})</a>
+    <a class="btn{% if status == 'ready' %} active{% endif %}" href="/system/kunden-initialisierung/review?status=ready">Bereit ({{ cluster_counts.ready }})</a>
+    <a class="btn{% if status == 'materialized' %} active{% endif %}" href="/system/kunden-initialisierung/review?status=materialized">Übernommen ({{ cluster_counts.materialized }})</a>
+    <a class="btn" href="/system/kunden-initialisierung">Zur Übersicht</a>
+  </div>
+
+  {% for item in rows %}
+  <div class="box" style="margin-bottom:12px;">
+    <div class="box-title">{{ item.cluster.display_name or item.cluster.cluster_key }}</div>
+    <div class="box-body">
+      <div class="row" style="justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+        <div>
+          <div><b>Status:</b> {{ customer_init_cluster_status_label(item.cluster.status) }}</div>
+          <div><b>Sicherheit:</b> {{ '%.0f'|format(item.cluster.confidence or 0) }}%</div>
+          <div><b>Anchor:</b> {{ item.cluster.anchor_system }} / {{ item.cluster.anchor_key or '-' }}</div>
+          {% if item.cluster.conflict_note %}<div class="hint">{{ item.cluster.conflict_note }}</div>{% endif %}
+        </div>
+        <div>
+          <div><b>Mitglieder:</b> {{ item.summary.member_count or 0 }}</div>
+          <div><b>OutSmart:</b> R {{ item.summary.relation_count or 0 }}, P {{ item.summary.project_count or 0 }}, A {{ item.summary.workorder_count or 0 }}</div>
+          <div><b>sevDesk:</b> K {{ item.summary.contact_count or 0 }}, A {{ item.summary.order_count or 0 }}, R {{ item.summary.invoice_count or 0 }}</div>
+          <div><b>Master-Kunde:</b> {% if item.customer %}<a href="/crm/kunden/{{ item.customer.id }}">{{ item.customer.customer_no_internal }}</a>{% else %}-{% endif %}</div>
+        </div>
+      </div>
+
+      <div class="table" style="margin-bottom:10px;">
+        <div class="tr th" style="grid-template-columns: 120px 120px 1.2fr 1fr 1fr;">
+          <div>System</div>
+          <div>Typ</div>
+          <div>Objekt</div>
+          <div>Schlüssel</div>
+          <div>Treffer</div>
+        </div>
+        {% for member in item.members %}
+        <div class="tr" style="grid-template-columns: 120px 120px 1.2fr 1fr 1fr; align-items:start;">
+          <div>{{ member.source_system }}</div>
+          <div>{{ member.source_type }}</div>
+          <div>{{ member.display_name or '-' }}{% if member.is_anchor %}<div class="hint">Anker</div>{% endif %}</div>
+          <div>{{ member.external_key or '-' }}{% if member.external_secondary_key %}<div class="muted">{{ member.external_secondary_key }}</div>{% endif %}</div>
+          <div>{{ member.match_reason or '-' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="row" style="flex-wrap:wrap; gap:8px; align-items:flex-end;">
+        <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}" class="inline row" style="gap:8px; flex-wrap:wrap; align-items:flex-end;">
+          <label>Vorhandener Master-Kunde
+            <input type="number" name="master_customer_id" value="{{ item.customer.id if item.customer else '' }}" min="1" placeholder="ID optional">
+          </label>
+          <input type="hidden" name="action" value="ready">
+          <button class="btn small" type="submit">Als bereit markieren</button>
+        </form>
+        <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}" class="inline">
+          <input type="hidden" name="action" value="needs_review">
+          <button class="btn small" type="submit">Zur Prüfung halten</button>
+        </form>
+        <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}" class="inline">
+          <input type="hidden" name="action" value="rejected">
+          <button class="btn small" type="submit">Zurückstellen</button>
+        </form>
+        <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}/materialisieren" class="inline">
+          <button class="btn small" type="submit">Jetzt übernehmen</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  {% if not rows %}
+  <div class="box"><div class="box-body muted">Keine Cluster für den gewählten Filter.</div></div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Liste ist bewusst auf eine überschaubare Menge begrenzt. Arbeite die offenen Cluster statusbasiert ab.</li>
+  <li>OutSmart bleibt der führende Anker. sevDesk-Dubletten werden lokal auf einen Master-Kunden zusammengeführt.</li>
+  <li>Wenn ein vorhandener Master-Kunde schon existiert, trage dessen ID ein und markiere den Cluster danach als bereit oder übernimm ihn direkt.</li>
+</ul>
+{% endblock %}

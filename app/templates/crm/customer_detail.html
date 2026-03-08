@@ -159,6 +159,19 @@
       </div>
     </div>
     <div class="box">
+      <div class="box-title">Initialisierung</div>
+      <div class="box-body">
+        <div><b>Cluster:</b> {% if customer_init_summary.cluster %}{{ customer_init_cluster_status_label(customer_init_summary.cluster.status) }}{% else %}-{% endif %}</div>
+        <div><b>OutSmart-Relationen:</b> {{ customer_init_summary.outsmart_relations|length }}</div>
+        <div><b>OutSmart-Projekte:</b> {{ customer_init_summary.project_count }}</div>
+        <div><b>OutSmart-Arbeitsaufträge:</b> {{ customer_init_summary.workorder_count }}</div>
+        <div><b>sevDesk-Kontakte:</b> {{ customer_init_summary.sevdesk_contacts|length }}</div>
+        <div><b>sevDesk-Angebote:</b> {{ customer_init_summary.order_count }}</div>
+        <div><b>sevDesk-Rechnungen:</b> {{ customer_init_summary.invoice_count }}</div>
+        {% if customer_init_summary.cluster %}<div style="margin-top:8px;"><a class="btn small" href="/system/kunden-initialisierung/review">Review öffnen</a></div>{% endif %}
+      </div>
+    </div>
+    <div class="box">
       <div class="box-title">sevDesk-Kontakte</div>
       <div class="box-body">
         <form method="get" action="/crm/kunden/{{ customer.id }}" class="form compact">

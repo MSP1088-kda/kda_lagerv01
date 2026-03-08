@@ -23,6 +23,11 @@ def _extract_single(payload) -> dict:
     return rows[0] if rows else (payload if isinstance(payload, dict) else {})
 
 
+def _ensure_push_allowed(settings: dict[str, str | bool]) -> None:
+    if bool(settings.get("push_blocked")):
+        raise ValueError("OutSmart-Push ist während der Kunden-Initialisierung gesperrt.")
+
+
 def request_json(
     settings: dict[str, str | bool],
     *,
@@ -139,22 +144,27 @@ def fetch_workorder(settings: dict[str, str | bool], row_id_or_workorder_no: str
 
 
 def push_material(settings: dict[str, str | bool], payload_row: dict):
+    _ensure_push_allowed(settings)
     return request_json(settings, endpoint="PostMaterials", method="POST", payload={"Materials": [payload_row]})
 
 
 def push_relation(settings: dict[str, str | bool], payload_row: dict):
+    _ensure_push_allowed(settings)
     return request_json(settings, endpoint="PostRelations", method="POST", payload={"Relations": [payload_row]})
 
 
 def push_project(settings: dict[str, str | bool], payload_row: dict):
+    _ensure_push_allowed(settings)
     return request_json(settings, endpoint="PostProjects", method="POST", payload={"Projects": [payload_row]})
 
 
 def push_workorder(settings: dict[str, str | bool], payload_row: dict):
+    _ensure_push_allowed(settings)
     return request_json(settings, endpoint="PostWorkorders", method="POST", payload={"Workorders": [payload_row]})
 
 
 def update_workorder_schedule(settings: dict[str, str | bool], row_id: str, payload_row: dict):
+    _ensure_push_allowed(settings)
     payload = {"RowId": str(row_id or "").strip(), **dict(payload_row or {})}
     return request_json(settings, endpoint="UpdateWorkorderSchedule", method="POST", payload=payload)
 
@@ -164,14 +174,17 @@ def test_connection(settings: dict[str, str | bool]):
 
 
 def post_materials(settings: dict[str, str | bool], rows: list[dict]):
+    _ensure_push_allowed(settings)
     return request_json(settings, endpoint="PostMaterials", method="POST", payload={"Materials": rows})
 
 
 def post_relations(settings: dict[str, str | bool], rows: list[dict]):
+    _ensure_push_allowed(settings)
     return request_json(settings, endpoint="PostRelations", method="POST", payload={"Relations": rows})
 
 
 def post_workorders(settings: dict[str, str | bool], rows: list[dict]):
+    _ensure_push_allowed(settings)
     return request_json(settings, endpoint="PostWorkorders", method="POST", payload={"Workorders": rows})
 
 

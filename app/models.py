@@ -1466,6 +1466,289 @@ class ExternalIdentity(Base):
     )
 
 
+class OutsmartRelationStage(Base):
+    __tablename__ = "outsmart_relation_stage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    relation_no: Mapped[str] = mapped_column(String(160), nullable=False)
+    debtor_no: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    external_row_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    contact: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    street: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    house_no: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    zip_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    name_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    street_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    zip_norm: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email_norm: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    debtor_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_number_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("relation_no", name="uq_outsmart_relation_stage_relation_no"),
+        Index("ix_outsmart_relation_stage_debtor_no", "debtor_no"),
+        Index("ix_outsmart_relation_stage_external_row_id", "external_row_id"),
+        Index("ix_outsmart_relation_stage_debtor_norm", "debtor_norm"),
+    )
+
+
+class OutsmartProjectStage(Base):
+    __tablename__ = "outsmart_project_stage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_code: Mapped[str] = mapped_column(String(160), nullable=False)
+    external_row_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    debtor_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    debtor_number_invoice: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    start_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    name_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    street_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    zip_norm: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email_norm: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    debtor_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_number_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project_code", name="uq_outsmart_project_stage_project_code"),
+        Index("ix_outsmart_project_stage_debtor_no", "debtor_number"),
+        Index("ix_outsmart_project_stage_invoice_debtor_no", "debtor_number_invoice"),
+        Index("ix_outsmart_project_stage_debtor_norm", "debtor_norm"),
+    )
+
+
+class OutsmartWorkorderStage(Base):
+    __tablename__ = "outsmart_workorder_stage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workorder_no: Mapped[str] = mapped_column(String(160), nullable=False)
+    external_row_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_debtor_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_invoice_debtor_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    customer_name_invoice: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    project_code: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    external_project_code: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    street: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    house_no: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    zip_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    street_invoice: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    house_no_invoice: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    zip_code_invoice: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city_invoice: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    name_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    street_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    zip_norm: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email_norm: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    debtor_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_number_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("workorder_no", name="uq_outsmart_workorder_stage_workorder_no"),
+        Index("ix_outsmart_workorder_stage_external_row_id", "external_row_id"),
+        Index("ix_outsmart_workorder_stage_debtor_no", "customer_debtor_number"),
+        Index("ix_outsmart_workorder_stage_invoice_debtor_no", "customer_invoice_debtor_number"),
+        Index("ix_outsmart_workorder_stage_debtor_norm", "debtor_norm"),
+    )
+
+
+class SevdeskContactStage(Base):
+    __tablename__ = "sevdesk_contact_stage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sevdesk_contact_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    customer_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    street: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    zip_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    parent_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    name_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    street_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    zip_norm: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email_norm: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    debtor_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_number_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("sevdesk_contact_id", name="uq_sevdesk_contact_stage_contact_id"),
+        Index("ix_sevdesk_contact_stage_customer_number", "customer_number"),
+        Index("ix_sevdesk_contact_stage_customer_number_norm", "customer_number_norm"),
+        Index("ix_sevdesk_contact_stage_email_norm", "email_norm"),
+    )
+
+
+class SevdeskContactStatsStage(Base):
+    __tablename__ = "sevdesk_contact_stats_stage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sevdesk_contact_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    invoice_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    credit_note_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    voucher_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("sevdesk_contact_id", name="uq_sevdesk_contact_stats_stage_contact_id"),
+        Index("ix_sevdesk_contact_stats_stage_invoice_count", "invoice_count"),
+    )
+
+
+class SevdeskOrderStage(Base):
+    __tablename__ = "sevdesk_order_stage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sevdesk_order_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    order_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    order_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    order_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    street_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    zip_norm: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email_norm: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    debtor_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_number_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("sevdesk_order_id", name="uq_sevdesk_order_stage_order_id"),
+        Index("ix_sevdesk_order_stage_contact_id", "contact_id"),
+        Index("ix_sevdesk_order_stage_order_number", "order_number"),
+    )
+
+
+class SevdeskInvoiceStage(Base):
+    __tablename__ = "sevdesk_invoice_stage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sevdesk_invoice_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    invoice_number: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    invoice_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    invoice_date: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    street_norm: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    zip_norm: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    city_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email_norm: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone_norm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    debtor_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    customer_number_norm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("sevdesk_invoice_id", name="uq_sevdesk_invoice_stage_invoice_id"),
+        Index("ix_sevdesk_invoice_stage_contact_id", "contact_id"),
+        Index("ix_sevdesk_invoice_stage_invoice_number", "invoice_number"),
+    )
+
+
+class CustomerInitCluster(Base):
+    __tablename__ = "customer_init_clusters"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cluster_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    anchor_system: Mapped[str] = mapped_column(String(40), nullable=False)
+    anchor_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="ready")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    conflict_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    master_customer_id: Mapped[int | None] = mapped_column(ForeignKey("master_customers.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    master_customer = relationship("MasterCustomer")
+
+    __table_args__ = (
+        UniqueConstraint("cluster_key", name="uq_customer_init_clusters_cluster_key"),
+        Index("ix_customer_init_clusters_status", "status"),
+        Index("ix_customer_init_clusters_master_customer", "master_customer_id"),
+    )
+
+
+class CustomerInitClusterMember(Base):
+    __tablename__ = "customer_init_cluster_members"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("customer_init_clusters.id"), nullable=False)
+    source_system: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    stage_row_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    external_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    external_secondary_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    match_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_anchor: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    meta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    cluster = relationship("CustomerInitCluster")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id",
+            "source_system",
+            "source_type",
+            "stage_row_id",
+            "external_key",
+            name="uq_customer_init_cluster_member_ref",
+        ),
+        Index("ix_customer_init_cluster_members_cluster", "cluster_id"),
+        Index("ix_customer_init_cluster_members_source", "source_system", "source_type"),
+    )
+
+
 class CustomerContactPerson(Base):
     __tablename__ = "customer_contact_persons"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

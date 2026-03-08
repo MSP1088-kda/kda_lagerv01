@@ -588,6 +588,14 @@ NAV_ITEMS: list[dict] = [
                 "show_in_mobile": False,
             },
             {
+                "label_de": "Kunden-Initialisierung",
+                "path": "/system/kunden-initialisierung",
+                "aliases": "kunden initialisierung master kunden dubletten",
+                "roles": ("admin",),
+                "show_in_topnav": False,
+                "show_in_mobile": False,
+            },
+            {
                 "label_de": "Integrationen - Paperless",
                 "path": "/system/integrationen/paperless",
                 "aliases": "paperless dokumente",

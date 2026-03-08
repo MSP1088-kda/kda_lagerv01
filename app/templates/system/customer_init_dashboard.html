@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Kunden-Initialisierung</h1>
+  <p class="muted">OutSmart liefert den führenden Kundenanker. sevDesk-Kontakte, Angebote und Rechnungen werden lokal dazu konsolidiert.</p>
+
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+    <form method="post" action="/system/kunden-initialisierung/modus" class="inline">
+      <input type="hidden" name="action" value="{% if dashboard.init_mode %}deactivate{% else %}activate{% endif %}">
+      <button class="btn" type="submit">{% if dashboard.init_mode %}Init-Modus deaktivieren{% else %}Init-Modus aktivieren{% endif %}</button>
+    </form>
+    <form method="post" action="/system/kunden-initialisierung/outsmart-import" class="inline"><button class="btn" type="submit">OutSmart importieren</button></form>
+    <form method="post" action="/system/kunden-initialisierung/sevdesk-import" class="inline"><button class="btn" type="submit">sevDesk importieren</button></form>
+    <form method="post" action="/system/kunden-initialisierung/matching" class="inline"><button class="btn" type="submit">Matching starten</button></form>
+    <form method="post" action="/system/kunden-initialisierung/materialisieren" class="inline"><button class="btn" type="submit">Master-Kunden erzeugen</button></form>
+    <form method="post" action="/system/kunden-initialisierung/abschliessen" class="inline"><button class="btn" type="submit">Init-Modus beenden</button></form>
+    <a class="btn" href="/system/kunden-initialisierung/review">Review-Cockpit</a>
+  </div>
+
+  <div class="grid2" style="align-items:start;">
+    <div class="box">
+      <div class="box-title">Status</div>
+      <div class="box-body">
+        <div><b>Init-Modus:</b> {{ 'Aktiv' if dashboard.init_mode else 'Inaktiv' }}</div>
+        <div><b>Letzter OutSmart-Import:</b> {{ dashboard.last_outsmart_import_at or '-' }}</div>
+        <div><b>Letzter sevDesk-Import:</b> {{ dashboard.last_sevdesk_import_at or '-' }}</div>
+        <div><b>Letztes Matching:</b> {{ dashboard.last_match_at or '-' }}</div>
+        <div><b>Letzte Übernahme:</b> {{ dashboard.last_materialize_at or '-' }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Stage-Daten</div>
+      <div class="box-body">
+        <div><b>OutSmart-Relationen:</b> {{ dashboard.stage_counts.outsmart_relations }}</div>
+        <div><b>OutSmart-Projekte:</b> {{ dashboard.stage_counts.outsmart_projects }}</div>
+        <div><b>OutSmart-Arbeitsaufträge:</b> {{ dashboard.stage_counts.outsmart_workorders }}</div>
+        <div><b>sevDesk-Kontakte:</b> {{ dashboard.stage_counts.sevdesk_contacts }}</div>
+        <div><b>sevDesk-Angebote:</b> {{ dashboard.stage_counts.sevdesk_orders }}</div>
+        <div><b>sevDesk-Rechnungen:</b> {{ dashboard.stage_counts.sevdesk_invoices }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Cluster</div>
+      <div class="box-body">
+        <div><b>Offen:</b> {{ dashboard.cluster_counts.open }}</div>
+        <div><b>Bereit:</b> {{ dashboard.cluster_counts.ready }}</div>
+        <div><b>Prüfen:</b> {{ dashboard.cluster_counts.needs_review }}</div>
+        <div><b>Zurückgestellt:</b> {{ dashboard.cluster_counts.rejected }}</div>
+        <div><b>Übernommen:</b> {{ dashboard.cluster_counts.materialized }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Letzte Läufe</div>
+      <div class="box-body">
+        {% for row in dashboard.recent_jobs %}
+          <div style="margin-bottom:8px;">
+            <div><b>{{ row.entity_type }}</b> | {{ sync_job_status_label(row.status) }}</div>
+            <div class="muted">{{ format_date(row.started_at) }}{% if row.finished_at %} bis {{ format_date(row.finished_at) }}{% endif %}</div>
+          </div>
+        {% endfor %}
+        {% if not dashboard.recent_jobs %}<div class="muted">Noch keine Läufe vorhanden.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">Offene Prüfungen</div>
+      <div class="box-body">
+        {% for item in review_preview %}
+          <div style="margin-bottom:10px;">
+            <div><b>{{ item.cluster.display_name or item.cluster.cluster_key }}</b></div>
+            <div class="muted">{{ customer_init_cluster_status_label(item.cluster.status) }} | Sicherheit {{ '%.0f'|format(item.cluster.confidence or 0) }}%</div>
+            {% if item.cluster.conflict_note %}<div>{{ item.cluster.conflict_note }}</div>{% endif %}
+          </div>
+        {% endfor %}
+        {% if not review_preview %}<div class="muted">Keine Cluster im Status „Prüfen“.</div>{% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Bereit zur Übernahme</div>
+      <div class="box-body">
+        {% for item in ready_preview %}
+          <div style="margin-bottom:10px;">
+            <div><b>{{ item.cluster.display_name or item.cluster.cluster_key }}</b></div>
+            <div class="muted">{{ item.summary.member_count or 0 }} Quellen | OutSmart {{ item.summary.relation_count or 0 }} | sevDesk {{ item.summary.contact_count or 0 }}</div>
+          </div>
+        {% endfor %}
+        {% if not ready_preview %}<div class="muted">Keine Cluster im Status „Bereit“.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Aktiviere den Init-Modus vor dem ersten Import. Dann bleiben Push-Synchronisationen gesperrt.</li>
+  <li>Importiere zuerst OutSmart und sevDesk, starte danach das Matching.</li>
+  <li>Im Review-Cockpit prüfst du unsichere Cluster und übernimmst danach die Master-Kunden.</li>
+</ul>
+{% endblock %}
