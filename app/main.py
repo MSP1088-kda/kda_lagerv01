@@ -18158,11 +18158,20 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
             project_rows = _outsmart_extract_rows(outsmart_fetch_projects(settings))
         except Exception as exc:
             message = str(exc)
-            if "OutSmart-Fehler 404" in message and "\"code\":1001" in message:
+            if "timed out" in message.lower():
+                summary["warnings"].append("GetProjects hat das Zeitlimit überschritten. Projektdaten werden in diesem Lauf ausgelassen.")
+            elif "OutSmart-Fehler 404" in message and "\"code\":1001" in message:
                 summary["warnings"].append("GetProjects ist in dieser OutSmart-Instanz nicht verfügbar.")
             else:
                 raise
-        workorder_rows = _outsmart_extract_rows(outsmart_fetch_workorders(settings, status="", update_status=False))
+        try:
+            workorder_rows = _outsmart_extract_rows(outsmart_fetch_workorders(settings, status="", update_status=False))
+        except Exception as exc:
+            message = str(exc)
+            if "timed out" in message.lower():
+                summary["warnings"].append("GetWorkorders hat das Zeitlimit überschritten. Arbeitsaufträge werden in diesem Lauf ausgelassen.")
+            else:
+                raise
         for payload in relation_rows:
             try:
                 state = _customer_init_upsert_outsmart_relation_stage(db, payload)
@@ -25075,6 +25084,8 @@ def _outsmart_settings(db: Session, include_secret: bool = False) -> dict[str, s
         "host": base_url,
         "last_sync_at": last_sync_at,
         "push_blocked": _customer_init_mode(db),
+        "timeout_seconds": 90,
+        "retry_count": 1,
         "bearer_set": bool(secrets.get("bearer")),
         "token_set": bool(secrets.get("token")),
         "software_token_set": bool(secrets.get("software_token")),

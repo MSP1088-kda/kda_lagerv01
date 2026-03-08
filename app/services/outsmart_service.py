@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from urllib import error as url_error, request as url_request
 from urllib.parse import urlencode, urlsplit
 
@@ -56,18 +57,33 @@ def request_json(
         headers["Content-Type"] = "application/json"
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = url_request.Request(url=url, data=data, headers=headers, method=str(method or "GET").upper())
-    try:
-        with url_request.urlopen(req, timeout=30) as resp:
-            raw = resp.read() or b""
-    except url_error.HTTPError as exc:
-        body = b""
+    timeout_seconds = max(30, int(settings.get("timeout_seconds") or 90))
+    retry_count = max(0, int(settings.get("retry_count") or 1))
+    attempt = 0
+    while True:
         try:
-            body = exc.read() or b""
-        except Exception:
+            with url_request.urlopen(req, timeout=timeout_seconds) as resp:
+                raw = resp.read() or b""
+            break
+        except url_error.HTTPError as exc:
             body = b""
-        raise ValueError(f"OutSmart-Fehler {exc.code}: {body.decode('utf-8', errors='replace')}")
-    except Exception as exc:
-        raise ValueError(f"OutSmart nicht erreichbar: {exc}")
+            try:
+                body = exc.read() or b""
+            except Exception:
+                body = b""
+            raise ValueError(f"OutSmart-Fehler {exc.code}: {body.decode('utf-8', errors='replace')}")
+        except (TimeoutError, socket.timeout) as exc:
+            attempt += 1
+            if attempt > retry_count:
+                raise ValueError(f"OutSmart nicht erreichbar: {exc}")
+        except Exception as exc:
+            message = str(exc)
+            if "timed out" in message.lower():
+                attempt += 1
+                if attempt > retry_count:
+                    raise ValueError(f"OutSmart nicht erreichbar: {exc}")
+                continue
+            raise ValueError(f"OutSmart nicht erreichbar: {exc}")
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
         return {}
