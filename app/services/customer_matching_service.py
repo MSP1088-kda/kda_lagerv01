@@ -32,6 +32,7 @@ def build_customer_init_clusters(
     by_debtor: dict[str, dict] = {}
     by_email: dict[str, list[dict]] = defaultdict(list)
     by_phone: dict[str, list[dict]] = defaultdict(list)
+    by_name: dict[str, list[dict]] = defaultdict(list)
     by_name_zip: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
     def ensure_cluster(*, cluster_key: str, anchor_system: str, anchor_key: str, display_name: str) -> dict:
@@ -91,6 +92,9 @@ def build_customer_init_clusters(
         phone_norm = _clean(row.get("phone_norm"))
         if phone_norm:
             by_phone[phone_norm].append(cluster)
+        name_norm = _clean(row.get("name_norm"))
+        if name_norm:
+            by_name[name_norm].append(cluster)
         name_zip_key = (_clean(row.get("name_norm")), _clean(row.get("zip_norm")))
         if all(name_zip_key):
             by_name_zip[name_zip_key].append(cluster)
@@ -165,6 +169,10 @@ def build_customer_init_clusters(
         if name_norm and zip_norm:
             for cluster in by_name_zip.get((name_norm, zip_norm), []):
                 add_score(cluster, 35.0, "Gleicher Name + PLZ")
+        if name_norm and len(name_norm) >= 10:
+            name_matches = by_name.get(name_norm, [])
+            if len(name_matches) == 1:
+                add_score(name_matches[0], 25.0, "Gleicher eindeutiger Name")
         if not candidate_scores:
             return None, 0.0, [], False
         ordered = sorted(candidate_scores.values(), key=lambda item: (-float(item["score"]), item["cluster"]["cluster_key"]))
