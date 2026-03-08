@@ -17831,6 +17831,33 @@ def _customer_init_upsert_outsmart_relation_stage(db: Session, payload: dict) ->
     return "created" if created else "updated" if changed else "skipped"
 
 
+def _customer_init_seed_outsmart_relation(
+    db: Session,
+    *,
+    debtor_no: str,
+    name: str = "",
+    street: str = "",
+    house_no: str = "",
+    zip_code: str = "",
+    city: str = "",
+    remark: str = "",
+) -> str:
+    debtor_clean = _crm_clean_text(debtor_no)
+    if not debtor_clean:
+        return "skipped"
+    payload = {
+        "RelationNo": debtor_clean,
+        "DebtorNo": debtor_clean,
+        "Name": _crm_clean_text(name) or debtor_clean,
+        "Street": _crm_clean_text(street),
+        "HouseNo": _crm_clean_text(house_no),
+        "ZipCode": _crm_clean_text(zip_code),
+        "City": _crm_clean_text(city),
+        "Remark": _crm_clean_text(remark),
+    }
+    return _customer_init_upsert_outsmart_relation_stage(db, payload)
+
+
 def _customer_init_upsert_outsmart_project_stage(db: Session, payload: dict) -> str:
     project_code = _outsmart_project_key(payload)
     if not project_code:
@@ -17866,6 +17893,20 @@ def _customer_init_upsert_outsmart_project_stage(db: Session, payload: dict) -> 
             changed = True
     db.add(row)
     db.flush()
+    if debtor_number:
+        _customer_init_seed_outsmart_relation(
+            db,
+            debtor_no=debtor_number,
+            name=_outsmart_pick(payload, ("ProjectName", "project_name", "Name", "name")),
+            remark="Synthetisch aus OutSmart-Projekt",
+        )
+    if debtor_number_invoice and debtor_number_invoice != debtor_number:
+        _customer_init_seed_outsmart_relation(
+            db,
+            debtor_no=debtor_number_invoice,
+            name=_outsmart_pick(payload, ("ProjectName", "project_name", "Name", "name")),
+            remark="Synthetisch aus OutSmart-Projekt (Rechnungskunde)",
+        )
     return "created" if created else "updated" if changed else "skipped"
 
 
@@ -17916,6 +17957,28 @@ def _customer_init_upsert_outsmart_workorder_stage(db: Session, payload: dict) -
             changed = True
     db.add(row)
     db.flush()
+    if customer_debtor:
+        _customer_init_seed_outsmart_relation(
+            db,
+            debtor_no=customer_debtor,
+            name=_outsmart_pick(payload, ("CustomerName", "customer_name")),
+            street=_outsmart_pick(payload, ("CustomerStreet", "customer_street")),
+            house_no=_outsmart_pick(payload, ("CustomerStreetNo", "CustomerHouseNo", "customer_house_no")),
+            zip_code=_outsmart_pick(payload, ("CustomerZIP", "CustomerZipCode", "customer_zip")),
+            city=_outsmart_pick(payload, ("CustomerCity", "customer_city")),
+            remark="Synthetisch aus OutSmart-Arbeitsauftrag",
+        )
+    if invoice_debtor and invoice_debtor != customer_debtor:
+        _customer_init_seed_outsmart_relation(
+            db,
+            debtor_no=invoice_debtor,
+            name=_outsmart_pick(payload, ("CustomerNameInvoice", "customer_name_invoice", "CustomerInvoice")),
+            street=_outsmart_pick(payload, ("CustomerStreetInvoice", "CustomerInvoiceStreet")),
+            house_no=_outsmart_pick(payload, ("CustomerStreetNoInvoice", "CustomerInvoiceHouseNo")),
+            zip_code=_outsmart_pick(payload, ("CustomerZIPInvoice", "CustomerInvoiceZipCode")),
+            city=_outsmart_pick(payload, ("CustomerCityInvoice", "CustomerInvoiceCity")),
+            remark="Synthetisch aus OutSmart-Arbeitsauftrag (Rechnungskunde)",
+        )
     return "created" if created else "updated" if changed else "skipped"
 
 
@@ -18078,29 +18141,51 @@ def _sevdesk_list_all(fetch_fn, *, page_size: int = 200, max_rows: int = 5000) -
 def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
     settings = _outsmart_settings(db, include_secret=True)
     job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="customer_init_outsmart", log_text="Kunden-Initialisierung: OutSmart")
-    summary = {"relations": 0, "projects": 0, "workorders": 0, "errors": 0}
+    summary = {"relations": 0, "projects": 0, "workorders": 0, "errors": 0, "warnings": []}
     try:
-        for payload in _outsmart_extract_rows(outsmart_fetch_relations(settings)):
+        relation_rows: list[dict] = []
+        project_rows: list[dict] = []
+        workorder_rows: list[dict] = []
+        try:
+            relation_rows = _outsmart_extract_rows(outsmart_fetch_relations(settings))
+        except Exception as exc:
+            message = str(exc)
+            if "OutSmart-Fehler 404" in message and "\"code\":1001" in message:
+                summary["warnings"].append("GetRelations ist in dieser OutSmart-Instanz nicht verfügbar. Relationen werden aus Projekten und Arbeitsaufträgen abgeleitet.")
+            else:
+                raise
+        try:
+            project_rows = _outsmart_extract_rows(outsmart_fetch_projects(settings))
+        except Exception as exc:
+            message = str(exc)
+            if "OutSmart-Fehler 404" in message and "\"code\":1001" in message:
+                summary["warnings"].append("GetProjects ist in dieser OutSmart-Instanz nicht verfügbar.")
+            else:
+                raise
+        workorder_rows = _outsmart_extract_rows(outsmart_fetch_workorders(settings, status="", update_status=False))
+        for payload in relation_rows:
             try:
                 state = _customer_init_upsert_outsmart_relation_stage(db, payload)
                 if state != "skipped":
                     summary["relations"] += 1
             except Exception:
                 summary["errors"] += 1
-        for payload in _outsmart_extract_rows(outsmart_fetch_projects(settings)):
+        for payload in project_rows:
             try:
                 state = _customer_init_upsert_outsmart_project_stage(db, payload)
                 if state != "skipped":
                     summary["projects"] += 1
             except Exception:
                 summary["errors"] += 1
-        for payload in _outsmart_extract_rows(outsmart_fetch_workorders(settings, status="", update_status=False)):
+        for payload in workorder_rows:
             try:
                 state = _customer_init_upsert_outsmart_workorder_stage(db, payload)
                 if state != "skipped":
                     summary["workorders"] += 1
             except Exception:
                 summary["errors"] += 1
+        if not relation_rows and not project_rows and not workorder_rows:
+            raise ValueError("OutSmart lieferte keine Seed-Daten für die Kunden-Initialisierung.")
         _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
         _customer_init_mark_now(db, CUSTOMER_INIT_LAST_OUTSMART_IMPORT_AT)
         return summary
@@ -26854,6 +26939,8 @@ def system_customer_init_outsmart_import(request: Request, user=Depends(require_
         summary = _customer_init_import_outsmart(db)
         db.commit()
         _flash(request, f"OutSmart-Seed importiert: Relationen {summary['relations']}, Projekte {summary['projects']}, Arbeitsaufträge {summary['workorders']}.", "info")
+        for message in summary.get("warnings") or []:
+            _flash(request, str(message), "warn")
     except Exception as exc:
         db.rollback()
         _flash(request, f"OutSmart-Import fehlgeschlagen: {exc}", "error")
