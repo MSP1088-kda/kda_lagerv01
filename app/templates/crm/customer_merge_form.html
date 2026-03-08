@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Kunden zusammenführen</h1>
+
+  <div class="box">
+    <div class="box-title">Quelle</div>
+    <div class="box-body">
+      <div><b>{{ source_customer.customer_no_internal }}</b> | {{ source_party.display_name }}</div>
+      <div class="muted">{{ crm_customer_status_label(source_customer.status) }}</div>
+      {% if source_default_address %}
+        <div style="margin-top:8px;">{{ source_default_address.zip_code or '' }} {{ source_default_address.city or '' }} | {{ source_default_address.email or '-' }} | {{ source_default_address.phone or '-' }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Ziel suchen</div>
+    <div class="box-body">
+      <form method="get" action="/crm/kunden/{{ source_customer.id }}/zusammenfuehren" class="form compact">
+        <label>Suche</label>
+        <div class="row" style="gap:8px; flex-wrap:wrap;">
+          <input type="text" name="q" value="{{ q or '' }}" placeholder="Kundennummer, Name, Mail">
+          {% if selected_target %}<input type="hidden" name="target_id" value="{{ selected_target.id }}">{% endif %}
+          <button class="btn small" type="submit">Suchen</button>
+          <a class="btn small" href="/crm/kunden/{{ source_customer.id }}">Abbrechen</a>
+        </div>
+      </form>
+
+      {% if search_rows %}
+        <div class="table" style="margin-top:10px;">
+          <div class="tr th" style="grid-template-columns: 1.8fr 140px 140px;">
+            <div>Kunde</div>
+            <div>Status</div>
+            <div>Aktion</div>
+          </div>
+          {% for item in search_rows %}
+            <div class="tr" style="grid-template-columns: 1.8fr 140px 140px; align-items:start;">
+              <div>{{ item.label }}</div>
+              <div>{{ crm_customer_status_label(item.customer.status) }}</div>
+              <div><a class="btn small" href="/crm/kunden/{{ source_customer.id }}/zusammenfuehren?target_id={{ item.customer.id }}">Als Ziel wählen</a></div>
+            </div>
+          {% endfor %}
+        </div>
+      {% elif q %}
+        <div class="muted" style="margin-top:10px;">Keine Zielkunden zur Suche gefunden.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if selected_target and preview %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Merge-Vorschau</div>
+      <div class="box-body">
+        <div><b>Ziel:</b> {{ selected_target.customer_no_internal }} | {{ preview_target_party.display_name if preview_target_party else '-' }}</div>
+        {% if preview_target_address %}
+          <div class="muted">{{ preview_target_address.zip_code or '' }} {{ preview_target_address.city or '' }} | {{ preview_target_address.email or '-' }} | {{ preview_target_address.phone or '-' }}</div>
+        {% endif %}
+        {% if preview.warnings %}
+          <div class="box" style="margin-top:10px;">
+            <div class="box-title">Hinweise</div>
+            <div class="box-body">
+              {% for item in preview.warnings %}
+                <div class="hint">{{ item }}</div>
+              {% endfor %}
+            </div>
+          </div>
+        {% endif %}
+        <div class="table" style="margin-top:10px;">
+          <div class="tr th" style="grid-template-columns: 1.5fr 120px;">
+            <div>Wird umgehängt</div>
+            <div>Anzahl</div>
+          </div>
+          {% for key, label in [
+            ('addresses', 'Adressen'),
+            ('contacts', 'Kontaktpersonen'),
+            ('locations', 'Standorte'),
+            ('objects', 'Objekte'),
+            ('workorders', 'OutSmart-Arbeitsaufträge'),
+            ('case_roles', 'Vorgangsrollen'),
+            ('offers', 'Angebote'),
+            ('invoices', 'Rechnungen'),
+            ('dunning_cases', 'Mahnfälle'),
+            ('mail_threads', 'Mail-Threads'),
+            ('mail_messages', 'Mail-Nachrichten'),
+            ('mail_outbox', 'Postausgang'),
+            ('timeline_events', 'Timeline-Ereignisse'),
+            ('external_identities', 'Externe Identitäten'),
+            ('cluster_links', 'Initialisierungs-Cluster'),
+            ('external_links', 'Externe Deep Links'),
+            ('paperless_links', 'Paperless-Links'),
+            ('document_suggestions', 'Dokument-Vorschläge')
+          ] %}
+            <div class="tr" style="grid-template-columns: 1.5fr 120px;">
+              <div>{{ label }}</div>
+              <div>{{ preview.counts.get(key, 0) }}</div>
+            </div>
+          {% endfor %}
+        </div>
+        <form method="post" action="/crm/kunden/{{ source_customer.id }}/zusammenfuehren" style="margin-top:10px;">
+          <input type="hidden" name="target_customer_id" value="{{ selected_target.id }}">
+          <button class="btn primary" type="submit">Jetzt zusammenführen</button>
+          <a class="btn" href="/crm/kunden/{{ selected_target.id }}">Ziel öffnen</a>
+        </form>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Der Quellkunde wird nicht hart gelöscht, sondern auf `Inaktiv` gesetzt und am Ziel protokolliert.</li>
+  <li>Unterschiedliche OutSmart-Identitäten werden angezeigt, blockieren den manuellen Merge aber nicht.</li>
+</ul>
+{% endblock %}

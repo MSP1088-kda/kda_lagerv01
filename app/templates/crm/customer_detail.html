@@ -5,6 +5,7 @@
 
   <div class="row" style="margin-bottom:10px; flex-wrap:wrap;">
     {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+    {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/zusammenfuehren">Zusammenführen</a>{% endif %}
     {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/adressen/neu">Adresse hinzufügen</a>{% endif %}
     {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/standorte/neu">Standort hinzufügen</a>{% endif %}
     {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/kontaktpersonen/neu">Kontaktperson hinzufügen</a>{% endif %}

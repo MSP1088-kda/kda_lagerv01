@@ -210,6 +210,7 @@ from .services.email_service import (
 )
 from .services.mail_assignment_service import normalize_subject as mail_normalize_subject, suggest_assignments as mail_suggest_assignments
 from .services.customer_matching_service import build_customer_init_clusters
+from .services.customer_merge_service import CustomerMergeConflict, build_customer_merge_preview, merge_master_customers
 from .services.customer_normalization_service import stage_normalized_fields
 from .services.outsmart_service import (
     build_deep_link as outsmart_build_deep_link,
@@ -16206,6 +16207,144 @@ def crm_customer_detail(
             paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
         ),
     )
+
+
+@app.get("/crm/kunden/{customer_id}/zusammenfuehren", response_class=HTMLResponse)
+def crm_customer_merge_get(
+    customer_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    q: str = "",
+    target_id: int = 0,
+    db: Session = Depends(db_session),
+):
+    source_customer = db.get(MasterCustomer, customer_id)
+    if not source_customer:
+        raise HTTPException(status_code=404)
+    source_party = db.get(Party, int(source_customer.party_id))
+    if not source_party:
+        raise HTTPException(status_code=404)
+    _, source_default_map = _crm_party_address_maps(db, [int(source_party.id)])
+    source_default_address = source_default_map.get(int(source_party.id))
+
+    selected_target = db.get(MasterCustomer, int(target_id)) if int(target_id or 0) > 0 else None
+    if selected_target and int(selected_target.id) == int(source_customer.id):
+        selected_target = None
+    search_text = str(q or "").strip()
+    rows: list[MasterCustomer] = []
+    if search_text:
+        like = f"%{search_text}%"
+        rows = (
+            db.query(MasterCustomer)
+            .join(Party, Party.id == MasterCustomer.party_id)
+            .filter(
+                MasterCustomer.id != int(source_customer.id),
+                or_(
+                    MasterCustomer.customer_no_internal.ilike(like),
+                    Party.display_name.ilike(like),
+                    Party.first_name.ilike(like),
+                    Party.last_name.ilike(like),
+                    MasterCustomer.note.ilike(like),
+                ),
+            )
+            .order_by(MasterCustomer.status.asc(), Party.display_name.asc(), MasterCustomer.id.asc())
+            .limit(40)
+            .all()
+        )
+    elif selected_target:
+        rows = [selected_target]
+    party_ids = [int(row.party_id) for row in rows]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
+    _, default_map = _crm_party_address_maps(db, party_ids)
+    search_rows = [
+        {
+            "customer": row,
+            "party": parties.get(int(row.party_id)),
+            "default_address": default_map.get(int(row.party_id)),
+            "label": _crm_customer_label(row, parties.get(int(row.party_id)), default_map.get(int(row.party_id))),
+        }
+        for row in rows
+    ]
+    preview = None
+    preview_target_party = None
+    preview_target_address = None
+    if selected_target:
+        preview = build_customer_merge_preview(db, source_customer=source_customer, target_customer=selected_target)
+        preview_target_party = db.get(Party, int(selected_target.party_id))
+        _, preview_map = _crm_party_address_maps(db, [int(selected_target.party_id)])
+        preview_target_address = preview_map.get(int(selected_target.party_id))
+    return templates.TemplateResponse(
+        "crm/customer_merge_form.html",
+        _ctx(
+            request,
+            user=user,
+            source_customer=source_customer,
+            source_party=source_party,
+            source_default_address=source_default_address,
+            q=search_text,
+            search_rows=search_rows,
+            selected_target=selected_target,
+            preview=preview,
+            preview_target_party=preview_target_party,
+            preview_target_address=preview_target_address,
+        ),
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/zusammenfuehren")
+async def crm_customer_merge_post(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    source_customer = db.get(MasterCustomer, customer_id)
+    if not source_customer:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    target_id = _to_int(form.get("target_customer_id"), 0)
+    if target_id <= 0 or int(target_id) == int(source_customer.id):
+        _flash(request, "Bitte einen anderen Zielkunden wählen.", "error")
+        return RedirectResponse(f"/crm/kunden/{customer_id}/zusammenfuehren", status_code=302)
+    target_customer = db.get(MasterCustomer, target_id)
+    if not target_customer:
+        _flash(request, "Zielkunde wurde nicht gefunden.", "error")
+        return RedirectResponse(f"/crm/kunden/{customer_id}/zusammenfuehren", status_code=302)
+    actor_label = str(getattr(user, "full_name", "") or getattr(user, "username", "") or getattr(user, "email", "") or f"User #{int(user.id)}").strip()
+    try:
+        summary = merge_master_customers(
+            db,
+            target_customer=target_customer,
+            source_customer=source_customer,
+            actor_label=actor_label,
+        )
+        rejections = _crm_merge_rejections(db)
+        rejections.discard(_crm_merge_pair_key(int(target_customer.id), int(source_customer.id)))
+        _crm_save_merge_rejections(db, rejections)
+        db.commit()
+    except CustomerMergeConflict as exc:
+        db.rollback()
+        _flash(request, str(exc), "error")
+        return RedirectResponse(
+            f"/crm/kunden/{customer_id}/zusammenfuehren?target_id={int(target_customer.id)}",
+            status_code=302,
+        )
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse(
+            f"/crm/kunden/{customer_id}/zusammenfuehren?target_id={int(target_customer.id)}",
+            status_code=302,
+        )
+    moved_bits = [
+        f"Adressen: {summary.get('addresses', 0)}",
+        f"Kontakte: {summary.get('contacts', 0)}",
+        f"Standorte: {summary.get('locations', 0)}",
+        f"Objekte: {summary.get('objects', 0)}",
+        f"Mails: {summary.get('mail_threads', 0) + summary.get('mail_messages', 0) + summary.get('mail_outbox', 0)}",
+        f"Identitäten: {summary.get('external_identities', 0)}",
+    ]
+    _flash(
+        request,
+        f"{source_customer.customer_no_internal} wurde in {target_customer.customer_no_internal} zusammengeführt. {' | '.join(moved_bits)}.",
+        "info",
+    )
+    return RedirectResponse(f"/crm/kunden/{int(target_customer.id)}", status_code=302)
 
 
 @app.post("/crm/kunden/{customer_id}/outsmart/synchronisieren")

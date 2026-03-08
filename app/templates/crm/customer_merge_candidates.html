@@ -26,9 +26,10 @@
           {% endfor %}
         {% endif %}
         <div class="row" style="margin-top:10px;">
+          <a class="btn primary" href="/crm/kunden/{{ item.candidate_customer.id }}/zusammenfuehren?target_id={{ item.master_customer.id }}">Zusammenführen prüfen</a>
           <form method="post" action="/crm/merge-kandidaten/{{ item.master_customer.id }}/zuordnen" class="inline">
             <input type="hidden" name="candidate_id" value="{{ item.candidate_customer.id }}">
-            <button class="btn primary" type="submit">sevDesk zuordnen</button>
+            <button class="btn" type="submit">Nur sevDesk zuordnen</button>
           </form>
           <form method="post" action="/crm/merge-kandidaten/ablehnen" class="inline">
             <input type="hidden" name="master_id" value="{{ item.master_customer.id }}">
@@ -45,7 +46,7 @@
 
 {% block help %}
 <ul>
-  <li>Beim Zuordnen werden nur lokale sevDesk-Identitäten auf den Masterkunden umgehängt.</li>
-  <li>Es werden keine sevDesk-Kontakte gelöscht und keine harten Kunden-Merges erzwungen.</li>
+  <li>`Zusammenführen prüfen` öffnet die sichere Merge-Vorschau mit Umhänge-Zahlen.</li>
+  <li>`Nur sevDesk zuordnen` hängt weiterhin nur sevDesk-Identitäten um.</li>
 </ul>
 {% endblock %}
