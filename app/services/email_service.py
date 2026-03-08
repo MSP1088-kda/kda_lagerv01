@@ -285,13 +285,18 @@ def _smtp_client(account: EmailAccount):
     if not account.smtp_host or not account.smtp_port:
         raise ValueError("SMTP-Host/Port fehlen.")
     timeout = 12
+    port = int(account.smtp_port)
     if bool(account.smtp_tls):
-        client = smtplib.SMTP(account.smtp_host, int(account.smtp_port), timeout=timeout)
-        client.ehlo()
-        client.starttls(context=ssl.create_default_context())
-        client.ehlo()
+        if port == 465:
+            client = smtplib.SMTP_SSL(account.smtp_host, port, timeout=timeout, context=ssl.create_default_context())
+            client.ehlo()
+        else:
+            client = smtplib.SMTP(account.smtp_host, port, timeout=timeout)
+            client.ehlo()
+            client.starttls(context=ssl.create_default_context())
+            client.ehlo()
     else:
-        client = smtplib.SMTP(account.smtp_host, int(account.smtp_port), timeout=timeout)
+        client = smtplib.SMTP(account.smtp_host, port, timeout=timeout)
         client.ehlo()
     pw = decrypt_password(account.smtp_password_enc)
     if account.smtp_username:

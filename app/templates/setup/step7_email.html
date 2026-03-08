@@ -28,8 +28,8 @@
 
     <div class="row">
       <label class="check"><input type="checkbox" name="is_default"> Standard</label>
-      <label class="check"><input type="checkbox" name="smtp_tls" checked> SMTP TLS</label>
-      <label class="check"><input type="checkbox" name="imap_tls" checked> IMAP TLS</label>
+      <label class="check"><input type="checkbox" name="smtp_tls" checked> SMTP SSL/TLS</label>
+      <label class="check"><input type="checkbox" name="imap_tls" checked> IMAP SSL/TLS</label>
     </div>
 
     <h3>SMTP (Versand)</h3>
@@ -40,9 +40,10 @@
       </div>
       <div>
         <label>Port</label>
-        <input type="number" name="smtp_port" placeholder="587">
+        <input type="number" name="smtp_port" placeholder="465">
       </div>
     </div>
+    <div class="hint">SSL/TLS: meist `465`, STARTTLS: meist `587`.</div>
     <label>Benutzername</label>
     <input type="text" name="smtp_username">
     <label>Passwort</label>
@@ -59,6 +60,7 @@
         <input type="number" name="imap_port" placeholder="993">
       </div>
     </div>
+    <div class="hint">SSL/TLS: meist `993`.</div>
     <label>Benutzername</label>
     <input type="text" name="imap_username">
     <label>Passwort</label>

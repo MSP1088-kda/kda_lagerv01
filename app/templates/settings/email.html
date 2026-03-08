@@ -75,8 +75,8 @@
 
                 <div class="row">
                   <label class="check"><input type="checkbox" name="enabled" {% if a.enabled %}checked{% endif %}> Aktiv</label>
-                  <label class="check"><input type="checkbox" name="smtp_tls" {% if a.smtp_tls %}checked{% endif %}> SMTP TLS</label>
-                  <label class="check"><input type="checkbox" name="imap_tls" {% if a.imap_tls %}checked{% endif %}> IMAP TLS</label>
+                  <label class="check"><input type="checkbox" name="smtp_tls" {% if a.smtp_tls %}checked{% endif %}> SMTP SSL/TLS</label>
+                  <label class="check"><input type="checkbox" name="imap_tls" {% if a.imap_tls %}checked{% endif %}> IMAP SSL/TLS</label>
                 </div>
 
                 <h3>SMTP</h3>
@@ -90,6 +90,7 @@
                     <input type="number" name="smtp_port" value="{{ a.smtp_port or '' }}">
                   </div>
                 </div>
+                <div class="hint">SSL/TLS: meist `465`, STARTTLS: meist `587`.</div>
                 <label>Benutzername</label>
                 <input type="text" name="smtp_username" value="{{ a.smtp_username or '' }}">
                 <label>Passwort (leer lassen = unverändert)</label>
@@ -106,6 +107,7 @@
                     <input type="number" name="imap_port" value="{{ a.imap_port or '' }}">
                   </div>
                 </div>
+                <div class="hint">SSL/TLS: meist `993`.</div>
                 <label>Benutzername</label>
                 <input type="text" name="imap_username" value="{{ a.imap_username or '' }}">
                 <label>Passwort (leer lassen = unverändert)</label>
@@ -138,8 +140,8 @@
     <div class="row">
       <label class="check"><input type="checkbox" name="enabled" checked> Aktiv</label>
       <label class="check"><input type="checkbox" name="is_default"> Standard</label>
-      <label class="check"><input type="checkbox" name="smtp_tls" checked> SMTP TLS</label>
-      <label class="check"><input type="checkbox" name="imap_tls" checked> IMAP TLS</label>
+      <label class="check"><input type="checkbox" name="smtp_tls" checked> SMTP SSL/TLS</label>
+      <label class="check"><input type="checkbox" name="imap_tls" checked> IMAP SSL/TLS</label>
     </div>
 
     <h3>SMTP</h3>
@@ -150,9 +152,10 @@
       </div>
       <div>
         <label>Port</label>
-        <input type="number" name="smtp_port">
+        <input type="number" name="smtp_port" placeholder="465">
       </div>
     </div>
+    <div class="hint">SSL/TLS: meist `465`, STARTTLS: meist `587`.</div>
     <label>Benutzername</label>
     <input type="text" name="smtp_username">
     <label>Passwort</label>
@@ -166,9 +169,10 @@
       </div>
       <div>
         <label>Port</label>
-        <input type="number" name="imap_port">
+        <input type="number" name="imap_port" placeholder="993">
       </div>
     </div>
+    <div class="hint">SSL/TLS: meist `993`.</div>
     <label>Benutzername</label>
     <input type="text" name="imap_username">
     <label>Passwort</label>
