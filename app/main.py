@@ -17890,8 +17890,8 @@ def _customer_init_upsert_outsmart_project_stage(db: Session, payload: dict) -> 
     created = row is None
     if row is None:
         row = OutsmartProjectStage(project_code=project_code, created_at=_utcnow_naive())
-    debtor_number = _outsmart_pick(payload, ("RelationNo", "relation_no", "DebtorNo", "CustomerDebtorNr"))
-    debtor_number_invoice = _outsmart_pick(payload, ("RelationNoInvoice", "debtor_number_invoice", "CustomerDebtorNrInvoice"))
+    debtor_number = _outsmart_customer_debtor_key(payload)
+    debtor_number_invoice = _outsmart_invoice_debtor_key(payload)
     normalized = stage_normalized_fields(
         name=_outsmart_pick(payload, ("ProjectName", "project_name", "Name", "name")),
         debtor=debtor_number,
@@ -17942,8 +17942,8 @@ def _customer_init_upsert_outsmart_workorder_stage(db: Session, payload: dict) -
     created = row is None
     if row is None:
         row = OutsmartWorkorderStage(workorder_no=workorder_no, created_at=_utcnow_naive())
-    customer_debtor = _outsmart_pick(payload, ("CustomerDebtorNr", "customer_debtor_nr", "RelationNo", "DebtorNo"))
-    invoice_debtor = _outsmart_pick(payload, ("CustomerDebtorNrInvoice", "customer_debtor_nr_invoice", "debtor_number_invoice"))
+    customer_debtor = _outsmart_customer_debtor_key(payload)
+    invoice_debtor = _outsmart_invoice_debtor_key(payload)
     normalized = stage_normalized_fields(
         name=_outsmart_pick(payload, ("CustomerName", "customer_name")),
         street=_outsmart_pick(payload, ("CustomerStreet", "customer_street")),
@@ -25657,6 +25657,12 @@ def _outsmart_relation_key(payload: dict) -> str:
             "relation_no",
             "CustomerNo",
             "customer_no",
+            "CustomerDebtorNr",
+            "customer_debtor_nr",
+            "CpnCode",
+            "cpn_code",
+            "AdrCode",
+            "adr_code",
             "Code",
             "code",
         ),
@@ -25701,16 +25707,65 @@ def _outsmart_workorder_key(payload: dict) -> str:
         (
             "WorkorderNo",
             "workorder_no",
+            "OrderNr",
+            "order_nr",
             "ReferenceNo",
             "reference_no",
+            "ExternalReference",
+            "external_reference",
             "WorkOrderNumber",
             "workorder_number",
+            "WorksheetCode",
+            "worksheet_code",
+            "UDID",
+            "udid",
+            "id",
+            "Id",
         ),
     )
 
 
 def _outsmart_row_id(payload: dict) -> str:
     return _outsmart_pick(payload, ("RowId", "row_id", "Id", "id", "RowID"))
+
+
+def _outsmart_customer_debtor_key(payload: dict) -> str:
+    return _outsmart_pick(
+        payload,
+        (
+            "CustomerDebtorNr",
+            "customer_debtor_nr",
+            "RelationNo",
+            "relation_no",
+            "DebtorNo",
+            "debtor_no",
+            "CustomerNo",
+            "customer_no",
+            "CpnCode",
+            "cpn_code",
+            "AdrCode",
+            "adr_code",
+        ),
+    )
+
+
+def _outsmart_invoice_debtor_key(payload: dict) -> str:
+    return _outsmart_pick(
+        payload,
+        (
+            "CustomerDebtorNrInvoice",
+            "customer_debtor_nr_invoice",
+            "RelationNoInvoice",
+            "relation_no_invoice",
+            "debtor_number_invoice",
+            "CustomerNoInvoice",
+            "customer_no_invoice",
+            "CpnCodeInvoice",
+            "cpn_code_invoice",
+            "AdrCodeInvoice",
+            "adr_code_invoice",
+        ),
+    )
 
 
 def _outsmart_status_to_case_status(raw: str | None) -> str:

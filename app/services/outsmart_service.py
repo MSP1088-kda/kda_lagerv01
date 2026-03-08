@@ -10,10 +10,14 @@ def _extract_rows(payload) -> list[dict]:
     if isinstance(payload, list):
         return [row for row in payload if isinstance(row, dict)]
     if isinstance(payload, dict):
-        for key in ("workorders", "Workorders", "materials", "relations", "results", "items", "data"):
+        for key in ("response", "Response", "workorders", "Workorders", "materials", "relations", "results", "items", "data"):
             rows = payload.get(key)
             if isinstance(rows, list):
                 return [row for row in rows if isinstance(row, dict)]
+            if isinstance(rows, dict):
+                return [rows]
+        if "response" in payload or "Response" in payload:
+            return []
         if payload:
             return [payload]
     return []
