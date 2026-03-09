@@ -92,6 +92,22 @@
     {% endif %}
   </header>
 
+  {% if user and user.role == 'admin' %}
+  <section id="jobMonitor" class="job-monitor-strip" hidden aria-live="polite" aria-atomic="false">
+    <div class="job-monitor-strip-head">
+      <div class="job-monitor-strip-main">
+        <div class="job-monitor-title">Hintergrundjobs</div>
+        <div id="jobMonitorSummary" class="muted">Keine aktiven Jobs</div>
+      </div>
+      <div class="job-monitor-strip-actions">
+        <a class="muted" href="/system/sync-log">Protokoll</a>
+        <button id="jobMonitorToggle" class="btn small" type="button" aria-expanded="false">Details</button>
+      </div>
+    </div>
+    <div id="jobMonitorBody" class="job-monitor-strip-body" hidden></div>
+  </section>
+  {% endif %}
+
   {% if user and customer_init_mode %}
   <section class="flash">
     <div class="flash-item flash-warn">
@@ -140,21 +156,6 @@
       <div id="pageLoadingEta" class="muted" hidden></div>
     </div>
   </div>
-  {% if user and user.role == 'admin' %}
-  <aside id="jobMonitor" class="job-monitor" hidden aria-live="polite" aria-atomic="false">
-    <div class="job-monitor-head">
-      <div>
-        <div class="job-monitor-title">Hintergrundjobs</div>
-        <div id="jobMonitorSummary" class="muted">Keine aktiven Jobs</div>
-      </div>
-      <button id="jobMonitorToggle" class="btn small" type="button" aria-expanded="true">Minimieren</button>
-    </div>
-    <div id="jobMonitorBody" class="job-monitor-body"></div>
-    <div class="job-monitor-foot">
-      <a href="/system/sync-log">Alle Läufe öffnen</a>
-    </div>
-  </aside>
-  {% endif %}
   {% if user %}
   <script>
     window.__navCommands = {{ nav_commands | tojson }};

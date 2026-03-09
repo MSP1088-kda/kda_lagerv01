@@ -405,9 +405,21 @@
     return 'läuft';
   }
 
+  function jobMonitorPercent(job){
+    const progress = (job && job.progress && typeof job.progress === 'object') ? job.progress : {};
+    const processed = Number(progress.processed_count || 0);
+    const total = Number(progress.total_count || 0);
+    if(total > 0){
+      return Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+    }
+    return 0;
+  }
+
   function jobMonitorItemHtml(job){
     const progress = (job && job.progress && typeof job.progress === 'object') ? job.progress : {};
     const eta = Number(job && job.eta_seconds || 0);
+    const percent = jobMonitorPercent(job);
+    const determinate = Number(progress.total_count || 0) > 0;
     const links = [];
     if(job && job.result_url){
       links.push('<a href="' + escapeHtml(job.result_url) + '">Ergebnis</a>');
@@ -420,10 +432,11 @@
       '<div class="muted">' + escapeHtml(jobMonitorStatusLabel(job.status)) + '</div>',
       '</div>',
       '<div class="job-monitor-phase">' + escapeHtml(progress.phase || 'Bitte warten') + '</div>',
+      '<div class="job-monitor-bar"><div class="job-monitor-bar-fill' + (determinate ? '' : ' indeterminate') + '" style="' + (determinate ? ('width:' + String(percent) + '%;') : 'width:35%;') + '"></div></div>',
       progress.phase_detail ? '<div class="muted">' + escapeHtml(progress.phase_detail) + '</div>' : '',
       progress.current_item_label ? '<div class="muted">Datensatz: ' + escapeHtml(progress.current_item_label) + (progress.current_item_ref ? ' | ' + escapeHtml(progress.current_item_ref) : '') + '</div>' : '',
       '<div class="job-monitor-metrics">',
-      '<span>Fortschritt: ' + escapeHtml(jobMonitorProgressText(job)) + '</span>',
+      '<span>Fortschritt: ' + escapeHtml(jobMonitorProgressText(job)) + (determinate ? ' (' + String(percent) + '%)' : '') + '</span>',
       Number(progress.error_count || 0) > 0 ? '<span>Fehler: ' + escapeHtml(progress.error_count) + '</span>' : '',
       eta > 0 ? '<span>ETA: ' + escapeHtml(pageLoadingDurationLabel(eta)) + '</span>' : '',
       '</div>',
@@ -442,7 +455,7 @@
     if(foot){
       foot.hidden = !!jobMonitorState.collapsed;
     }
-    jobMonitorState.toggleEl.textContent = jobMonitorState.collapsed ? 'Öffnen' : 'Minimieren';
+    jobMonitorState.toggleEl.textContent = jobMonitorState.collapsed ? 'Details' : 'Details aus';
     jobMonitorState.toggleEl.setAttribute('aria-expanded', jobMonitorState.collapsed ? 'false' : 'true');
     try{
       window.localStorage.setItem(JOB_MONITOR_COLLAPSED_KEY, jobMonitorState.collapsed ? '1' : '0');
@@ -461,9 +474,14 @@
     }
     const running = items.filter(function(item){ return String(item.status || '').toLowerCase() === 'running'; }).length;
     const queued = items.filter(function(item){ return String(item.status || '').toLowerCase() === 'queued'; }).length;
+    const first = items[0] || null;
+    const firstProgress = first && first.progress && typeof first.progress === 'object' ? first.progress : {};
     const parts = [];
     if(running) parts.push(String(running) + ' läuft');
     if(queued) parts.push(String(queued) + ' wartet');
+    if(first && firstProgress.phase){
+      parts.push(String(first.title || 'Job') + ': ' + String(firstProgress.phase));
+    }
     jobMonitorState.summaryEl.textContent = parts.join(' | ') || String(items.length) + ' aktiv';
     jobMonitorState.bodyEl.innerHTML = items.map(jobMonitorItemHtml).join('');
     jobMonitorState.rootEl.hidden = false;
