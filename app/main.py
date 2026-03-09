@@ -179,7 +179,11 @@ from .services.agreement_import_service import (
 )
 from .services.backup_service import create_backup, restore_backup
 from .services.ai_accounting_service import extract_incoming_invoice as ai_extract_incoming_invoice, suggest_voucher_accounting as ai_suggest_voucher_accounting
-from .services.ai_customer_service import evaluate_merge_candidate as ai_evaluate_merge_candidate, suggest_role_assignment as ai_suggest_role_assignment
+from .services.ai_customer_service import (
+    evaluate_merge_candidate as ai_evaluate_merge_candidate,
+    review_customer_init_cluster as ai_review_customer_init_cluster,
+    suggest_role_assignment as ai_suggest_role_assignment,
+)
 from .services.ai_document_service import classify_document as ai_classify_document
 from .services.ai_email_service import classify_email_thread as ai_classify_email_thread
 from .services.ai_sales_service import prepare_invoice_draft as ai_prepare_invoice_draft, prepare_offer_draft as ai_prepare_offer_draft
@@ -4228,6 +4232,7 @@ def _sync_job_title_default(entity_type: str, system_name: str = "") -> str:
         "customer_init_outsmart": "OutSmart-Initialimport",
         "customer_init_sevdesk": "sevDesk-Initialimport",
         "customer_init_matching": "Kunden-Matching",
+        "customer_init_ai_review": "KI-Review Kunden-Initialisierung",
         "customer_init_materialize": "Master-Kunden erzeugen",
         "catalog_import_run": "CSV-Katalogimport",
     }
@@ -4513,6 +4518,10 @@ def _run_background_job_by_id(job_id: int) -> None:
             return
         if job_key == "customer_init_matching":
             _customer_init_build_clusters(db, job=row)
+            db.commit()
+            return
+        if job_key == "customer_init_ai_review":
+            _customer_init_ai_review_clusters(db, job=row)
             db.commit()
             return
         if job_key == "customer_init_materialize":
@@ -19687,6 +19696,24 @@ def _customer_init_build_clusters(db: Session, job: ExternalSyncJob | None = Non
             commit=False,
         )
         _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
+        _enqueue_sync_job(
+            db,
+            system_name="local",
+            direction="pull",
+            entity_type="customer_init_ai_review",
+            title="KI-Review Kunden-Initialisierung",
+            job_key="customer_init_ai_review",
+            lock_key="customer_init",
+            log_text="Kunden-Initialisierung: KI-Review",
+            progress={
+                "phase": "Wartet auf Start",
+                "phase_detail": "KI-Review wurde nach dem Matching in die Warteschlange gestellt.",
+                "processed_count": 0,
+                "success_count": 0,
+                "error_count": 0,
+            },
+            result_url="/system/kunden-initialisierung/review",
+        )
         _customer_init_mark_now(db, CUSTOMER_INIT_LAST_MATCH_AT)
         return summary
     except Exception as exc:
@@ -20022,7 +20049,261 @@ def _customer_init_dashboard_context(db: Session) -> dict[str, object]:
     }
 
 
-def _customer_init_review_rows(db: Session, status: str = "") -> list[dict[str, object]]:
+def _customer_init_cluster_ai_input(
+    db: Session,
+    cluster: CustomerInitCluster,
+    *,
+    members: list[CustomerInitClusterMember] | None = None,
+    summary: dict[str, object] | None = None,
+    customer: MasterCustomer | None = None,
+) -> dict[str, object]:
+    member_rows = members if members is not None else (
+        db.query(CustomerInitClusterMember)
+        .filter(CustomerInitClusterMember.cluster_id == int(cluster.id))
+        .order_by(CustomerInitClusterMember.is_anchor.desc(), CustomerInitClusterMember.match_score.desc(), CustomerInitClusterMember.id.asc())
+        .all()
+    )
+    summary_payload = summary if isinstance(summary, dict) else _json_dict(cluster.summary_json)
+    customer_row = customer or (db.get(MasterCustomer, int(cluster.master_customer_id or 0)) if int(cluster.master_customer_id or 0) > 0 else None)
+    members_payload: list[dict[str, object]] = []
+    for member in member_rows[:12]:
+        members_payload.append(
+            {
+                "source_system": str(member.source_system or ""),
+                "source_type": str(member.source_type or ""),
+                "display_name": str(member.display_name or ""),
+                "external_key": str(member.external_key or ""),
+                "external_secondary_key": str(member.external_secondary_key or ""),
+                "match_score": float(member.match_score or 0.0) if member.match_score is not None else 0.0,
+                "match_reason": str(member.match_reason or ""),
+                "is_anchor": bool(member.is_anchor),
+                "meta": _json_dict(member.meta_json),
+            }
+        )
+    return {
+        "cluster_id": int(cluster.id),
+        "cluster_key": str(cluster.cluster_key or ""),
+        "display_name": str(cluster.display_name or cluster.cluster_key or ""),
+        "cluster_status": str(cluster.status or ""),
+        "cluster_confidence": float(cluster.confidence or 0.0),
+        "anchor_system": str(cluster.anchor_system or ""),
+        "anchor_key": str(cluster.anchor_key or ""),
+        "conflict_note": str(cluster.conflict_note or ""),
+        "master_customer_id": int(customer_row.id) if customer_row else None,
+        "master_customer_no": str(customer_row.customer_no_internal or "") if customer_row else "",
+        "summary": summary_payload,
+        "members": members_payload,
+    }
+
+
+def _customer_init_ai_decision_maps(
+    db: Session,
+    cluster_ids: list[int],
+) -> tuple[dict[int, AiDecisionLog], dict[int, AiReviewQueueItem]]:
+    cluster_keys = [int(value) for value in cluster_ids if int(value or 0) > 0]
+    if not cluster_keys:
+        return {}, {}
+    decisions = (
+        db.query(AiDecisionLog)
+        .filter(
+            AiDecisionLog.task_name == "customer_init_cluster_review",
+            AiDecisionLog.related_object_type == "customer_init_cluster",
+            AiDecisionLog.related_object_id.in_(cluster_keys),
+        )
+        .order_by(AiDecisionLog.created_at.desc(), AiDecisionLog.id.desc())
+        .all()
+    )
+    decision_map: dict[int, AiDecisionLog] = {}
+    for row in decisions:
+        key = int(row.related_object_id or 0)
+        if key > 0 and key not in decision_map:
+            decision_map[key] = row
+    review_map: dict[int, AiReviewQueueItem] = {}
+    decision_ids = [int(row.id) for row in decision_map.values()]
+    if decision_ids:
+        review_rows = (
+            db.query(AiReviewQueueItem)
+            .filter(AiReviewQueueItem.ai_decision_log_id.in_(decision_ids))
+            .order_by(AiReviewQueueItem.id.desc())
+            .all()
+        )
+        for row in review_rows:
+            key = int(row.ai_decision_log_id or 0)
+            if key > 0 and key not in review_map:
+                review_map[key] = row
+    return decision_map, review_map
+
+
+def _customer_init_apply_ai_output(db: Session, cluster: CustomerInitCluster, output: dict[str, object]) -> str:
+    suggested_status = _crm_normalize_key(str(output.get("recommended_status") or ""))
+    if suggested_status not in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES:
+        suggested_status = "needs_review"
+    if bool(output.get("hard_case")) and suggested_status == "ready":
+        suggested_status = "needs_review"
+    suggested_customer_id = _to_int(output.get("suggested_master_customer_id"), 0)
+    if suggested_customer_id > 0:
+        customer = db.get(MasterCustomer, suggested_customer_id)
+        if customer is not None:
+            cluster.master_customer_id = int(customer.id)
+    cluster.status = suggested_status
+    cluster.updated_at = _utcnow_naive()
+    db.add(cluster)
+    db.flush()
+    return suggested_status
+
+
+def _customer_init_ai_review_cluster(
+    db: Session,
+    cluster: CustomerInitCluster,
+    *,
+    members: list[CustomerInitClusterMember] | None = None,
+    summary: dict[str, object] | None = None,
+    customer: MasterCustomer | None = None,
+    settings: dict[str, object] | None = None,
+    force_refresh: bool = False,
+) -> dict[str, object]:
+    payload = _customer_init_cluster_ai_input(db, cluster, members=members, summary=summary, customer=customer)
+    openai_settings = settings if isinstance(settings, dict) else _openai_settings(db, include_secret=True)
+    return ai_review_customer_init_cluster(
+        db,
+        settings=openai_settings,
+        input_payload=payload,
+        related_object_id=int(cluster.id),
+        force_refresh=force_refresh,
+    )
+
+
+def _customer_init_ai_review_clusters(
+    db: Session,
+    job: ExternalSyncJob | None = None,
+    *,
+    cluster_ids: list[int] | None = None,
+    force_refresh: bool = False,
+) -> dict[str, int]:
+    created_job = job is None
+    if job is None:
+        job = _start_sync_job(
+            db,
+            system_name="local",
+            direction="pull",
+            entity_type="customer_init_ai_review",
+            job_key="customer_init_ai_review",
+            lock_key="customer_init",
+            title="KI-Review Kunden-Initialisierung",
+            log_text="Kunden-Initialisierung: KI-Review",
+        )
+    try:
+        query = (
+            db.query(CustomerInitCluster)
+            .filter(CustomerInitCluster.status.in_(("ready", "needs_review")))
+            .order_by(
+                case((CustomerInitCluster.status == "needs_review", 0), else_=1),
+                CustomerInitCluster.confidence.desc(),
+                CustomerInitCluster.id.asc(),
+            )
+        )
+        cluster_id_values = [int(value) for value in cluster_ids or [] if int(value or 0) > 0]
+        if cluster_id_values:
+            query = query.filter(CustomerInitCluster.id.in_(cluster_id_values))
+        rows = query.all()
+        total_count = len(rows)
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="KI prueft Cluster",
+            phase_detail=f"{total_count} Cluster werden fachlich bewertet.",
+            total_count=total_count,
+            processed_count=0,
+            success_count=0,
+            error_count=0,
+            current_item_label="KI-Review",
+            commit=True,
+        )
+        settings = _openai_settings(db, include_secret=True)
+        auto_ready = 0
+        auto_rejected = 0
+        manual_review = 0
+        review_queue = 0
+        processed_count = 0
+        for cluster in rows:
+            members = (
+                db.query(CustomerInitClusterMember)
+                .filter(CustomerInitClusterMember.cluster_id == int(cluster.id))
+                .order_by(CustomerInitClusterMember.is_anchor.desc(), CustomerInitClusterMember.match_score.desc(), CustomerInitClusterMember.id.asc())
+                .all()
+            )
+            summary = _json_dict(cluster.summary_json)
+            customer = db.get(MasterCustomer, int(cluster.master_customer_id or 0)) if int(cluster.master_customer_id or 0) > 0 else None
+            result = _customer_init_ai_review_cluster(
+                db,
+                cluster,
+                members=members,
+                summary=summary,
+                customer=customer,
+                settings=settings,
+                force_refresh=force_refresh,
+            )
+            output = result.get("output") if isinstance(result.get("output"), dict) else {}
+            suggested_status = _crm_normalize_key(str(output.get("recommended_status") or "needs_review"))
+            if bool(output.get("hard_case")):
+                suggested_status = "needs_review"
+            if suggested_status not in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES:
+                suggested_status = "needs_review"
+            if suggested_status in ("ready", "rejected") and not bool(output.get("hard_case")):
+                applied_status = _customer_init_apply_ai_output(db, cluster, output)
+                if applied_status == "ready":
+                    auto_ready += 1
+                elif applied_status == "rejected":
+                    auto_rejected += 1
+            else:
+                cluster.status = "needs_review"
+                cluster.updated_at = _utcnow_naive()
+                db.add(cluster)
+                db.flush()
+                manual_review += 1
+            if result.get("review_item") is not None:
+                review_queue += 1
+            processed_count += 1
+            if processed_count == 1 or processed_count % 10 == 0 or processed_count == total_count:
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(cluster.display_name or cluster.cluster_key or "Cluster"),
+                    current_item_ref=str(cluster.cluster_key or ""),
+                    processed_count=processed_count,
+                    success_count=auto_ready + auto_rejected,
+                    error_count=0,
+                    commit=True,
+                )
+        summary_payload = {
+            "checked": total_count,
+            "auto_ready": auto_ready,
+            "auto_rejected": auto_rejected,
+            "manual_review": manual_review,
+            "review_queue": review_queue,
+        }
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="KI-Review abgeschlossen",
+            phase_detail=f"Bereit {auto_ready} | zur Pruefung {manual_review} | zurueckgestellt {auto_rejected}",
+            total_count=total_count,
+            processed_count=total_count,
+            success_count=auto_ready + auto_rejected,
+            error_count=0,
+            current_item_label="Fertig",
+            current_item_ref="",
+            commit=False,
+        )
+        _finish_sync_job(db, job, status="done", log_text=json.dumps(summary_payload, ensure_ascii=False), result_url="/system/kunden-initialisierung/review")
+        return summary_payload
+    except Exception as exc:
+        if created_job:
+            _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        raise
+
+
+def _customer_init_review_rows(db: Session, status: str = "", focus_cluster_id: int = 0) -> list[dict[str, object]]:
     query = db.query(CustomerInitCluster)
     status_norm = _crm_normalize_key(status)
     if status_norm in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES:
@@ -20032,6 +20313,7 @@ def _customer_init_review_rows(db: Session, status: str = "") -> list[dict[str, 
         CustomerInitCluster.confidence.desc(),
         CustomerInitCluster.id.asc(),
     ).all()
+    decision_map, review_map = _customer_init_ai_decision_maps(db, [int(row.id) for row in rows])
     out: list[dict[str, object]] = []
     for row in rows:
         members = (
@@ -20040,7 +20322,24 @@ def _customer_init_review_rows(db: Session, status: str = "") -> list[dict[str, 
             .order_by(CustomerInitClusterMember.is_anchor.desc(), CustomerInitClusterMember.match_score.desc(), CustomerInitClusterMember.id.asc())
             .all()
         )
-        out.append({"cluster": row, "members": members, "summary": _json_dict(row.summary_json), "customer": db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None})
+        customer = db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None
+        ai_decision = decision_map.get(int(row.id))
+        ai_output = ai_decision_output(ai_decision) if ai_decision else {}
+        ai_review_item = review_map.get(int(ai_decision.id)) if ai_decision is not None else None
+        out.append(
+            {
+                "cluster": row,
+                "members": members,
+                "summary": _json_dict(row.summary_json),
+                "customer": customer,
+                "ai_decision": ai_decision,
+                "ai_output": ai_output,
+                "ai_review_item": ai_review_item,
+                "focus": int(focus_cluster_id or 0) == int(row.id),
+            }
+        )
+    if int(focus_cluster_id or 0) > 0:
+        out.sort(key=lambda item: (0 if item.get("focus") else 1, 0 if _crm_normalize_key(item["cluster"].status) == "needs_review" else 1, -int(float(item["cluster"].confidence or 0))))
     return out
 
 
@@ -22847,6 +23146,7 @@ def _sync_job_entity_label(entity_type: str | None) -> str:
         "customer_init_outsmart": "OutSmart-Initialimport",
         "customer_init_sevdesk": "sevDesk-Initialimport",
         "customer_init_matching": "Kunden-Matching",
+        "customer_init_ai_review": "KI-Review",
         "customer_init_materialize": "Materialisierung",
         "catalog_import_run": "CSV-Katalogimport",
     }
@@ -26609,6 +26909,7 @@ AI_TASK_LABELS = {
     "offer_draft_prepare": "Angebotsvorschlag",
     "invoice_draft_prepare": "Rechnungsvorschlag",
     "customer_merge_candidate": "Dublettenpruefung",
+    "customer_init_cluster_review": "Cluster-Review",
     "role_assignment_suggestion": "Rollenpruefung",
 }
 
@@ -26708,6 +27009,7 @@ def _ai_object_url(object_type: str | None, object_id: int | None) -> str:
         "offer_draft": f"/crm/angebote/{obj_id}",
         "invoice_draft": f"/crm/rechnungen/{obj_id}",
         "master_customer": f"/crm/kunden/{obj_id}",
+        "customer_init_cluster": f"/system/kunden-initialisierung/review?focus_cluster_id={obj_id}",
         "crm_case": f"/crm/vorgaenge/{obj_id}",
         "goods_receipt": f"/einkauf/wareneingaenge/{obj_id}",
         "outsmart_workorder": f"/outsmart/arbeitsauftraege/{obj_id}",
@@ -26965,6 +27267,23 @@ def _ai_eval_defaults() -> list[dict[str, str | bool]]:
             "active": True,
         },
         {
+            "task_name": "customer_init_cluster_review",
+            "input_json": json.dumps(
+                {
+                    "cluster_key": "outsmart:KD4",
+                    "display_name": "Adler Kundendienst",
+                    "cluster_status": "needs_review",
+                    "cluster_confidence": 92,
+                    "anchor_system": "outsmart",
+                    "summary": {"member_count": 3, "relation_count": 1, "workorder_count": 1, "contact_count": 1, "order_count": 0, "invoice_count": 1},
+                    "members": [{"source_system": "outsmart", "source_type": "relation_stage", "display_name": "Adler Kundendienst", "match_reason": "OutSmart-Anker"}],
+                },
+                ensure_ascii=False,
+            ),
+            "expected_json": json.dumps({"recommended_status": "ready"}, ensure_ascii=False),
+            "active": True,
+        },
+        {
             "task_name": "role_assignment_suggestion",
             "input_json": json.dumps({"available_customers": [{"id": 1}], "available_locations": [{"id": 2}]}, ensure_ascii=False),
             "expected_json": json.dumps({"probable_ordering_party": 1, "probable_service_location": 2}, ensure_ascii=False),
@@ -27009,6 +27328,8 @@ def _ai_run_eval_task(db: Session, settings: dict[str, object], task_name: str, 
         return ai_suggest_voucher_accounting(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
     if task == "customer_merge_candidate":
         return ai_evaluate_merge_candidate(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
+    if task == "customer_init_cluster_review":
+        return ai_review_customer_init_cluster(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
     if task == "role_assignment_suggestion":
         return ai_suggest_role_assignment(db, settings=settings, input_payload=input_payload, force_refresh=True)["output"]
     raise ValueError("Unbekannter KI-Eval-Task.")
@@ -28770,6 +29091,34 @@ def system_customer_init_matching(request: Request, user=Depends(require_admin),
     return RedirectResponse("/system/kunden-initialisierung", status_code=302)
 
 
+@app.post("/system/kunden-initialisierung/ki-review")
+def system_customer_init_ai_review(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    job, created = _enqueue_sync_job(
+        db,
+        system_name="local",
+        direction="pull",
+        entity_type="customer_init_ai_review",
+        title="KI-Review Kunden-Initialisierung",
+        job_key="customer_init_ai_review",
+        lock_key="customer_init",
+        log_text="Kunden-Initialisierung: KI-Review",
+        progress={
+            "phase": "Wartet auf Start",
+            "phase_detail": "KI-Review wurde in die Warteschlange gestellt.",
+            "processed_count": 0,
+            "success_count": 0,
+            "error_count": 0,
+        },
+        result_url="/system/kunden-initialisierung/review",
+    )
+    db.commit()
+    if created:
+        _flash(request, "KI-Review wurde als Hintergrundjob gestartet.", "info")
+    else:
+        _flash(request, f"Es läuft bereits ein Job im Bereich Kunden-Initialisierung: {_sync_job_view(job)['title']}.", "warn")
+    return RedirectResponse("/system/kunden-initialisierung/review", status_code=302)
+
+
 @app.post("/system/kunden-initialisierung/materialisieren")
 def system_customer_init_materialize(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     job, created = _enqueue_sync_job(
@@ -28816,10 +29165,11 @@ def system_customer_init_review(
     user=Depends(require_admin),
     status: str = "open",
     limit: int = 40,
+    focus_cluster_id: int = 0,
     db: Session = Depends(db_session),
 ):
     status_norm = _crm_normalize_key(status)
-    rows = _customer_init_review_rows(db, status="" if status_norm == "open" else status_norm)
+    rows = _customer_init_review_rows(db, status="" if status_norm == "open" else status_norm, focus_cluster_id=int(focus_cluster_id or 0))
     if status_norm == "open":
         rows = [row for row in rows if _crm_normalize_key(row["cluster"].status) in ("ready", "needs_review")]
     return templates.TemplateResponse(
@@ -28830,6 +29180,7 @@ def system_customer_init_review(
             rows=rows[: max(1, min(int(limit or 40), 120))],
             status=status_norm or "open",
             cluster_counts=_customer_init_cluster_counts(db),
+            focus_cluster_id=int(focus_cluster_id or 0),
         ),
     )
 
@@ -28840,29 +29191,87 @@ async def system_customer_init_review_update(cluster_id: int, request: Request, 
     if not row:
         raise HTTPException(status_code=404)
     form = await request.form()
+    return_to = _safe_return_to_path(str(form.get("return_to") or "").strip(), "/system/kunden-initialisierung/review")
     action = _crm_normalize_key(form.get("action")) or "ready"
     existing_customer_id = _to_int(form.get("master_customer_id"), 0)
     if existing_customer_id > 0:
         customer = db.get(MasterCustomer, existing_customer_id)
         if not customer:
             _flash(request, "Master-Kunde wurde nicht gefunden.", "error")
-            return RedirectResponse("/system/kunden-initialisierung/review", status_code=302)
+            return RedirectResponse(return_to, status_code=302)
         row.master_customer_id = int(customer.id)
-    if action not in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES:
+    if action not in {"ready", "needs_review", "rejected"}:
         raise HTTPException(status_code=400)
     row.status = action
     row.updated_at = _utcnow_naive()
     db.add(row)
     db.commit()
     _flash(request, "Cluster-Status gespeichert.", "info")
-    return RedirectResponse("/system/kunden-initialisierung/review", status_code=302)
+    return RedirectResponse(return_to, status_code=302)
 
 
-@app.post("/system/kunden-initialisierung/review/{cluster_id}/materialisieren")
-def system_customer_init_review_materialize(cluster_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+@app.post("/system/kunden-initialisierung/review/{cluster_id}/ki-pruefen")
+async def system_customer_init_review_ai_recheck(cluster_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     row = db.get(CustomerInitCluster, cluster_id)
     if not row:
         raise HTTPException(status_code=404)
+    form = await request.form()
+    return_to = _safe_return_to_path(str(form.get("return_to") or request.query_params.get("return_to") or request.headers.get("referer") or "").strip(), f"/system/kunden-initialisierung/review?focus_cluster_id={int(cluster_id)}")
+    try:
+        result = _customer_init_ai_review_cluster(db, row, force_refresh=True)
+        output = result.get("output") if isinstance(result.get("output"), dict) else {}
+        applied_status = _customer_init_apply_ai_output(db, row, output)
+        db.commit()
+        if bool(output.get("hard_case")) or _crm_normalize_key(applied_status) == "needs_review":
+            _flash(request, "KI stuft den Cluster weiterhin als Härtefall ein. Gründe stehen jetzt direkt im Review-Cockpit.", "warn")
+        else:
+            _flash(request, f"KI-Prüfung übernommen: Cluster steht jetzt auf {_customer_init_cluster_status_label(applied_status)}.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"KI-Prüfung fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(return_to, status_code=302)
+
+
+@app.post("/system/kunden-initialisierung/review/{cluster_id}/ki-anwenden")
+async def system_customer_init_review_apply_ai(cluster_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(CustomerInitCluster, cluster_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    return_to = _safe_return_to_path(str(form.get("return_to") or request.query_params.get("return_to") or request.headers.get("referer") or "").strip(), f"/system/kunden-initialisierung/review?focus_cluster_id={int(cluster_id)}")
+    try:
+        decision_map, _ = _customer_init_ai_decision_maps(db, [int(cluster_id)])
+        decision = decision_map.get(int(cluster_id))
+        if decision is None:
+            result = _customer_init_ai_review_cluster(db, row, force_refresh=True)
+            decision = result.get("log")
+            output = result.get("output") if isinstance(result.get("output"), dict) else {}
+        else:
+            output = ai_decision_output(decision)
+        applied_status = _customer_init_apply_ai_output(db, row, output)
+        if decision is not None and int(getattr(decision, "id", 0) or 0) > 0:
+            ai_apply_review_action(
+                db,
+                decision_id=int(decision.id),
+                action="approve",
+                user_id=int(user.id),
+                note="Im Review-Cockpit als KI-Empfehlung angewendet.",
+            )
+        db.commit()
+        _flash(request, f"KI-Empfehlung angewendet: {applied_status}.", "info")
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"KI-Empfehlung konnte nicht angewendet werden: {exc}", "error")
+    return RedirectResponse(return_to, status_code=302)
+
+
+@app.post("/system/kunden-initialisierung/review/{cluster_id}/materialisieren")
+async def system_customer_init_review_materialize(cluster_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(CustomerInitCluster, cluster_id)
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    return_to = _safe_return_to_path(str(form.get("return_to") or request.query_params.get("return_to") or request.headers.get("referer") or "").strip(), "/system/kunden-initialisierung/review")
     try:
         customer, created = _customer_init_materialize_cluster(db, row)
         db.commit()
@@ -28870,7 +29279,7 @@ def system_customer_init_review_materialize(cluster_id: int, request: Request, u
     except Exception as exc:
         db.rollback()
         _flash(request, f"Cluster konnte nicht übernommen werden: {exc}", "error")
-    return RedirectResponse("/system/kunden-initialisierung/review", status_code=302)
+    return RedirectResponse(return_to, status_code=302)
 
 
 @app.get("/system/integrationen/outsmart", response_class=HTMLResponse)

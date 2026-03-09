@@ -25,6 +25,7 @@ TASK_RISK_CLASS: dict[str, str] = {
     "offer_draft_prepare": RISK_YELLOW,
     "invoice_draft_prepare": RISK_YELLOW,
     "customer_merge_candidate": RISK_YELLOW,
+    "customer_init_cluster_review": RISK_GREEN,
     "role_assignment_suggestion": RISK_YELLOW,
 }
 
@@ -70,6 +71,12 @@ PROMPT_DEFAULTS: dict[str, dict[str, str | int]] = {
         "system_prompt": "Du bewertest moegliche Kundendubletten. Nie automatisch zusammenfuehren.",
         "user_template": "Bewerte das Dublettenrisiko und erklaere die Gruende.",
         "output_schema_name": "customer_merge_candidate",
+    },
+    "customer_init_cluster_review": {
+        "version": 1,
+        "system_prompt": "Du pruefst Cluster aus einer Kunden-Initialisierung. Gib nur dann eine automatische Freigabe fuer 'ready', wenn der Fall fachlich eindeutig ist. Unsichere oder widerspruechliche Faelle bleiben 'needs_review'.",
+        "user_template": "Bewerte den Cluster, markiere echte Haertefaelle und nenne eine nachvollziehbare Empfehlung fuer Status und Uebernahme.",
+        "output_schema_name": "customer_init_cluster_review",
     },
     "role_assignment_suggestion": {
         "version": 1,
@@ -215,6 +222,7 @@ def run_task(
     title: str | None = None,
     tool_context: dict[str, Any] | None = None,
     force_refresh: bool = False,
+    risk_class_override: str | None = None,
 ) -> dict[str, Any]:
     task = str(task_name or "").strip()
     prompt = active_prompt(db, task)
@@ -255,7 +263,9 @@ def run_task(
         output = fallback_output
     validated = validate_output(task, output)
     confidence = extract_confidence(task, validated)
-    risk_class = task_risk_class(task)
+    risk_class = str(risk_class_override or task_risk_class(task)).strip().lower() or task_risk_class(task)
+    if risk_class not in {RISK_GREEN, RISK_YELLOW, RISK_RED}:
+        risk_class = task_risk_class(task)
     status = "review" if risk_class in {RISK_YELLOW, RISK_RED} else "suggested"
     log = AiDecisionLog(
         task_name=task,

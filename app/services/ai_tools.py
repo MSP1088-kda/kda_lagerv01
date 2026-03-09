@@ -399,4 +399,11 @@ def build_tool_snapshot(db: Session, *, task_name: str, input_payload: dict[str,
             "crm_find_customer": crm_find_customer(db, query, limit=5),
             "crm_find_external_identities": crm_find_external_identities(db, customer_id) if customer_id > 0 else [],
         }
+    if task == "customer_init_cluster_review":
+        query = str(payload.get("display_name") or payload.get("cluster_key") or payload.get("anchor_key") or "")
+        customer_id = int(payload.get("master_customer_id") or 0)
+        return {
+            "crm_find_customer": crm_find_customer(db, query, limit=5),
+            "crm_find_external_identities": crm_find_external_identities(db, customer_id) if customer_id > 0 else [],
+        }
     return {}

@@ -12,6 +12,7 @@
     <form method="post" action="/system/kunden-initialisierung/outsmart-import" class="inline"><button class="btn" type="submit">OutSmart importieren</button></form>
     <form method="post" action="/system/kunden-initialisierung/sevdesk-import" class="inline"><button class="btn" type="submit">sevDesk importieren</button></form>
     <form method="post" action="/system/kunden-initialisierung/matching" class="inline"><button class="btn" type="submit">Matching starten</button></form>
+    <form method="post" action="/system/kunden-initialisierung/ki-review" class="inline"><button class="btn" type="submit">KI-Review starten</button></form>
     <form method="post" action="/system/kunden-initialisierung/materialisieren" class="inline"><button class="btn" type="submit">Master-Kunden erzeugen</button></form>
     <form method="post" action="/system/kunden-initialisierung/abschliessen" class="inline"><button class="btn" type="submit">Init-Modus beenden</button></form>
     <a class="btn" href="/system/kunden-initialisierung/review">Review-Cockpit</a>
@@ -96,7 +97,8 @@
 {% block help %}
 <ul>
   <li>Aktiviere den Init-Modus vor dem ersten Import. Dann bleiben Push-Synchronisationen gesperrt.</li>
-  <li>Importiere zuerst OutSmart und sevDesk, starte danach das Matching.</li>
-  <li>Im Review-Cockpit prüfst du unsichere Cluster und übernimmst danach die Master-Kunden.</li>
+  <li>Importiere zuerst OutSmart und sevDesk, starte danach das Matching. Das KI-Review wird danach automatisch nachgezogen.</li>
+  <li>Im Review-Cockpit bleiben nur unsichere Cluster zur manuellen Entscheidung offen. Sichere Fälle setzt die KI selbst auf „Bereit“.</li>
+  <li>Danach erzeugst du die Master-Kunden gesammelt oder pro Cluster.</li>
 </ul>
 {% endblock %}

@@ -8,11 +8,13 @@
     <a class="btn{% if status == 'needs_review' %} active{% endif %}" href="/system/kunden-initialisierung/review?status=needs_review">Prüfen ({{ cluster_counts.needs_review }})</a>
     <a class="btn{% if status == 'ready' %} active{% endif %}" href="/system/kunden-initialisierung/review?status=ready">Bereit ({{ cluster_counts.ready }})</a>
     <a class="btn{% if status == 'materialized' %} active{% endif %}" href="/system/kunden-initialisierung/review?status=materialized">Übernommen ({{ cluster_counts.materialized }})</a>
+    <form method="post" action="/system/kunden-initialisierung/ki-review" class="inline"><button class="btn" type="submit">KI-Review für offene Cluster</button></form>
     <a class="btn" href="/system/kunden-initialisierung">Zur Übersicht</a>
   </div>
 
   {% for item in rows %}
-  <div class="box" style="margin-bottom:12px;">
+  {% set return_to = '/system/kunden-initialisierung/review?status=' ~ status ~ '&focus_cluster_id=' ~ item.cluster.id %}
+  <div class="box" style="margin-bottom:12px; {% if item.focus %}border-color:var(--accent,#2f6fed); box-shadow:0 0 0 1px var(--accent,#2f6fed) inset;{% endif %}">
     <div class="box-title">{{ item.cluster.display_name or item.cluster.cluster_key }}</div>
     <div class="box-body">
       <div class="row" style="justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
@@ -27,6 +29,37 @@
           <div><b>OutSmart:</b> R {{ item.summary.relation_count or 0 }}, P {{ item.summary.project_count or 0 }}, A {{ item.summary.workorder_count or 0 }}</div>
           <div><b>sevDesk:</b> K {{ item.summary.contact_count or 0 }}, A {{ item.summary.order_count or 0 }}, R {{ item.summary.invoice_count or 0 }}</div>
           <div><b>Master-Kunde:</b> {% if item.customer %}<a href="/crm/kunden/{{ item.customer.id }}">{{ item.customer.customer_no_internal }}</a>{% else %}-{% endif %}</div>
+        </div>
+      </div>
+
+      <div class="box" style="margin-bottom:10px;">
+        <div class="box-title">KI-Bewertung</div>
+        <div class="box-body">
+          {% if item.ai_decision %}
+            <div class="row" style="justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+              <div>
+                <div><b>Empfehlung:</b> {{ customer_init_cluster_status_label(item.ai_output.recommended_status) if item.ai_output.recommended_status else '-' }}</div>
+                <div><b>Vertrauen:</b> {{ '%.0f'|format((item.ai_output.confidence or 0) * 100) }}%</div>
+                <div><b>Härtefall:</b> {{ 'Ja' if item.ai_output.hard_case else 'Nein' }}</div>
+              </div>
+              <div>
+                <div><b>Modell:</b> {{ item.ai_decision.model_name or '-' }}</div>
+                <div><b>Audit:</b> {{ ai_status_label(item.ai_decision.status) }}</div>
+                {% if item.ai_review_item and item.ai_review_item.status == 'open' %}
+                  <div><a href="/system/ki-freigaben">In KI-Freigaben öffnen</a></div>
+                {% endif %}
+              </div>
+            </div>
+            {% if item.ai_output.summary %}<div style="margin-bottom:6px;"><b>Zusammenfassung:</b> {{ item.ai_output.summary }}</div>{% endif %}
+            {% if item.ai_output.reasons %}
+              <div style="margin-bottom:6px;"><b>Gründe:</b> {{ item.ai_output.reasons | join('; ') }}</div>
+            {% endif %}
+            {% if item.ai_output.missing_signals %}
+              <div class="hint"><b>Offen:</b> {{ item.ai_output.missing_signals | join('; ') }}</div>
+            {% endif %}
+          {% else %}
+            <div class="muted">Noch keine KI-Bewertung für diesen Cluster vorhanden.</div>
+          {% endif %}
         </div>
       </div>
 
@@ -51,21 +84,31 @@
 
       <div class="row" style="flex-wrap:wrap; gap:8px; align-items:flex-end;">
         <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}" class="inline row" style="gap:8px; flex-wrap:wrap; align-items:flex-end;">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <label>Entscheidung
+            <select name="action">
+              <option value="ready"{% if item.cluster.status == 'ready' %} selected{% endif %}>Bereit</option>
+              <option value="needs_review"{% if item.cluster.status == 'needs_review' %} selected{% endif %}>Prüfen</option>
+              <option value="rejected"{% if item.cluster.status == 'rejected' %} selected{% endif %}>Zurückgestellt</option>
+            </select>
+          </label>
           <label>Vorhandener Master-Kunde
             <input type="number" name="master_customer_id" value="{{ item.customer.id if item.customer else '' }}" min="1" placeholder="ID optional">
           </label>
-          <input type="hidden" name="action" value="ready">
-          <button class="btn small" type="submit">Als bereit markieren</button>
+          <button class="btn small" type="submit">Speichern</button>
         </form>
-        <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}" class="inline">
-          <input type="hidden" name="action" value="needs_review">
-          <button class="btn small" type="submit">Zur Prüfung halten</button>
+        <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}/ki-pruefen" class="inline">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <button class="btn small" type="submit">KI neu prüfen</button>
         </form>
-        <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}" class="inline">
-          <input type="hidden" name="action" value="rejected">
-          <button class="btn small" type="submit">Zurückstellen</button>
+        {% if item.ai_decision %}
+        <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}/ki-anwenden" class="inline">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <button class="btn small" type="submit">KI-Empfehlung anwenden</button>
         </form>
+        {% endif %}
         <form method="post" action="/system/kunden-initialisierung/review/{{ item.cluster.id }}/materialisieren" class="inline">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
           <button class="btn small" type="submit">Jetzt übernehmen</button>
         </form>
       </div>
@@ -81,8 +124,8 @@
 
 {% block help %}
 <ul>
-  <li>Die Liste ist bewusst auf eine überschaubare Menge begrenzt. Arbeite die offenen Cluster statusbasiert ab.</li>
-  <li>OutSmart bleibt der führende Anker. sevDesk-Dubletten werden lokal auf einen Master-Kunden zusammengeführt.</li>
-  <li>Wenn ein vorhandener Master-Kunde schon existiert, trage dessen ID ein und markiere den Cluster danach als bereit oder übernimm ihn direkt.</li>
+  <li>Nach dem Matching startet automatisch ein KI-Review. Wirkliche Härtefälle bleiben auf „Prüfen“ und bekommen Gründe.</li>
+  <li>Mit „KI-Empfehlung anwenden“ übernimmst du den aktuellen KI-Vorschlag inklusive Statuswechsel direkt im Cockpit.</li>
+  <li>Wenn ein vorhandener Master-Kunde schon existiert, trage dessen ID ein und speichere den Cluster gezielt auf „Bereit“ oder „Zurückgestellt“.</li>
 </ul>
 {% endblock %}

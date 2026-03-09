@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from .ai_service import run_task
+from .ai_service import RISK_GREEN, RISK_YELLOW, run_task
 from .ai_tools import build_tool_snapshot
 
 
@@ -136,6 +136,129 @@ def suggest_role_assignment(
     )
 
 
+def review_customer_init_cluster(
+    db: Session,
+    *,
+    settings: dict[str, Any],
+    input_payload: dict[str, Any],
+    related_object_id: int | None = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    cluster_status = _normalize_status(input_payload.get("cluster_status"))
+    anchor_system = _normalize_key(input_payload.get("anchor_system"))
+    conflict_note = str(input_payload.get("conflict_note") or "").strip()
+    master_customer_id = int(input_payload.get("master_customer_id") or 0) or None
+    summary = input_payload.get("summary") if isinstance(input_payload.get("summary"), dict) else {}
+    member_count = _int_from(summary.get("member_count"))
+    relation_count = _int_from(summary.get("relation_count"))
+    project_count = _int_from(summary.get("project_count"))
+    workorder_count = _int_from(summary.get("workorder_count"))
+    contact_count = _int_from(summary.get("contact_count"))
+    order_count = _int_from(summary.get("order_count"))
+    invoice_count = _int_from(summary.get("invoice_count"))
+    raw_confidence = _float_from(input_payload.get("cluster_confidence"))
+    normalized_confidence = max(0.0, min(1.0, raw_confidence / 100.0 if raw_confidence > 1.0 else raw_confidence))
+    conflict_note_norm = _normalize_key(conflict_note)
+    reasons: list[str] = []
+    missing_signals: list[str] = []
+    hard_case = False
+    recommended_status = "ready" if cluster_status == "ready" else "needs_review"
+
+    if master_customer_id:
+        reasons.append("Vorhandener Master-Kunde ist bereits zugeordnet.")
+    if anchor_system == "outsmart" and relation_count > 0:
+        reasons.append("OutSmart-Relation ist der fuehrende Kundenanker.")
+    elif anchor_system == "outsmart":
+        reasons.append("OutSmart bleibt der fuehrende Anker fuer diesen Cluster.")
+    if workorder_count > 0:
+        reasons.append(f"{workorder_count} OutSmart-Arbeitsauftraege bestaetigen die Zuordnung.")
+    if project_count > 0:
+        reasons.append(f"{project_count} OutSmart-Projekte haengen am selben Cluster.")
+    if contact_count > 0:
+        reasons.append(f"{contact_count} sevDesk-Kontakte sind dem Cluster zugeordnet.")
+    if order_count > 0 or invoice_count > 0:
+        reasons.append(f"sevDesk-Belege vorhanden: Angebote {order_count}, Rechnungen {invoice_count}.")
+
+    if conflict_note:
+        if (
+            "schwach" in conflict_note_norm
+            and "mehrere" not in conflict_note_norm
+            and anchor_system == "outsmart"
+            and normalized_confidence >= 0.9
+            and relation_count > 0
+            and contact_count <= 1
+            and member_count >= 3
+        ):
+            reasons.append("Schwacher Zusatztreffer wird durch den stabilen OutSmart-Anker ueberstimmt.")
+        else:
+            hard_case = True
+            recommended_status = "needs_review"
+            reasons.append(conflict_note)
+    if member_count <= 1:
+        hard_case = True
+        recommended_status = "needs_review"
+        missing_signals.append("Nur eine Quelle im Cluster.")
+    if contact_count > 1 and master_customer_id is None:
+        hard_case = True
+        recommended_status = "needs_review"
+        missing_signals.append("Mehrere sevDesk-Kontakte ohne bestehende Master-Zuordnung.")
+    if normalized_confidence < 0.78:
+        hard_case = True
+        recommended_status = "needs_review"
+        missing_signals.append("Gesamtvertrauen des Matchings ist niedrig.")
+
+    if not hard_case:
+        if cluster_status == "needs_review":
+            if anchor_system == "outsmart" and normalized_confidence >= 0.85 and relation_count > 0 and contact_count <= 1:
+                recommended_status = "ready"
+                reasons.append("Starker OutSmart-Anker, keine widerspruechlichen Zusatzkontakte.")
+            elif anchor_system == "sevdesk" and contact_count == 1 and member_count <= 3 and normalized_confidence >= 0.82:
+                recommended_status = "ready"
+                reasons.append("Einzelner sevDesk-Kontakt ohne widerspruechliche Gegenindizien.")
+            else:
+                hard_case = True
+                recommended_status = "needs_review"
+        else:
+            recommended_status = "ready"
+
+    materialize_now = bool(
+        recommended_status == "ready"
+        and not hard_case
+        and normalized_confidence >= 0.9
+        and anchor_system == "outsmart"
+    )
+    summary_text = (
+        "Cluster kann automatisch uebernommen werden."
+        if recommended_status == "ready" and not hard_case
+        else "Cluster bleibt in manueller Pruefung."
+    )
+    fallback_output = {
+        "recommended_status": recommended_status,
+        "suggested_master_customer_id": master_customer_id,
+        "materialize_now": materialize_now,
+        "hard_case": hard_case,
+        "summary": summary_text,
+        "reasons": reasons,
+        "missing_signals": missing_signals,
+        "confidence": normalized_confidence,
+    }
+    tool_context = build_tool_snapshot(db, task_name="customer_init_cluster_review", input_payload=input_payload)
+    risk_class = RISK_YELLOW if hard_case or recommended_status != "ready" else RISK_GREEN
+    return run_task(
+        db,
+        settings=settings,
+        task_name="customer_init_cluster_review",
+        input_payload=input_payload,
+        fallback_output=fallback_output,
+        related_object_type="customer_init_cluster",
+        related_object_id=related_object_id,
+        title=f"KI-Review Cluster #{int(related_object_id or 0)}" if int(related_object_id or 0) > 0 else "KI-Review Cluster",
+        tool_context=tool_context,
+        force_refresh=force_refresh,
+        risk_class_override=risk_class,
+    )
+
+
 def _normalize(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
 
@@ -146,3 +269,28 @@ def _normalize_email(value: Any) -> str:
 
 def _normalize_phone(value: Any) -> str:
     return re.sub(r"\D+", "", str(value or ""))
+
+
+def _normalize_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_status(value: Any) -> str:
+    status = _normalize_key(value)
+    if status in {"ready", "needs_review", "rejected", "materialized"}:
+        return status
+    return "needs_review"
+
+
+def _int_from(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
+def _float_from(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return 0.0
