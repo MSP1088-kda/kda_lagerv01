@@ -1007,6 +1007,7 @@ def _ctx(request: Request, user=None, **kwargs):
         "ai_review_status_label": _ai_review_status_label,
         "supervisor_severity_label": _supervisor_severity_label,
         "ai_object_url": _ai_object_url,
+        "mail_compose_url": _mail_compose_url,
         "format_date": _format_date_local,
         "format_datetime": _format_datetime_local,
         "repair_status_label": _repair_status_label,
@@ -1042,6 +1043,19 @@ def _role_flags(user) -> dict[str, bool]:
 def _wants_json(request: Request) -> bool:
     accept = (request.headers.get("accept") or "").lower()
     return request.url.path.startswith("/api/") or "application/json" in accept
+
+
+def _mail_compose_url(*, customer_id: int | None = None, case_id: int | None = None, to_email: str | None = None) -> str:
+    params: dict[str, str] = {}
+    if int(customer_id or 0) > 0:
+        params["customer_id"] = str(int(customer_id))
+    if int(case_id or 0) > 0:
+        params["case_id"] = str(int(case_id))
+    email_value = str(to_email or "").strip()
+    if email_value:
+        params["to_email"] = email_value
+    query = urlencode(params)
+    return f"/mail/verfassen?{query}" if query else "/mail/verfassen"
 
 
 @app.on_event("startup")
@@ -16790,6 +16804,7 @@ def crm_customer_detail(
             customer=customer,
             party=party,
             default_address=default_address,
+            header_summary=_crm_customer_header_summary(customer, party, default_address, contact_rows),
             addresses=addresses,
             contact_rows=contact_rows,
             location_rows=location_rows,
@@ -28168,6 +28183,89 @@ def _crm_customer_labels_map(db: Session, customer_ids: list[int]) -> dict[int, 
     return {
         int(row.id): _crm_customer_label(row, parties.get(int(row.party_id)), default_map.get(int(row.party_id)))
         for row in rows
+    }
+
+
+def _crm_phone_is_mobile(value: str | None) -> bool:
+    raw = re.sub(r"[^0-9+]", "", str(value or "").strip())
+    if raw.startswith("00"):
+        raw = f"+{raw[2:]}"
+    digits = re.sub(r"[^0-9]", "", raw)
+    if raw.startswith("+49"):
+        return digits.startswith("491")
+    return digits.startswith("01")
+
+
+def _crm_customer_header_summary(
+    customer: MasterCustomer,
+    party: Party,
+    default_address: CrmAddress | None,
+    contact_rows: list[dict[str, object]],
+) -> dict[str, object]:
+    phone_candidates: list[str] = []
+    email_rows: list[dict[str, str]] = []
+    seen_emails: set[str] = set()
+
+    def add_email(email_value: str | None, label: str) -> None:
+        email_clean = _crm_clean_text(email_value)
+        if not email_clean:
+            return
+        email_key = _crm_normalize_email(email_clean)
+        if email_key in seen_emails:
+            return
+        seen_emails.add(email_key)
+        email_rows.append({"email": email_clean, "label": label})
+
+    if default_address:
+        if _crm_clean_text(default_address.phone):
+            phone_candidates.append(_crm_clean_text(default_address.phone))
+        add_email(default_address.email, default_address.label or "Hauptadresse")
+
+    contact_summary_rows: list[dict[str, str]] = []
+    for item in contact_rows:
+        row = item.get("row")
+        party_row = item.get("party")
+        if not row or not party_row:
+            continue
+        name = _crm_clean_text(getattr(party_row, "display_name", "")) or "Kontakt"
+        role_label = _crm_clean_text(getattr(row, "role_label", "")) or "Ansprechpartner"
+        phone_value = _crm_clean_text(getattr(row, "phone", ""))
+        email_value = _crm_clean_text(getattr(row, "email", ""))
+        if phone_value:
+            phone_candidates.append(phone_value)
+        if email_value:
+            add_email(email_value, name)
+        contact_summary_rows.append(
+            {
+                "name": name,
+                "role_label": role_label,
+                "phone": phone_value,
+                "email": email_value,
+            }
+        )
+
+    main_phone = next((value for value in phone_candidates if value and not _crm_phone_is_mobile(value)), "")
+    main_mobile = next((value for value in phone_candidates if value and _crm_phone_is_mobile(value)), "")
+    if not main_phone and phone_candidates:
+        main_phone = phone_candidates[0]
+    address_lines: list[str] = []
+    if default_address:
+        line_one = _crm_clean_text(f"{default_address.street or ''} {default_address.house_no or ''}")
+        line_two = _crm_clean_text(f"{default_address.zip_code or ''} {default_address.city or ''}")
+        if line_one:
+            address_lines.append(line_one)
+        if line_two:
+            address_lines.append(line_two)
+        if _crm_clean_text(default_address.country_code) and _crm_normalize_key(default_address.country_code) != "de":
+            address_lines.append(_crm_clean_text(default_address.country_code))
+    return {
+        "display_name": str(party.display_name or customer.customer_no_internal),
+        "customer_no": str(customer.customer_no_internal or ""),
+        "address_lines": address_lines,
+        "main_phone": main_phone,
+        "main_mobile": main_mobile,
+        "emails": email_rows,
+        "contacts": contact_summary_rows,
     }
 
 
