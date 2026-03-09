@@ -20066,7 +20066,7 @@ def _customer_init_cluster_ai_input(
     summary_payload = summary if isinstance(summary, dict) else _json_dict(cluster.summary_json)
     customer_row = customer or (db.get(MasterCustomer, int(cluster.master_customer_id or 0)) if int(cluster.master_customer_id or 0) > 0 else None)
     members_payload: list[dict[str, object]] = []
-    for member in member_rows[:12]:
+    for member in member_rows[:4]:
         members_payload.append(
             {
                 "source_system": str(member.source_system or ""),
@@ -20077,7 +20077,6 @@ def _customer_init_cluster_ai_input(
                 "match_score": float(member.match_score or 0.0) if member.match_score is not None else 0.0,
                 "match_reason": str(member.match_reason or ""),
                 "is_anchor": bool(member.is_anchor),
-                "meta": _json_dict(member.meta_json),
             }
         )
     return {
@@ -20225,15 +20224,30 @@ def _customer_init_ai_review_clusters(
         manual_review = 0
         review_queue = 0
         processed_count = 0
-        for cluster in rows:
-            members = (
-                db.query(CustomerInitClusterMember)
-                .filter(CustomerInitClusterMember.cluster_id == int(cluster.id))
-                .order_by(CustomerInitClusterMember.is_anchor.desc(), CustomerInitClusterMember.match_score.desc(), CustomerInitClusterMember.id.asc())
-                .all()
+        cluster_keys = [int(row.id) for row in rows]
+        member_rows = (
+            db.query(CustomerInitClusterMember)
+            .filter(CustomerInitClusterMember.cluster_id.in_(cluster_keys or [0]))
+            .order_by(
+                CustomerInitClusterMember.cluster_id.asc(),
+                CustomerInitClusterMember.is_anchor.desc(),
+                CustomerInitClusterMember.match_score.desc(),
+                CustomerInitClusterMember.id.asc(),
             )
+            .all()
+        ) if cluster_keys else []
+        member_map: dict[int, list[CustomerInitClusterMember]] = {}
+        for member in member_rows:
+            member_map.setdefault(int(member.cluster_id), []).append(member)
+        customer_ids = [int(row.master_customer_id or 0) for row in rows if int(row.master_customer_id or 0) > 0]
+        customer_map = {
+            int(row.id): row
+            for row in db.query(MasterCustomer).filter(MasterCustomer.id.in_(customer_ids or [0])).all()
+        } if customer_ids else {}
+        for cluster in rows:
+            members = list(member_map.get(int(cluster.id), []))
             summary = _json_dict(cluster.summary_json)
-            customer = db.get(MasterCustomer, int(cluster.master_customer_id or 0)) if int(cluster.master_customer_id or 0) > 0 else None
+            customer = customer_map.get(int(cluster.master_customer_id or 0))
             result = _customer_init_ai_review_cluster(
                 db,
                 cluster,

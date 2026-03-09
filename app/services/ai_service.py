@@ -223,6 +223,8 @@ def run_task(
     tool_context: dict[str, Any] | None = None,
     force_refresh: bool = False,
     risk_class_override: str | None = None,
+    allow_openai: bool = True,
+    model_name_override: str | None = None,
 ) -> dict[str, Any]:
     task = str(task_name or "").strip()
     prompt = active_prompt(db, task)
@@ -248,15 +250,16 @@ def run_task(
     output = None
     model_name = "local-heuristic"
     error_message = ""
-    if openai_ready(settings):
+    if allow_openai and openai_ready(settings):
         try:
             output = _call_openai_structured(
                 settings=settings,
                 prompt=prompt,
                 input_payload=input_payload,
                 tool_context=tool_context or {},
+                model_name_override=model_name_override,
             )
-            model_name = str(settings.get("model_default") or "gpt-5-mini")
+            model_name = str(model_name_override or settings.get("model_default") or "gpt-5-mini")
         except Exception as exc:
             error_message = str(exc)
     if output is None:
@@ -384,10 +387,11 @@ def _call_openai_structured(
     prompt: AiPromptDefinition,
     input_payload: dict[str, Any],
     tool_context: dict[str, Any],
+    model_name_override: str | None = None,
 ) -> dict[str, Any]:
     timeout = max(5, int(settings.get("timeout_seconds") or 45))
     max_output_tokens = max(300, int(settings.get("max_tokens") or 1500))
-    model_name = str(settings.get("model_default") or "gpt-5-mini").strip() or "gpt-5-mini"
+    model_name = str(model_name_override or settings.get("model_default") or "gpt-5-mini").strip() or "gpt-5-mini"
     schema_name = str(prompt.output_schema_name or prompt.task_name or "output")
     schema = schema_for(schema_name)
     user_text = _render_user_text(prompt, input_payload, tool_context)

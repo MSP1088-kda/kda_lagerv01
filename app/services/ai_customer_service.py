@@ -242,7 +242,33 @@ def review_customer_init_cluster(
         "missing_signals": missing_signals,
         "confidence": normalized_confidence,
     }
-    tool_context = build_tool_snapshot(db, task_name="customer_init_cluster_review", input_payload=input_payload)
+    obvious_hard_case = bool(
+        member_count <= 1
+        or (contact_count > 1 and master_customer_id is None)
+        or normalized_confidence < 0.78
+        or ("mehrere" in conflict_note_norm)
+    )
+    obvious_ready_case = bool(
+        recommended_status == "ready"
+        and not hard_case
+        and normalized_confidence >= 0.9
+        and anchor_system == "outsmart"
+        and relation_count > 0
+        and contact_count <= 1
+    )
+    allow_openai = bool(
+        force_refresh
+        or (
+            cluster_status == "needs_review"
+            and not obvious_ready_case
+            and not obvious_hard_case
+        )
+    )
+    tool_context = (
+        build_tool_snapshot(db, task_name="customer_init_cluster_review", input_payload=input_payload)
+        if allow_openai
+        else {}
+    )
     risk_class = RISK_YELLOW if hard_case or recommended_status != "ready" else RISK_GREEN
     return run_task(
         db,
@@ -256,6 +282,8 @@ def review_customer_init_cluster(
         tool_context=tool_context,
         force_refresh=force_refresh,
         risk_class_override=risk_class,
+        allow_openai=allow_openai,
+        model_name_override=str(settings.get("model_fast") or "").strip() or None,
     )
 
 
