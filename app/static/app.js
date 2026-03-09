@@ -18,11 +18,15 @@
     messageEl: null,
     detailEl: null,
     elapsedEl: null,
+    etaEl: null,
     showTimer: null,
     elapsedTimer: null,
     visible: false,
-    startedAt: 0
+    startedAt: 0,
+    actionKey: ''
   };
+  const PAGE_LOADING_HISTORY_KEY = 'kdaPageLoadingHistoryV1';
+  const PAGE_LOADING_PENDING_KEY = 'kdaPageLoadingPendingV1';
 
   function pageLoadingElementsReady(){
     if(pageLoadingState.overlayEl){
@@ -32,7 +36,34 @@
     pageLoadingState.messageEl = document.getElementById('pageLoadingMessage');
     pageLoadingState.detailEl = document.getElementById('pageLoadingDetail');
     pageLoadingState.elapsedEl = document.getElementById('pageLoadingElapsed');
+    pageLoadingState.etaEl = document.getElementById('pageLoadingEta');
     return !!pageLoadingState.overlayEl;
+  }
+
+  function pageLoadingStorageRead(key, useSession){
+    try{
+      const storage = useSession ? window.sessionStorage : window.localStorage;
+      const raw = storage.getItem(key);
+      if(!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    }catch(_e){
+      return {};
+    }
+  }
+
+  function pageLoadingStorageWrite(key, value, useSession){
+    try{
+      const storage = useSession ? window.sessionStorage : window.localStorage;
+      storage.setItem(key, JSON.stringify(value));
+    }catch(_e){}
+  }
+
+  function pageLoadingStorageRemove(key, useSession){
+    try{
+      const storage = useSession ? window.sessionStorage : window.localStorage;
+      storage.removeItem(key);
+    }catch(_e){}
   }
 
   function pageLoadingClearTimers(){
@@ -56,26 +87,123 @@
     return 'Läuft seit ' + String(mins) + ' min ' + String(rest) + ' s';
   }
 
+  function pageLoadingDurationLabel(seconds){
+    const s = Math.max(0, Math.round(Number(seconds || 0)));
+    if(s < 60){
+      return String(s) + ' s';
+    }
+    const mins = Math.floor(s / 60);
+    const rest = s % 60;
+    if(!rest){
+      return String(mins) + ' min';
+    }
+    return String(mins) + ' min ' + String(rest) + ' s';
+  }
+
+  function pageLoadingHistoryForKey(actionKey){
+    const history = pageLoadingStorageRead(PAGE_LOADING_HISTORY_KEY, false);
+    const key = String(actionKey || '').trim();
+    const items = Array.isArray(history[key]) ? history[key] : [];
+    const clean = items
+      .map(function(value){ return Number(value || 0); })
+      .filter(function(value){ return Number.isFinite(value) && value > 0; });
+    if(!clean.length){
+      return { avgMs: 0, count: 0 };
+    }
+    const total = clean.reduce(function(sum, value){ return sum + value; }, 0);
+    return {
+      avgMs: Math.round(total / clean.length),
+      count: clean.length
+    };
+  }
+
+  function pageLoadingRememberDuration(actionKey, durationMs){
+    const key = String(actionKey || '').trim();
+    const duration = Number(durationMs || 0);
+    if(!key || !Number.isFinite(duration) || duration <= 0){
+      return;
+    }
+    const history = pageLoadingStorageRead(PAGE_LOADING_HISTORY_KEY, false);
+    const items = Array.isArray(history[key]) ? history[key] : [];
+    items.push(duration);
+    history[key] = items.slice(-8);
+    pageLoadingStorageWrite(PAGE_LOADING_HISTORY_KEY, history, false);
+  }
+
+  function pageLoadingMarkPending(actionKey){
+    const key = String(actionKey || '').trim();
+    if(!key){
+      return;
+    }
+    pageLoadingStorageWrite(PAGE_LOADING_PENDING_KEY, {
+      key: key,
+      startedAt: Date.now()
+    }, true);
+  }
+
+  function pageLoadingResolvePending(){
+    const pending = pageLoadingStorageRead(PAGE_LOADING_PENDING_KEY, true);
+    const key = String(pending.key || '').trim();
+    const startedAt = Number(pending.startedAt || 0);
+    if(key && startedAt > 0){
+      const duration = Date.now() - startedAt;
+      if(duration > 0 && duration < 30 * 60 * 1000){
+        pageLoadingRememberDuration(key, duration);
+      }
+    }
+    pageLoadingStorageRemove(PAGE_LOADING_PENDING_KEY, true);
+  }
+
+  function pageLoadingEtaText(elapsedSeconds){
+    if(elapsedSeconds < 10){
+      return '';
+    }
+    const history = pageLoadingHistoryForKey(pageLoadingState.actionKey);
+    let predictedTotalSeconds = 0;
+    let suffix = ' (grobe Schätzung)';
+    if(history.avgMs > 0){
+      predictedTotalSeconds = Math.max(elapsedSeconds + 1, Math.round(history.avgMs / 1000));
+      suffix = ' (Ø aus ' + String(history.count) + ' ähnlichen Vorgängen)';
+    }else{
+      predictedTotalSeconds = Math.max(20, Math.round(elapsedSeconds * 1.6));
+    }
+    const remainingSeconds = Math.max(0, predictedTotalSeconds - elapsedSeconds);
+    if(remainingSeconds <= 1){
+      return 'Sollte in Kürze fertig sein.' + suffix;
+    }
+    return 'Voraussichtlich noch ca. ' + pageLoadingDurationLabel(remainingSeconds) + suffix;
+  }
+
   function pageLoadingUpdateElapsed(){
     if(!pageLoadingElementsReady() || !pageLoadingState.elapsedEl){
       return;
     }
     const elapsedSeconds = Math.floor((Date.now() - pageLoadingState.startedAt) / 1000);
     pageLoadingState.elapsedEl.textContent = pageLoadingElapsedLabel(elapsedSeconds);
+    if(pageLoadingState.etaEl){
+      const etaText = pageLoadingEtaText(elapsedSeconds);
+      pageLoadingState.etaEl.textContent = etaText;
+      pageLoadingState.etaEl.hidden = !etaText;
+    }
   }
 
-  function showPageLoading(message, detail){
+  function showPageLoading(message, detail, actionKey){
     if(!pageLoadingElementsReady()){
       return;
     }
     pageLoadingClearTimers();
     pageLoadingState.visible = true;
     pageLoadingState.startedAt = Date.now();
+    pageLoadingState.actionKey = String(actionKey || '').trim();
     if(pageLoadingState.messageEl){
       pageLoadingState.messageEl.textContent = String(message || 'Seite wird geladen...');
     }
     if(pageLoadingState.detailEl){
       pageLoadingState.detailEl.textContent = String(detail || 'Bitte warten.');
+    }
+    if(pageLoadingState.etaEl){
+      pageLoadingState.etaEl.textContent = '';
+      pageLoadingState.etaEl.hidden = true;
     }
     if(pageLoadingState.overlayEl){
       pageLoadingState.overlayEl.hidden = false;
@@ -91,6 +219,7 @@
   function hidePageLoading(){
     pageLoadingClearTimers();
     pageLoadingState.visible = false;
+    pageLoadingState.actionKey = '';
     if(pageLoadingState.overlayEl){
       pageLoadingState.overlayEl.hidden = true;
       pageLoadingState.overlayEl.setAttribute('aria-hidden', 'true');
@@ -100,30 +229,32 @@
     }
   }
 
-  function schedulePageLoading(message, detail, delayMs){
+  function schedulePageLoading(message, detail, delayMs, actionKey){
     if(!pageLoadingElementsReady()){
       return;
     }
     pageLoadingClearTimers();
     const ms = Math.max(0, Number(delayMs || 0));
     if(ms === 0){
-      showPageLoading(message, detail);
+      showPageLoading(message, detail, actionKey);
       return;
     }
     pageLoadingState.showTimer = window.setTimeout(function(){
-      showPageLoading(message, detail);
+      showPageLoading(message, detail, actionKey);
     }, ms);
   }
 
-  function navigateTo(href, message, detail){
+  function navigateTo(href, message, detail, actionKey){
     const targetHref = String(href || '').trim();
     if(!targetHref){
       return;
     }
+    pageLoadingMarkPending(actionKey);
     schedulePageLoading(
       message || 'Seite wird geladen...',
       detail || 'Bitte warten.',
-      120
+      120,
+      actionKey
     );
     window.location.href = targetHref;
   }
@@ -144,6 +275,7 @@
       let message = String(form.getAttribute('data-loading-message') || '').trim();
       let detail = String(form.getAttribute('data-loading-detail') || '').trim();
       let delay = (method === 'get') ? 450 : 220;
+      const actionKey = method.toUpperCase() + ':' + actionPath;
 
       if(actionPath === '/catalog/import'){
         if(!message) message = 'Import-Kontext wird geladen...';
@@ -180,11 +312,14 @@
           delay = 0;
         }
       }
-      return { message, detail, delay };
+      return { message, detail, delay, actionKey };
     };
+
+    pageLoadingResolvePending();
 
     window.addEventListener('pageshow', function(){
       hidePageLoading();
+      pageLoadingResolvePending();
     });
 
     document.addEventListener('submit', function(e){
@@ -195,7 +330,8 @@
       const target = String(form.getAttribute('target') || '').trim().toLowerCase();
       if(target === '_blank') return;
       const cfg = formLoadingConfig(form);
-      schedulePageLoading(cfg.message, cfg.detail, cfg.delay);
+      pageLoadingMarkPending(cfg.actionKey);
+      schedulePageLoading(cfg.message, cfg.detail, cfg.delay, cfg.actionKey);
     });
 
     document.addEventListener('click', function(e){
@@ -222,7 +358,9 @@
       }
       const message = String(link.getAttribute('data-loading-message') || '').trim() || 'Seite wird geladen...';
       const detail = String(link.getAttribute('data-loading-detail') || '').trim() || 'Bitte warten.';
-      schedulePageLoading(message, detail, 350);
+      const actionKey = 'GET:' + String(url.pathname || '');
+      pageLoadingMarkPending(actionKey);
+      schedulePageLoading(message, detail, 350, actionKey);
     });
   }
 
