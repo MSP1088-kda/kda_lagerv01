@@ -333,6 +333,109 @@ details.collapse-box[open] > summary.box-title::after{
 
 .mono{ font-family:inherit; white-space:pre-wrap; }
 
+.outsmart-workorder-list{
+  display:grid;
+  gap:10px;
+  margin-top:10px;
+}
+.outsmart-workorder-card{
+  border:1px solid var(--border);
+  padding:12px;
+}
+.outsmart-workorder-head{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  align-items:flex-start;
+  flex-wrap:wrap;
+}
+.outsmart-workorder-id{
+  font-size:20px;
+  font-weight:700;
+}
+.outsmart-workorder-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+.outsmart-workorder-grid{
+  display:grid;
+  grid-template-columns:repeat(4, minmax(0, 1fr));
+  gap:10px;
+}
+.outsmart-kv-card{
+  border:1px solid var(--border);
+  padding:10px;
+  min-width:0;
+}
+.outsmart-kv-label{
+  color:var(--muted);
+  font-size:13px;
+  margin-bottom:6px;
+}
+.outsmart-kv-value{
+  min-width:0;
+  overflow-wrap:anywhere;
+}
+.outsmart-description-grid{
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0, 1fr));
+  gap:10px;
+  margin-top:10px;
+}
+.outsmart-workorder-foot{
+  margin-top:10px;
+}
+.outsmart-simple-table{
+  display:grid;
+  gap:0;
+  border:1px solid var(--border);
+}
+.outsmart-simple-row{
+  display:grid;
+  grid-template-columns:70px 1.8fr 120px 120px 120px;
+  border-top:1px solid var(--border);
+}
+.outsmart-simple-row:first-child{
+  border-top:0;
+}
+.outsmart-simple-row > div{
+  padding:8px 10px;
+  min-width:0;
+  overflow-wrap:anywhere;
+}
+.outsmart-simple-head{
+  font-weight:700;
+  background: rgba(0,255,102,0.08);
+}
+.outsmart-photo-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
+  gap:10px;
+}
+.outsmart-photo-card{
+  border:1px solid var(--border);
+  padding:8px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.outsmart-photo-card img{
+  width:100%;
+  aspect-ratio:4 / 3;
+  object-fit:cover;
+  border:1px solid var(--border);
+}
+.outsmart-stack-list{
+  display:grid;
+  gap:10px;
+}
+.outsmart-stack-item{
+  border:1px solid var(--border);
+  padding:10px;
+}
+
 .mobile-quick-actions{ display:none; margin-top:14px; }
 .mobile-quick-grid{
   display:grid;
@@ -1370,6 +1473,13 @@ body.image-lightbox-open{
   .mobile-quick-grid{ grid-template-columns:1fr 1fr; gap:8px; }
   .mobile-action{ padding:16px 10px; }
   .quick-grid{ grid-template-columns:1fr; }
+  .outsmart-workorder-grid,
+  .outsmart-description-grid{ grid-template-columns:1fr; }
+  .outsmart-workorder-head{ flex-direction:column; align-items:stretch; }
+  .outsmart-workorder-actions .btn{ width:100%; text-align:center; }
+  .outsmart-simple-row{
+    grid-template-columns:60px 1.4fr 100px 100px 100px;
+  }
   .tr{ grid-template-columns: 50px 1.6fr 0.8fr 0.8fr 0.8fr 110px; }
   .tr.wh-tr{ grid-template-columns: 50px 1fr 1fr 100px; }
   .dashboard-actions{ grid-template-columns: 1fr; }

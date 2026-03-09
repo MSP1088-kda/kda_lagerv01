@@ -1008,6 +1008,7 @@ def _ctx(request: Request, user=None, **kwargs):
         "supervisor_severity_label": _supervisor_severity_label,
         "ai_object_url": _ai_object_url,
         "format_date": _format_date_local,
+        "format_datetime": _format_datetime_local,
         "repair_status_label": _repair_status_label,
         "repair_outcome_label": _repair_outcome_label,
         "crm_case_status_label": _crm_case_status_label,
@@ -3445,6 +3446,15 @@ def _format_date_local(value: dt.datetime | None) -> str:
         return "-"
     try:
         return value.strftime("%d.%m.%Y")
+    except Exception:
+        return str(value)
+
+
+def _format_datetime_local(value: dt.datetime | None) -> str:
+    if not value:
+        return "-"
+    try:
+        return value.strftime("%d.%m.%Y %H:%M")
     except Exception:
         return str(value)
 
@@ -18250,8 +18260,11 @@ def outsmart_workorder_detail_local(workorder_id: int, request: Request, user=De
         raise HTTPException(status_code=404)
     crm_case = db.get(CrmCase, int(row.case_id or 0)) if int(row.case_id or 0) > 0 else None
     customer = db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None
+    customer_party = db.get(Party, int(customer.party_id or 0)) if customer and int(customer.party_id or 0) > 0 else None
     service_location = db.get(ServiceLocation, int(row.service_location_id or 0)) if int(row.service_location_id or 0) > 0 else None
     customer_object = db.get(CustomerObject, int(row.customer_object_id or 0)) if int(row.customer_object_id or 0) > 0 else None
+    display = _outsmart_prepare_workorder_view(row)
+    candidate_cases = _outsmart_candidate_cases_for_workorder(db, row, limit=12)
     return templates.TemplateResponse(
         "outsmart/workorder_detail_local.html",
         _ctx(
@@ -18260,16 +18273,69 @@ def outsmart_workorder_detail_local(workorder_id: int, request: Request, user=De
             row=row,
             crm_case=crm_case,
             customer=customer,
+            customer_party=customer_party,
             service_location=service_location,
             customer_object=customer_object,
-            forms_rows=_outsmart_list_json(row.forms_json),
-            photo_rows=_outsmart_list_json(row.photos_json),
-            material_rows=_outsmart_list_json(row.materials_json),
-            workperiod_rows=_outsmart_list_json(row.workperiods_json),
-            workobject_rows=_outsmart_list_json(row.workobjects_json),
-            employee_rows=_outsmart_list_json(row.employees_json),
+            display=display,
+            forms_rows=display["form_rows"],
+            photo_rows=display["photo_rows"],
+            material_rows=display["material_rows"],
+            workperiod_rows=display["workperiod_rows"],
+            workobject_rows=display["workobject_rows"],
+            employee_rows=display["employee_rows"],
+            document_rows=display["document_rows"],
+            history_rows=display["history_rows"],
+            candidate_cases=candidate_cases,
         ),
     )
+
+
+@app.post("/outsmart/arbeitsauftraege/{workorder_id}/vorgang-zuordnen")
+async def outsmart_workorder_assign_case(workorder_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(OutsmartWorkorder, int(workorder_id))
+    if not row:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    case_id = _to_int(form.get("case_id"), 0)
+    crm_case = db.get(CrmCase, int(case_id)) if case_id > 0 else None
+    if crm_case is None:
+        _flash(request, "Bitte einen vorhandenen Vorgang auswählen.", "error")
+        return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
+    try:
+        _outsmart_link_workorder_to_case(
+            db,
+            row=row,
+            crm_case=crm_case,
+            source_label="Lokaler Vorgang manuell am OutSmart-Arbeitsauftrag verknüpft.",
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
+    _flash(request, f"Arbeitsauftrag wurde mit Vorgang {crm_case.case_no} verknüpft.", "info")
+    return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
+
+
+@app.post("/outsmart/arbeitsauftraege/{workorder_id}/vorgang-anlegen")
+async def outsmart_workorder_create_case(workorder_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    row = db.get(OutsmartWorkorder, int(workorder_id))
+    if not row:
+        raise HTTPException(status_code=404)
+    display = _outsmart_prepare_workorder_view(row)
+    try:
+        crm_case = _outsmart_create_local_case_from_workorder(db, row, display)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        _flash(request, str(exc), "error")
+        return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
+    except Exception as exc:
+        db.rollback()
+        _flash(request, _friendly_db_write_error(exc), "error")
+        return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
+    _flash(request, f"Lokaler Vorgang {crm_case.case_no} wurde aus dem Arbeitsauftrag angelegt.", "info")
+    return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
 
 
 @app.get("/crm/vorgaenge/{case_id}/bearbeiten", response_class=HTMLResponse)
@@ -27498,7 +27564,10 @@ def _outsmart_parse_datetime(raw: str | None) -> dt.datetime | None:
     for fmt in (
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
         "%d.%m.%Y %H:%M",
+        "%d-%m-%Y",
         "%d.%m.%Y",
         "%Y-%m-%d",
     ):
@@ -27507,6 +27576,363 @@ def _outsmart_parse_datetime(raw: str | None) -> dt.datetime | None:
         except Exception:
             continue
     return None
+
+
+def _outsmart_parse_datetime_parts(date_raw: str | None, time_raw: str | None) -> dt.datetime | None:
+    date_text = str(date_raw or "").strip()
+    time_text = str(time_raw or "").strip()
+    if not date_text:
+        return None
+    for candidate in ([f"{date_text} {time_text}"] if time_text else []) + [date_text]:
+        value = _outsmart_parse_datetime(candidate)
+        if value is not None:
+            return value
+    return None
+
+
+def _outsmart_payload_list(payload: dict, keys: tuple[str, ...]) -> list:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _outsmart_status_label(raw: str | None) -> str:
+    text = _crm_clean_text(raw)
+    key = _crm_normalize_key(text)
+    mapping = {
+        "afgehandeld": "Abgehandelt",
+        "compleet": "Abgeschlossen",
+        "completed": "Abgeschlossen",
+        "gepland": "Geplant",
+        "planned": "Geplant",
+        "open": "Offen",
+        "nieuw": "Neu",
+        "new": "Neu",
+        "inbehandeling": "In Bearbeitung",
+        "in behandeling": "In Bearbeitung",
+        "in_progress": "In Bearbeitung",
+        "gesloten": "Geschlossen",
+        "closed": "Geschlossen",
+        "cancelled": "Storniert",
+        "geannuleerd": "Storniert",
+    }
+    if key in mapping:
+        return mapping[key]
+    return text or "-"
+
+
+def _outsmart_decimal_label(raw: object, digits: int = 2, strip_trailing: bool = False) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "-"
+    try:
+        value = float(text.replace(",", "."))
+    except Exception:
+        return text
+    label = f"{value:.{max(0, int(digits))}f}".replace(".", ",")
+    if strip_trailing and "," in label:
+        label = label.rstrip("0").rstrip(",")
+    return label
+
+
+def _outsmart_clean_multiline(value: str | None) -> str:
+    if not value:
+        return ""
+    lines: list[str] = []
+    for raw_line in str(value).replace("\r", "\n").split("\n"):
+        line = re.sub(r"\s+", " ", str(raw_line or "").strip())
+        if not line:
+            continue
+        if set(line) <= {"-"}:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _outsmart_description_section_key(label: str) -> str:
+    key = re.sub(r"\s+", " ", _crm_normalize_key(label)).strip()
+    mapping = {
+        "gerät": "device_label",
+        "geraet": "device_label",
+        "objekt": "device_label",
+        "fehlerangabe des kunden": "customer_issue",
+        "kundenfehler": "customer_issue",
+        "fehlerbild": "customer_issue",
+        "fehlerfeststellung / arbeitsgang": "work_steps",
+        "fehlerfeststellung/arbeitsgang": "work_steps",
+        "fehlerfeststellung": "work_steps",
+        "arbeitsgang": "work_steps",
+        "interne hinweise": "internal_notes",
+        "interner hinweis": "internal_notes",
+        "intern": "internal_notes",
+    }
+    return mapping.get(key, "other_notes")
+
+
+def _outsmart_work_description_sections(raw: str | None) -> dict[str, str]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    sections: dict[str, list[str]] = {
+        "device_label": [],
+        "customer_issue": [],
+        "work_steps": [],
+        "internal_notes": [],
+        "other_notes": [],
+    }
+    inline_matches = list(re.finditer(r"->\s*([^:]+):\s*(.*?)(?=(?:\s*->[^:\n]+:)|$)", text, flags=re.S))
+    if inline_matches:
+        for match in inline_matches:
+            current_key = _outsmart_description_section_key(match.group(1))
+            value = re.sub(r"\s+", " ", str(match.group(2) or "").strip())
+            if value:
+                sections[current_key].append(value)
+        return {
+            key: "\n".join([part for part in values if part]).strip()
+            for key, values in sections.items()
+            if any(values)
+        }
+    current_key = "other_notes"
+    for raw_line in text.replace("\r", "\n").split("\n"):
+        line = str(raw_line or "").strip()
+        if not line or set(line) <= {"-"}:
+            continue
+        if line.startswith("->"):
+            label, _, rest = line[2:].partition(":")
+            current_key = _outsmart_description_section_key(label)
+            if rest.strip():
+                sections[current_key].append(re.sub(r"\s+", " ", rest.strip()))
+            continue
+        sections[current_key].append(re.sub(r"\s+", " ", line))
+    return {
+        key: "\n".join([part for part in values if part]).strip()
+        for key, values in sections.items()
+        if any(values)
+    }
+
+
+def _outsmart_workorder_schedule_from_payload(payload: dict) -> tuple[dt.datetime | None, dt.datetime | None]:
+    start_value = _outsmart_parse_datetime(
+        _outsmart_pick(payload, ("PlannedStart", "planned_start", "AppointmentStart", "appointment_start", "DateStart", "date_start"))
+    )
+    end_value = _outsmart_parse_datetime(
+        _outsmart_pick(payload, ("PlannedEnd", "planned_end", "AppointmentEnd", "appointment_end", "DateEnd", "date_end"))
+    )
+    if start_value is None:
+        start_value = _outsmart_parse_datetime_parts(
+            _outsmart_pick(payload, ("WorkDate", "work_date")),
+            _outsmart_pick(payload, ("WorkTime", "work_time", "BeginTime", "begin_time")),
+        )
+    if end_value is None:
+        end_value = _outsmart_parse_datetime_parts(
+            _outsmart_pick(payload, ("WorkEndDate", "work_end_date", "WorkDate", "work_date")),
+            _outsmart_pick(payload, ("WorkEndTime", "work_end_time", "EndTime", "end_time")),
+        )
+    return start_value, end_value
+
+
+def _outsmart_build_short_description(sections: dict[str, str]) -> str:
+    parts = [sections.get("device_label") or "", sections.get("customer_issue") or ""]
+    text = " | ".join([part for part in parts if part]).strip()
+    if not text:
+        text = sections.get("work_steps") or sections.get("other_notes") or ""
+    return text[:240].strip()
+
+
+def _outsmart_parse_form_meta(item: dict | str) -> dict[str, object]:
+    if isinstance(item, dict):
+        name = _crm_clean_text(item.get("Name") or item.get("name")) or "Formular"
+        pdf_url = _normalize_absolute_url(item.get("PdfUrl") or item.get("pdf_url"))
+        object_code = _crm_clean_text(item.get("ObjectCode") or item.get("object_code")) or ""
+        field_count = 0
+        field_labels: list[str] = []
+        try:
+            data_payload = json.loads(str(item.get("Data") or item.get("data") or "").strip() or "{}")
+            fields = data_payload.get("fields") if isinstance(data_payload, dict) else []
+            if isinstance(fields, list):
+                field_count = len(fields)
+                for field in fields[:4]:
+                    if isinstance(field, dict):
+                        label = _crm_clean_text(field.get("label"))
+                        if label:
+                            field_labels.append(label)
+        except Exception:
+            field_count = 0
+        return {
+            "name": name,
+            "pdf_url": pdf_url or "",
+            "object_code": object_code,
+            "field_count": field_count,
+            "field_labels": field_labels,
+        }
+    return {"name": _crm_clean_text(str(item or "")) or "Formular", "pdf_url": "", "object_code": "", "field_count": 0, "field_labels": []}
+
+
+def _outsmart_prepare_workorder_view(row: OutsmartWorkorder) -> dict[str, object]:
+    payload = _json_dict(row.raw_json)
+    fallback_start, fallback_end = _outsmart_workorder_schedule_from_payload(payload)
+    scheduled_start = row.scheduled_start or fallback_start
+    scheduled_end = row.scheduled_end or fallback_end
+    work_description = row.work_description or _outsmart_pick(payload, ("WorkDescription", "work_description", "Description", "description"))
+    sections = _outsmart_work_description_sections(work_description)
+    short_description = row.short_description or _outsmart_pick(payload, ("ShortWorkDescription", "short_work_description", "ShortDescription", "short_description"))
+    if not short_description:
+        short_description = _outsmart_build_short_description(sections)
+    materials = _outsmart_list_json(row.materials_json) or _outsmart_payload_list(payload, ("Materials", "materials"))
+    photos = _outsmart_list_json(row.photos_json) or _outsmart_payload_list(payload, ("Photos", "photos"))
+    workperiods = _outsmart_list_json(row.workperiods_json) or _outsmart_payload_list(payload, ("WorkPeriods", "workperiods", "Workperiods"))
+    workobjects = _outsmart_list_json(row.workobjects_json) or _outsmart_payload_list(payload, ("WorkObjects", "workobjects"))
+    forms = _outsmart_list_json(row.forms_json) or _outsmart_payload_list(payload, ("Forms", "forms"))
+    employees = _outsmart_list_json(row.employees_json) or _outsmart_payload_list(payload, ("Employees", "employees"))
+    documents = _outsmart_payload_list(payload, ("Documents", "documents"))
+    status_history = _outsmart_payload_list(payload, ("StatusHistory", "status_history", "Statuses", "statuses"))
+    material_rows = []
+    for index, item in enumerate(materials, start=1):
+        if isinstance(item, dict):
+            qty_label = _outsmart_decimal_label(item.get("MaterialNr"), digits=3, strip_trailing=True)
+            price_label = _outsmart_decimal_label(item.get("MaterialPrice"), digits=2)
+            total_label = _outsmart_decimal_label(item.get("MaterialTotalPrice"), digits=2)
+            material_rows.append(
+                {
+                    "pos": index,
+                    "code": _crm_clean_text(item.get("MaterialCode") or item.get("material_code")) or "-",
+                    "name": _crm_clean_text(item.get("MaterialName") or item.get("name")) or "Material",
+                    "qty_label": qty_label,
+                    "unit": _crm_clean_text(item.get("MaterialUnit") or item.get("unit")) or "-",
+                    "price_label": "-" if price_label == "-" else f"{price_label} EUR",
+                    "total_label": "-" if total_label == "-" else f"{total_label} EUR",
+                    "note": _outsmart_clean_multiline(item.get("MaterialNote") or item.get("note")),
+                    "object_code": _crm_clean_text(item.get("MaterialObjectCode") or item.get("object_code")) or "",
+                    "billable": str(item.get("MaterialIsBillable") or item.get("billable") or "").strip() in ("1", "true", "True"),
+                }
+            )
+        else:
+            material_rows.append({"pos": index, "code": "-", "name": _crm_clean_text(str(item or "")) or "Material", "qty_label": "-", "unit": "-", "price_label": "-", "total_label": "-", "note": "", "object_code": "", "billable": False})
+    photo_rows = []
+    for index, item in enumerate(photos, start=1):
+        if isinstance(item, dict):
+            url = _normalize_absolute_url(item.get("image") or item.get("Image") or item.get("url"))
+            if not url:
+                continue
+            photo_rows.append(
+                {
+                    "pos": index,
+                    "url": url,
+                    "title": _crm_clean_text(item.get("title") or item.get("Title")) or f"Foto {index}",
+                    "position": _crm_clean_text(item.get("position") or item.get("Position")) or str(index),
+                }
+            )
+        else:
+            url = _normalize_absolute_url(str(item or ""))
+            if url:
+                photo_rows.append({"pos": index, "url": url, "title": f"Foto {index}", "position": str(index)})
+    workperiod_rows = []
+    for index, item in enumerate(workperiods, start=1):
+        if isinstance(item, dict):
+            start_ts = _outsmart_parse_datetime_parts(item.get("WorkDate"), item.get("BeginTime"))
+            end_ts = _outsmart_parse_datetime_parts(item.get("WorkDate"), item.get("EndTime"))
+            workperiod_rows.append(
+                {
+                    "pos": index,
+                    "date_label": _format_date_local(start_ts) if start_ts else (_crm_clean_text(item.get("WorkDate")) or "-"),
+                    "time_label": (
+                        f"{_format_datetime_local(start_ts).split(' ', 1)[1]} - {_format_datetime_local(end_ts).split(' ', 1)[1]}"
+                        if start_ts and end_ts
+                        else f"{_crm_clean_text(item.get('BeginTime')) or '-'} - {_crm_clean_text(item.get('EndTime')) or '-'}"
+                    ),
+                    "duration": _crm_clean_text(item.get("TotalTime") or item.get("Duration")) or "-",
+                    "hour_type": _crm_clean_text(item.get("HourType") or item.get("hour_type")) or "-",
+                    "note": _outsmart_clean_multiline(item.get("WorkRemark") or item.get("Remark")),
+                    "travel": str(item.get("Travel") or "").strip() in ("1", "true", "True"),
+                    "billable": str(item.get("billable") or item.get("Billable") or item.get("visible") or item.get("Visible") or "").strip() in ("1", "true", "True"),
+                }
+            )
+        else:
+            workperiod_rows.append({"pos": index, "date_label": "-", "time_label": "-", "duration": _crm_clean_text(str(item or "")) or "-", "hour_type": "-", "note": "", "travel": False, "billable": False})
+    workobject_rows = []
+    for index, item in enumerate(workobjects, start=1):
+        if isinstance(item, dict):
+            workobject_rows.append(
+                {
+                    "pos": index,
+                    "code": _crm_clean_text(item.get("ObjectCode") or item.get("code") or item.get("ObjectNo")) or "-",
+                    "label": _crm_clean_text(item.get("Name") or item.get("Description") or item.get("label")) or "Arbeitsobjekt",
+                    "serial_no": _crm_clean_text(item.get("SerialNo") or item.get("SerialNumber")) or "",
+                    "note": _outsmart_clean_multiline(item.get("Remark") or item.get("Note")),
+                }
+            )
+        else:
+            workobject_rows.append({"pos": index, "code": _crm_clean_text(str(item or "")) or "-", "label": "Arbeitsobjekt", "serial_no": "", "note": ""})
+    employee_rows = []
+    for index, item in enumerate(employees, start=1):
+        if isinstance(item, dict):
+            employee_rows.append(
+                {
+                    "pos": index,
+                    "name": _crm_clean_text(item.get("employee_fullname") or item.get("EmployeeName") or item.get("name")) or "Mitarbeiter",
+                    "employee_no": _crm_clean_text(item.get("employee_nr") or item.get("EmployeeNr")) or "",
+                    "start_label": _format_datetime_local(_outsmart_parse_datetime(item.get("start"))) if _outsmart_parse_datetime(item.get("start")) else "-",
+                    "end_label": _format_datetime_local(_outsmart_parse_datetime(item.get("end"))) if _outsmart_parse_datetime(item.get("end")) else "-",
+                    "status_label": _crm_clean_text(item.get("status")) or "-",
+                }
+            )
+        else:
+            employee_rows.append({"pos": index, "name": _crm_clean_text(str(item or "")) or "Mitarbeiter", "employee_no": "", "start_label": "-", "end_label": "-", "status_label": "-"})
+    form_rows = [_outsmart_parse_form_meta(item) for item in forms]
+    document_rows = []
+    for index, item in enumerate(documents, start=1):
+        if isinstance(item, dict):
+            document_rows.append(
+                {
+                    "pos": index,
+                    "title": _crm_clean_text(item.get("Title") or item.get("Name") or item.get("FileName")) or f"Dokument {index}",
+                    "url": _normalize_absolute_url(item.get("Url") or item.get("url") or item.get("PdfUrl") or item.get("pdf_url")) or "",
+                    "kind": _crm_clean_text(item.get("Type") or item.get("kind")) or "",
+                }
+            )
+        else:
+            document_rows.append({"pos": index, "title": _crm_clean_text(str(item or "")) or f"Dokument {index}", "url": "", "kind": ""})
+    history_rows = []
+    for index, item in enumerate(status_history, start=1):
+        if isinstance(item, dict):
+            history_rows.append(
+                {
+                    "pos": index,
+                    "status_label": _outsmart_status_label(item.get("Status") or item.get("status")),
+                    "at_label": _format_datetime_local(_outsmart_parse_datetime(item.get("Date") or item.get("CreatedAt") or item.get("created_at"))) if _outsmart_parse_datetime(item.get("Date") or item.get("CreatedAt") or item.get("created_at")) else (_crm_clean_text(item.get("Date") or item.get("CreatedAt") or item.get("created_at")) or "-"),
+                    "note": _outsmart_clean_multiline(item.get("Remark") or item.get("Note")),
+                }
+            )
+    return {
+        "payload": payload,
+        "status_label": _outsmart_status_label(row.status or payload.get("Status") or payload.get("status")),
+        "scheduled_start": scheduled_start,
+        "scheduled_end": scheduled_end,
+        "job_no": _crm_clean_text(payload.get("JobNr") or payload.get("job_nr")) or "",
+        "reference": _crm_clean_text(payload.get("Reference") or payload.get("reference") or payload.get("ExternalReference") or payload.get("external_reference")) or "",
+        "worksheet_code": _crm_clean_text(payload.get("WorksheetCode") or payload.get("worksheet_code")) or "",
+        "project_ref": _crm_clean_text(payload.get("ProjectNr") or payload.get("project_nr") or payload.get("ExternProjectNr") or payload.get("extern_project_nr") or payload.get("ProjectNo") or payload.get("project_no")) or "",
+        "object_code": _crm_clean_text(payload.get("ObjectCode") or payload.get("object_code") or payload.get("ObjectNo") or payload.get("object_no")) or "",
+        "short_description": short_description,
+        "work_description": work_description or "",
+        "internal_work_description": row.internal_work_description or _outsmart_pick(payload, ("InternalWorkDescription", "internal_work_description", "InternalDescription")),
+        "device_label": sections.get("device_label") or "",
+        "customer_issue": sections.get("customer_issue") or "",
+        "work_steps": sections.get("work_steps") or "",
+        "internal_notes": sections.get("internal_notes") or "",
+        "other_notes": sections.get("other_notes") or "",
+        "material_rows": material_rows,
+        "photo_rows": photo_rows,
+        "workperiod_rows": workperiod_rows,
+        "workobject_rows": workobject_rows,
+        "employee_rows": employee_rows,
+        "form_rows": form_rows,
+        "document_rows": document_rows,
+        "history_rows": history_rows,
+        "raw_json_pretty": json.dumps(payload, ensure_ascii=False, indent=2) if payload else "",
+    }
 
 
 def _outsmart_relation_key(payload: dict) -> str:
@@ -27712,6 +28138,26 @@ def _crm_case_by_project_key(db: Session, project_key: str) -> CrmCase | None:
         if row:
             return row
     return db.query(CrmCase).filter(CrmCase.case_no == project_key).order_by(CrmCase.id.asc()).first()
+
+
+def _crm_case_by_outsmart_workorder_key(db: Session, external_key: str) -> CrmCase | None:
+    if not external_key:
+        return None
+    link = (
+        db.query(ExternalLink)
+        .filter(
+            ExternalLink.system_name == "outsmart",
+            ExternalLink.object_type == "crm_case_workorder",
+            or_(ExternalLink.external_key == external_key, ExternalLink.external_row_id == external_key),
+        )
+        .order_by(ExternalLink.id.asc())
+        .first()
+    )
+    if link:
+        row = db.get(CrmCase, int(link.object_id or 0))
+        if row:
+            return row
+    return db.query(CrmCase).filter(CrmCase.case_no == external_key).order_by(CrmCase.id.asc()).first()
 
 
 def _crm_customer_labels_map(db: Session, customer_ids: list[int]) -> dict[int, str]:
@@ -28149,9 +28595,13 @@ def _outsmart_upsert_customer_object(db: Session, payload: dict) -> tuple[Custom
 
 
 def _outsmart_match_case_for_workorder(db: Session, payload: dict) -> CrmCase | None:
-    workorder_no = _outsmart_workorder_key(payload)
-    if workorder_no:
-        row = db.query(CrmCase).filter(CrmCase.case_no == workorder_no).one_or_none()
+    for candidate in (
+        _outsmart_workorder_key(payload),
+        _outsmart_pick(payload, ("JobNr", "job_nr")),
+        _outsmart_pick(payload, ("Reference", "reference")),
+        _outsmart_pick(payload, ("ExternalReference", "external_reference")),
+    ):
+        row = _crm_case_by_outsmart_workorder_key(db, candidate)
         if row:
             return row
     project_key = _outsmart_project_key(payload)
@@ -28211,6 +28661,13 @@ def _outsmart_upsert_workorder_summary(db: Session, payload: dict) -> tuple[Outs
             created_at=_utcnow_naive(),
             updated_at=_utcnow_naive(),
         )
+    payload_sections = _outsmart_work_description_sections(
+        _outsmart_pick(payload, ("WorkDescription", "work_description", "Description", "description"))
+    )
+    derived_short_description = (
+        _outsmart_pick(payload, ("ShortWorkDescription", "short_work_description", "ShortDescription", "short_description"))
+        or _outsmart_build_short_description(payload_sections)
+    )
     old_status = str(row.status or "")
     old_start = row.scheduled_start.isoformat() if row.scheduled_start else ""
     old_end = row.scheduled_end.isoformat() if row.scheduled_end else ""
@@ -28224,7 +28681,7 @@ def _outsmart_upsert_workorder_summary(db: Session, payload: dict) -> tuple[Outs
         "project_external_key": _outsmart_project_key(payload) or row.project_external_key,
         "status": _outsmart_pick(payload, ("Status", "status", "StatusText", "status_text")) or row.status,
         "employee_name": _outsmart_pick(payload, ("EmployeeName", "employee_name", "Employee", "employee", "MechanicName", "mechanic_name")) or row.employee_name,
-        "short_description": _outsmart_pick(payload, ("ShortWorkDescription", "short_work_description", "ShortDescription", "short_description")) or row.short_description,
+        "short_description": derived_short_description or row.short_description,
         "work_description": _outsmart_pick(payload, ("WorkDescription", "work_description", "Description", "description")) or row.work_description,
         "internal_work_description": _outsmart_pick(payload, ("InternalWorkDescription", "internal_work_description", "InternalDescription")) or row.internal_work_description,
         "pdf_url": _outsmart_pick_url(payload, ("PdfUrl", "pdf_url")) or row.pdf_url,
@@ -28236,8 +28693,7 @@ def _outsmart_upsert_workorder_summary(db: Session, payload: dict) -> tuple[Outs
         if getattr(row, key) != value:
             setattr(row, key, value)
             changed = True
-    start_value = _outsmart_parse_datetime(_outsmart_pick(payload, ("PlannedStart", "planned_start", "AppointmentStart", "appointment_start", "DateStart", "date_start")))
-    end_value = _outsmart_parse_datetime(_outsmart_pick(payload, ("PlannedEnd", "planned_end", "AppointmentEnd", "appointment_end", "DateEnd", "date_end")))
+    start_value, end_value = _outsmart_workorder_schedule_from_payload(payload)
     if start_value is not None and row.scheduled_start != start_value:
         row.scheduled_start = start_value
         changed = True
@@ -28287,11 +28743,11 @@ def _outsmart_upsert_workorder_summary(db: Session, payload: dict) -> tuple[Outs
     if event_changed:
         schedule_text = ""
         if row.scheduled_start or row.scheduled_end:
-            schedule_text = f"Termin: {_format_date_local(row.scheduled_start)}"
+            schedule_text = f"Termin: {_format_datetime_local(row.scheduled_start)}"
             if row.scheduled_end:
-                schedule_text = f"{schedule_text} bis {_format_date_local(row.scheduled_end)}"
+                schedule_text = f"{schedule_text} bis {_format_datetime_local(row.scheduled_end)}"
         body_lines = [
-            f"Status: {row.status or '-'}",
+            f"Status: {_outsmart_status_label(row.status)}",
             schedule_text,
             f"Mitarbeiter: {row.employee_name or '-'}",
             f"Kurztext: {row.short_description or '-'}",
@@ -28607,7 +29063,203 @@ def _customer_outsmart_workorder_rows(db: Session, customer_id: int, limit: int 
     object_ids = [int(row.customer_object_id) for row in rows if int(row.customer_object_id or 0) > 0]
     case_map = {int(row.id): row for row in db.query(CrmCase).filter(CrmCase.id.in_(case_ids)).all()} if case_ids else {}
     object_map = {int(row.id): row for row in db.query(CustomerObject).filter(CustomerObject.id.in_(object_ids)).all()} if object_ids else {}
-    return [{"row": row, "crm_case": case_map.get(int(row.case_id or 0)), "customer_object": object_map.get(int(row.customer_object_id or 0))} for row in rows]
+    items: list[dict[str, object]] = []
+    for row in rows:
+        crm_case = case_map.get(int(row.case_id or 0))
+        customer_object = object_map.get(int(row.customer_object_id or 0))
+        display = _outsmart_prepare_workorder_view(row)
+        object_label = ""
+        object_meta = ""
+        if customer_object:
+            object_label = _crm_clean_text(
+                " ".join(
+                    [
+                        str(customer_object.brand_label or "").strip(),
+                        str(customer_object.model_label or customer_object.type_label or "").strip(),
+                    ]
+                )
+            ) or _crm_clean_text(customer_object.external_object_code) or "Lokales Objekt"
+            object_meta = _crm_clean_text(customer_object.serial_no) or ""
+        elif str(display.get("device_label") or "").strip():
+            object_label = str(display.get("device_label") or "").strip()
+            object_meta = _crm_clean_text(display.get("object_code")) or ""
+        case_hint = ""
+        if crm_case is None:
+            ref_parts = [str(display.get("job_no") or "").strip(), str(display.get("reference") or "").strip()]
+            ref_parts = [part for part in ref_parts if part]
+            if ref_parts:
+                case_hint = f"OutSmart-Referenz: {' / '.join(ref_parts)}"
+        items.append(
+            {
+                "row": row,
+                "crm_case": crm_case,
+                "customer_object": customer_object,
+                "display": display,
+                "object_label": object_label or "Kein Objekt verknüpft",
+                "object_meta": object_meta,
+                "case_hint": case_hint,
+            }
+        )
+    return items
+
+
+def _outsmart_candidate_cases_for_workorder(db: Session, row: OutsmartWorkorder, limit: int = 12) -> list[dict[str, object]]:
+    query = db.query(CrmCase).distinct()
+    if int(row.service_location_id or 0) > 0:
+        query = query.join(RoleAssignment, RoleAssignment.case_id == CrmCase.id).filter(
+            RoleAssignment.role_type == CRM_ROLE_SERVICE_LOCATION,
+            RoleAssignment.service_location_id == int(row.service_location_id),
+        )
+    elif int(row.master_customer_id or 0) > 0:
+        query = query.join(RoleAssignment, RoleAssignment.case_id == CrmCase.id).filter(
+            RoleAssignment.role_type.in_((CRM_ROLE_ORDERING_PARTY, CRM_ROLE_INVOICE_RECIPIENT)),
+            RoleAssignment.master_customer_id == int(row.master_customer_id),
+        )
+    else:
+        return []
+    rows = query.order_by(CrmCase.updated_at.desc(), CrmCase.id.desc()).limit(limit).all()
+    role_map = _crm_case_role_map(db, [int(item.id) for item in rows]) if rows else {}
+    customer_ids = []
+    for item in rows:
+        assignments = role_map.get(int(item.id), {})
+        if assignments.get(CRM_ROLE_ORDERING_PARTY) and int(assignments.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0) > 0:
+            customer_ids.append(int(assignments.get(CRM_ROLE_ORDERING_PARTY).master_customer_id))
+    customer_labels = _crm_customer_labels_map(db, sorted(set(customer_ids))) if customer_ids else {}
+    out: list[dict[str, object]] = []
+    for item in rows:
+        assignments = role_map.get(int(item.id), {})
+        ordering = assignments.get(CRM_ROLE_ORDERING_PARTY)
+        service = assignments.get(CRM_ROLE_SERVICE_LOCATION)
+        out.append(
+            {
+                "row": item,
+                "status_label": _crm_case_status_label(item.status),
+                "customer_label": customer_labels.get(int(ordering.master_customer_id or 0), "") if ordering else "",
+                "service_location": db.get(ServiceLocation, int(service.service_location_id or 0)) if service and int(service.service_location_id or 0) > 0 else None,
+            }
+        )
+    return out
+
+
+def _outsmart_workorder_case_title(row: OutsmartWorkorder, display: dict[str, object]) -> str:
+    parts = [
+        str(display.get("device_label") or "").strip(),
+        str(display.get("customer_issue") or "").strip(),
+    ]
+    title = _crm_clean_text(" | ".join([part for part in parts if part]))
+    if title:
+        return title[:240]
+    return _crm_clean_text(str(display.get("short_description") or "")) or f"OutSmart-Arbeitsauftrag {row.workorder_no}"
+
+
+def _outsmart_link_workorder_to_case(
+    db: Session,
+    *,
+    row: OutsmartWorkorder,
+    crm_case: CrmCase,
+    source_label: str,
+) -> None:
+    role_map = _crm_case_role_map(db, [int(crm_case.id)]).get(int(crm_case.id), {})
+    ordering = role_map.get(CRM_ROLE_ORDERING_PARTY)
+    service = role_map.get(CRM_ROLE_SERVICE_LOCATION)
+    if ordering and int(ordering.master_customer_id or 0) > 0:
+        row.master_customer_id = int(ordering.master_customer_id)
+    if service and int(service.service_location_id or 0) > 0:
+        row.service_location_id = int(service.service_location_id)
+    row.case_id = int(crm_case.id)
+    row.updated_at = _utcnow_naive()
+    db.add(row)
+    _upsert_external_link(
+        db,
+        system_name="outsmart",
+        object_type="crm_case_workorder",
+        object_id=int(crm_case.id),
+        external_key=str(row.workorder_no),
+        external_row_id=row.external_row_id,
+        deep_link_url=row.deep_link_url,
+    )
+    _crm_add_timeline_event(
+        db,
+        case_id=int(crm_case.id),
+        master_customer_id=int(row.master_customer_id or 0) or None,
+        service_location_id=int(row.service_location_id or 0) or None,
+        customer_object_id=int(row.customer_object_id or 0) or None,
+        outsmart_workorder_id=int(row.id),
+        source_system="outsmart",
+        event_type="workorder_link",
+        title=f"OutSmart Arbeitsauftrag verknüpft: {row.workorder_no}",
+        body=source_label,
+        event_ts=row.scheduled_start or _utcnow_naive(),
+        external_ref=row.external_row_id or row.workorder_no,
+        meta={"deep_link_url": row.deep_link_url or "", "case_no": crm_case.case_no},
+    )
+
+
+def _outsmart_create_local_case_from_workorder(db: Session, row: OutsmartWorkorder, display: dict[str, object]) -> CrmCase:
+    customer = db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None
+    service_location = db.get(ServiceLocation, int(row.service_location_id or 0)) if int(row.service_location_id or 0) > 0 else None
+    if service_location and not customer and int(service_location.master_customer_id or 0) > 0:
+        customer = db.get(MasterCustomer, int(service_location.master_customer_id))
+    if customer is None:
+        raise ValueError("Zum Arbeitsauftrag ist kein lokaler Kunde verknüpft.")
+    if service_location is None:
+        service_location = _crm_default_location_for_customer(db, int(customer.id))
+    row_case = CrmCase(
+        case_no=_crm_next_case_no(db),
+        title=_outsmart_workorder_case_title(row, display),
+        status=_outsmart_status_to_case_status(row.status),
+        priority="normal",
+        source_system="outsmart",
+        note=_crm_clean_text(
+            "\n".join(
+                [
+                    f"OutSmart-Arbeitsauftrag: {row.workorder_no}",
+                    f"OutSmart-Job: {display.get('job_no') or '-'}",
+                    f"Referenz: {display.get('reference') or '-'}",
+                    "",
+                    str(display.get("customer_issue") or "").strip(),
+                    "",
+                    str(display.get("work_steps") or display.get("other_notes") or "").strip(),
+                ]
+            )
+        ) or None,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(row_case)
+    db.flush()
+    _, default_map = _crm_party_address_maps(db, [int(customer.party_id)])
+    default_address = default_map.get(int(customer.party_id))
+    _crm_set_case_role(
+        db,
+        crm_case_id=int(row_case.id),
+        role_type=CRM_ROLE_ORDERING_PARTY,
+        master_customer_id=int(customer.id),
+        address_id=int(default_address.id) if default_address else None,
+    )
+    _crm_set_case_role(
+        db,
+        crm_case_id=int(row_case.id),
+        role_type=CRM_ROLE_INVOICE_RECIPIENT,
+        master_customer_id=int(customer.id),
+        address_id=int(default_address.id) if default_address else None,
+    )
+    if service_location:
+        _crm_set_case_role(
+            db,
+            crm_case_id=int(row_case.id),
+            role_type=CRM_ROLE_SERVICE_LOCATION,
+            master_customer_id=int(service_location.master_customer_id or 0) or None,
+            service_location_id=int(service_location.id),
+            address_id=int(service_location.address_id or 0) or None,
+        )
+    _outsmart_link_workorder_to_case(
+        db,
+        row=row,
+        crm_case=row_case,
+        source_label="Lokaler Vorgang aus OutSmart-Arbeitsauftrag angelegt.",
+    )
+    return row_case
 
 
 def _customer_sevdesk_document_rows(db: Session, customer_id: int, limit: int = 80) -> list[dict[str, object]]:
