@@ -140,6 +140,21 @@
       <div id="pageLoadingEta" class="muted" hidden></div>
     </div>
   </div>
+  {% if user and user.role == 'admin' %}
+  <aside id="jobMonitor" class="job-monitor" hidden aria-live="polite" aria-atomic="false">
+    <div class="job-monitor-head">
+      <div>
+        <div class="job-monitor-title">Hintergrundjobs</div>
+        <div id="jobMonitorSummary" class="muted">Keine aktiven Jobs</div>
+      </div>
+      <button id="jobMonitorToggle" class="btn small" type="button" aria-expanded="true">Minimieren</button>
+    </div>
+    <div id="jobMonitorBody" class="job-monitor-body"></div>
+    <div class="job-monitor-foot">
+      <a href="/system/sync-log">Alle Läufe öffnen</a>
+    </div>
+  </aside>
+  {% endif %}
   {% if user %}
   <script>
     window.__navCommands = {{ nav_commands | tojson }};

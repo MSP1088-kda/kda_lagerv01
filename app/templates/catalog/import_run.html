@@ -9,6 +9,37 @@
     Zeilen: <b>{{ total_rows }}</b>
   </div>
 
+  {% if active_job %}
+  {% set progress = active_job["progress"] or {} %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Hintergrundjob läuft</div>
+    <div class="box-body">
+      <div>Status: <b>{{ sync_job_status_label(active_job["status"]) }}</b></div>
+      <div>Phase: <b>{{ progress.get("phase") or "-" }}</b></div>
+      {% if progress.get("phase_detail") %}<div class="hint">{{ progress.get("phase_detail") }}</div>{% endif %}
+      {% if progress.get("current_item_label") %}<div>Datensatz: <b>{{ progress.get("current_item_label") }}</b>{% if progress.get("current_item_ref") %} | {{ progress.get("current_item_ref") }}{% endif %}</div>{% endif %}
+      <div>
+        {% if progress.get("total_count") %}
+          Fortschritt: <b>{{ progress.get("processed_count") or 0 }} / {{ progress.get("total_count") }}</b>
+        {% elif progress.get("processed_count") %}
+          Bisher bearbeitet: <b>{{ progress.get("processed_count") }}</b>
+        {% else %}
+          Fortschritt: <b>wird ermittelt</b>
+        {% endif %}
+      </div>
+      {% if active_job.get("result_url") %}<div class="hint"><a href="{{ active_job['result_url'] }}">Ergebnis wird hier verfügbar</a></div>{% endif %}
+    </div>
+  </div>
+  {% elif latest_job and latest_job["status"] == "done" and latest_result_run %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Letzter Lauf</div>
+    <div class="box-body">
+      <div>Der letzte Importlauf ist abgeschlossen.</div>
+      <div class="hint"><a href="/catalog/import/runs/{{ latest_result_run.id }}">Ergebnis von Importlauf #{{ latest_result_run.id }} öffnen</a></div>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="box" style="margin-top:10px;">
     <div class="box-title">Profil</div>
     <div class="box-body">
@@ -66,7 +97,7 @@
   {% endif %}
 
   <form method="post" action="/catalog/import/{{ draft.id }}/run" class="row" data-loading-immediate="1">
-    <button class="btn primary" type="submit">Import jetzt ausführen</button>
+    <button class="btn primary" type="submit"{% if active_job %} disabled{% endif %}>{% if active_job %}Läuft bereits{% else %}Import als Hintergrundjob starten{% endif %}</button>
     <a class="btn" href="/catalog/import/{{ draft.id }}/map">Mapping bearbeiten</a>
     <a class="btn" href="/catalog/import">Zur Entwurfsübersicht</a>
   </form>
@@ -75,8 +106,8 @@
 
 {% block help %}
 <ul>
-  <li>Auf dieser Seite prüfst du die Zuordnungen vor dem eigentlichen Importlauf.</li>
-  <li>Der Lauf erstellt einen klaren Ergebnisbericht mit Fehlern und offenen Zubehörreferenzen.</li>
-  <li>Der Entwurf bleibt gespeichert und kann später erneut geöffnet werden.</li>
+  <li>Der Import startet jetzt als Hintergrundjob und blockiert die restliche App nicht mehr.</li>
+  <li>Während des Laufs zeigt die Seite Phase, Fortschritt und den aktuell bearbeiteten Datensatz.</li>
+  <li>Der Ergebnisbericht bleibt über den letzten Lauf und das Systemprotokoll erreichbar.</li>
 </ul>
 {% endblock %}

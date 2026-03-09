@@ -1290,14 +1290,23 @@ class ExternalSyncJob(Base):
     system_name: Mapped[str] = mapped_column(String(40), nullable=False)
     direction: Mapped[str] = mapped_column(String(10), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    job_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lock_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(240), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    queued_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     log_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_external_sync_jobs_system", "system_name"),
         Index("ix_external_sync_jobs_status", "status"),
+        Index("ix_external_sync_jobs_job_key", "job_key"),
+        Index("ix_external_sync_jobs_lock_key", "lock_key"),
     )
 
 

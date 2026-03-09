@@ -3,24 +3,53 @@
 <div class="panel">
   <h1>Abgleichprotokoll</h1>
   <div class="table">
-    <div class="tr th" style="grid-template-columns: 120px 120px 120px 120px 160px 160px 1.8fr;">
+    <div class="tr th" style="grid-template-columns: 120px 160px 120px 1.4fr 1fr 160px 160px 180px;">
       <div>System</div>
-      <div>Richtung</div>
-      <div>Objekt</div>
+      <div>Job</div>
       <div>Status</div>
+      <div>Phase</div>
+      <div>Fortschritt</div>
       <div>Start</div>
       <div>Ende</div>
-      <div>Log</div>
+      <div>Ergebnis / Log</div>
     </div>
     {% for row in rows %}
-      <div class="tr" style="grid-template-columns: 120px 120px 120px 120px 160px 160px 1.8fr; align-items:start;">
-        <div>{{ row.system_name }}</div>
-        <div>{{ sync_job_direction_label(row.direction) }}</div>
-        <div>{{ sync_job_entity_label(row.entity_type) }}</div>
-        <div>{{ sync_job_status_label(row.status) }}</div>
-        <div>{{ row.started_at or '-' }}</div>
-        <div>{{ row.finished_at or '-' }}</div>
-        <div>{{ row.log_text or '-' }}</div>
+      {% set progress = row["progress"] or {} %}
+      <div class="tr" style="grid-template-columns: 120px 160px 120px 1.4fr 1fr 160px 160px 180px; align-items:start;">
+        <div>{{ row["system_name"] or '-' }}</div>
+        <div>
+          <div><b>{{ row["title"] }}</b></div>
+          <div class="muted">{{ sync_job_entity_label(row["entity_type"]) }}</div>
+        </div>
+        <div>{{ sync_job_status_label(row["status"]) }}</div>
+        <div>
+          <div>{{ progress.get("phase") or '-' }}</div>
+          {% if progress.get("phase_detail") %}<div class="muted">{{ progress.get("phase_detail") }}</div>{% endif %}
+          {% if progress.get("current_item_label") %}<div class="muted">{{ progress.get("current_item_label") }}{% if progress.get("current_item_ref") %} | {{ progress.get("current_item_ref") }}{% endif %}</div>{% endif %}
+        </div>
+        <div>
+          {% if progress.get("total_count") %}
+            {{ progress.get("processed_count") or 0 }} / {{ progress.get("total_count") }}
+          {% elif progress.get("processed_count") %}
+            {{ progress.get("processed_count") }} bearbeitet
+          {% else %}
+            -
+          {% endif %}
+          {% if progress.get("error_count") %}
+          <div class="muted">Fehler: {{ progress.get("error_count") }}</div>
+          {% endif %}
+          {% if row.get("eta_seconds") %}
+          <div class="muted">ETA: {{ row.get("eta_seconds") }} s</div>
+          {% endif %}
+        </div>
+        <div>{{ row["started_at"] or row["queued_at"] or '-' }}</div>
+        <div>{{ row["finished_at"] or '-' }}</div>
+        <div>
+          {% if row["result_url"] %}
+          <div><a href="{{ row['result_url'] }}">Öffnen</a></div>
+          {% endif %}
+          <div class="muted">{{ row["log_text"] or '-' }}</div>
+        </div>
       </div>
     {% endfor %}
     {% if not rows %}<div class="muted">Keine Abgleichläufe vorhanden.</div>{% endif %}
@@ -30,8 +59,8 @@
 
 {% block help %}
 <ul>
-  <li>Hier stehen die letzten technischen Sende- und Abrufläufe für Paperless und OutSmart.</li>
+  <li>Hier stehen die letzten Hintergrund- und Sync-Läufe mit Phase, Fortschritt und aktuellem Datensatz.</li>
+  <li>Einträge mit Ergebnislink springen direkt zur fachlichen Zielseite.</li>
   <li>Fehler bleiben im Log sichtbar und werden nicht still verschluckt.</li>
-  <li>Über die Integrationsseiten lassen sich Tests und manuelle Läufe anstoßen.</li>
 </ul>
 {% endblock %}

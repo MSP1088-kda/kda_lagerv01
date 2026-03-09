@@ -1087,11 +1087,14 @@ async def startup_background_jobs():
     task = getattr(app.state, "outsmart_sync_task", None)
     if task is None or task.done():
         app.state.outsmart_sync_task = asyncio.create_task(_outsmart_sync_loop())
+    task = getattr(app.state, "background_job_task", None)
+    if task is None or task.done():
+        app.state.background_job_task = asyncio.create_task(_background_job_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown_background_jobs():
-    for name in ("email_sender_task", "email_imap_task", "outsmart_sync_task"):
+    for name in ("email_sender_task", "email_imap_task", "outsmart_sync_task", "background_job_task"):
         task = getattr(app.state, name, None)
         if task is None:
             continue
@@ -4185,13 +4188,124 @@ def _mail_default_recipient(db: Session, customer: MasterCustomer | None, crm_ca
     return str(default_address.email or "").strip() if default_address else ""
 
 
-def _start_sync_job(db: Session, *, system_name: str, direction: str, entity_type: str, log_text: str = "") -> ExternalSyncJob:
+BACKGROUND_JOB_ACTIVE_STATUSES = ("queued", "running")
+BACKGROUND_JOB_POLL_INTERVAL_SECONDS = 1.0
+BACKGROUND_JOB_HEARTBEAT_TIMEOUT_SECONDS = 300
+
+
+def _sync_job_progress_payload(raw: str | None) -> dict[str, object]:
+    return _json_dict(raw)
+
+
+def _sync_job_set_progress(row: ExternalSyncJob, payload: dict[str, object]) -> None:
+    row.progress_json = json.dumps(payload, ensure_ascii=False) if payload else None
+
+
+def _sync_job_progress_merge(row: ExternalSyncJob, updates: dict[str, object]) -> dict[str, object]:
+    payload = _sync_job_progress_payload(row.progress_json)
+    for key, value in updates.items():
+        if value is None:
+            continue
+        payload[str(key)] = value
+    _sync_job_set_progress(row, payload)
+    return payload
+
+
+def _sync_job_log_append_text(existing: str | None, text: str | None) -> str | None:
+    current = str(existing or "").strip()
+    addition = str(text or "").strip()
+    if not addition:
+        return current or None
+    if not current:
+        return addition
+    if addition in current:
+        return current
+    return f"{current}\n{addition}"
+
+
+def _sync_job_title_default(entity_type: str, system_name: str = "") -> str:
+    mapping = {
+        "customer_init_outsmart": "OutSmart-Initialimport",
+        "customer_init_sevdesk": "sevDesk-Initialimport",
+        "customer_init_matching": "Kunden-Matching",
+        "customer_init_materialize": "Master-Kunden erzeugen",
+        "catalog_import_run": "CSV-Katalogimport",
+    }
+    key = str(entity_type or "").strip().lower()
+    if key in mapping:
+        return mapping[key]
+    system = str(system_name or "").strip()
+    if system:
+        return f"{system}: {entity_type}"
+    return str(entity_type or "Hintergrundjob")
+
+
+def _sync_job_eta_seconds(row: ExternalSyncJob, progress: dict[str, object]) -> int | None:
+    total_count = _to_int(progress.get("total_count"), 0)
+    processed_count = _to_int(progress.get("processed_count"), 0)
+    if total_count <= 0 or processed_count <= 0 or not row.started_at:
+        return None
+    elapsed = max(0.0, (_utcnow_naive() - row.started_at).total_seconds())
+    if elapsed <= 0:
+        return None
+    rate = processed_count / elapsed
+    if rate <= 0:
+        return None
+    remaining = max(0, total_count - processed_count)
+    return int(round(remaining / rate))
+
+
+def _sync_job_view(row: ExternalSyncJob) -> dict[str, object]:
+    progress = _sync_job_progress_payload(row.progress_json)
+    return {
+        "id": int(row.id),
+        "job_key": str(row.job_key or ""),
+        "lock_key": str(row.lock_key or ""),
+        "title": str(row.title or _sync_job_title_default(row.entity_type, row.system_name)),
+        "system_name": str(row.system_name or ""),
+        "direction": str(row.direction or ""),
+        "entity_type": str(row.entity_type or ""),
+        "status": str(row.status or ""),
+        "queued_at": row.queued_at.isoformat() if row.queued_at else None,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "heartbeat_at": row.heartbeat_at.isoformat() if row.heartbeat_at else None,
+        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        "log_text": str(row.log_text or ""),
+        "result_url": str(row.result_url or ""),
+        "progress": progress,
+        "eta_seconds": _sync_job_eta_seconds(row, progress),
+    }
+
+
+def _start_sync_job(
+    db: Session,
+    *,
+    system_name: str,
+    direction: str,
+    entity_type: str,
+    log_text: str = "",
+    status: str = "running",
+    job_key: str = "",
+    lock_key: str = "",
+    title: str = "",
+    progress: dict[str, object] | None = None,
+    result_url: str = "",
+) -> ExternalSyncJob:
+    now = _utcnow_naive()
+    normalized_status = str(status or "running").strip().lower() or "running"
     row = ExternalSyncJob(
         system_name=str(system_name),
         direction=str(direction),
         entity_type=str(entity_type),
-        status="running",
-        started_at=_utcnow_naive(),
+        job_key=str(job_key or "").strip() or None,
+        lock_key=str(lock_key or "").strip() or None,
+        title=str(title or "").strip() or _sync_job_title_default(entity_type, system_name),
+        status=normalized_status,
+        queued_at=now,
+        started_at=now if normalized_status == "running" else None,
+        heartbeat_at=now if normalized_status == "running" else None,
+        result_url=str(result_url or "").strip() or None,
+        progress_json=json.dumps(progress or {}, ensure_ascii=False) if progress else None,
         log_text=(log_text or "").strip() or None,
     )
     db.add(row)
@@ -4199,11 +4313,237 @@ def _start_sync_job(db: Session, *, system_name: str, direction: str, entity_typ
     return row
 
 
-def _finish_sync_job(db: Session, row: ExternalSyncJob, *, status: str, log_text: str) -> None:
+def _finish_sync_job(db: Session, row: ExternalSyncJob, *, status: str, log_text: str, result_url: str | None = None) -> None:
     row.status = str(status)
     row.finished_at = _utcnow_naive()
+    row.heartbeat_at = row.finished_at
     row.log_text = (log_text or "").strip() or row.log_text
+    if result_url is not None:
+        row.result_url = str(result_url or "").strip() or None
     db.add(row)
+
+
+def _sync_job_update_progress(
+    db: Session,
+    row: ExternalSyncJob,
+    *,
+    phase: str | None = None,
+    phase_detail: str | None = None,
+    total_count: int | None = None,
+    processed_count: int | None = None,
+    success_count: int | None = None,
+    error_count: int | None = None,
+    current_item_label: str | None = None,
+    current_item_ref: str | None = None,
+    note: str | None = None,
+    log_text: str | None = None,
+    result_url: str | None = None,
+    commit: bool = False,
+) -> dict[str, object]:
+    updates: dict[str, object] = {
+        "phase": str(phase or "").strip() or None,
+        "phase_detail": str(phase_detail or "").strip() or None,
+        "total_count": int(total_count) if total_count is not None and int(total_count) >= 0 else None,
+        "processed_count": int(processed_count) if processed_count is not None and int(processed_count) >= 0 else None,
+        "success_count": int(success_count) if success_count is not None and int(success_count) >= 0 else None,
+        "error_count": int(error_count) if error_count is not None and int(error_count) >= 0 else None,
+        "current_item_label": str(current_item_label or "").strip() or None,
+        "current_item_ref": str(current_item_ref or "").strip() or None,
+        "note": str(note or "").strip() or None,
+    }
+    payload = _sync_job_progress_merge(row, updates)
+    row.heartbeat_at = _utcnow_naive()
+    if log_text:
+        row.log_text = _sync_job_log_append_text(row.log_text, log_text)
+    if result_url is not None:
+        row.result_url = str(result_url or "").strip() or None
+    db.add(row)
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return payload
+
+
+def _sync_job_existing_active(db: Session, *, lock_key: str = "", job_key: str = "") -> ExternalSyncJob | None:
+    query = db.query(ExternalSyncJob).filter(ExternalSyncJob.status.in_(BACKGROUND_JOB_ACTIVE_STATUSES))
+    if str(job_key or "").strip():
+        row = query.filter(ExternalSyncJob.job_key == str(job_key).strip()).order_by(ExternalSyncJob.id.desc()).first()
+        if row is not None:
+            return row
+    if str(lock_key or "").strip():
+        row = query.filter(ExternalSyncJob.lock_key == str(lock_key).strip()).order_by(ExternalSyncJob.id.desc()).first()
+        if row is not None:
+            return row
+    return None
+
+
+def _enqueue_sync_job(
+    db: Session,
+    *,
+    system_name: str,
+    direction: str,
+    entity_type: str,
+    title: str,
+    job_key: str,
+    lock_key: str,
+    log_text: str = "",
+    progress: dict[str, object] | None = None,
+    result_url: str = "",
+) -> tuple[ExternalSyncJob, bool]:
+    existing = _sync_job_existing_active(db, lock_key=lock_key, job_key=job_key)
+    if existing is not None:
+        return existing, False
+    row = _start_sync_job(
+        db,
+        system_name=system_name,
+        direction=direction,
+        entity_type=entity_type,
+        log_text=log_text,
+        status="queued",
+        job_key=job_key,
+        lock_key=lock_key,
+        title=title,
+        progress=progress,
+        result_url=result_url,
+    )
+    return row, True
+
+
+def _latest_sync_job_for_key(db: Session, job_key: str) -> ExternalSyncJob | None:
+    key = str(job_key or "").strip()
+    if not key:
+        return None
+    return db.query(ExternalSyncJob).filter(ExternalSyncJob.job_key == key).order_by(ExternalSyncJob.id.desc()).first()
+
+
+def _background_job_recover_stale_running_jobs() -> None:
+    SessionLocal = get_sessionmaker()
+    db = SessionLocal()
+    try:
+        rows = db.query(ExternalSyncJob).filter(ExternalSyncJob.status == "running").all()
+        changed = False
+        for row in rows:
+            row.status = "failed"
+            row.finished_at = _utcnow_naive()
+            row.heartbeat_at = row.finished_at
+            row.log_text = _sync_job_log_append_text(row.log_text, "Hintergrundjob wurde nach App-Neustart als abgebrochen markiert.")
+            db.add(row)
+            changed = True
+        if changed:
+            db.commit()
+        else:
+            db.rollback()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _background_job_claim_next_id() -> int:
+    SessionLocal = get_sessionmaker()
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(ExternalSyncJob)
+            .filter(ExternalSyncJob.status == "queued")
+            .order_by(case((ExternalSyncJob.queued_at.is_(None), 1), else_=0), ExternalSyncJob.queued_at.asc(), ExternalSyncJob.id.asc())
+            .first()
+        )
+        if row is None:
+            return 0
+        if str(row.lock_key or "").strip():
+            active_same_lock = (
+                db.query(ExternalSyncJob)
+                .filter(
+                    ExternalSyncJob.id != int(row.id),
+                    ExternalSyncJob.lock_key == str(row.lock_key or "").strip(),
+                    ExternalSyncJob.status == "running",
+                )
+                .count()
+            )
+            if active_same_lock:
+                db.rollback()
+                return 0
+        row.status = "running"
+        row.started_at = row.started_at or _utcnow_naive()
+        row.heartbeat_at = _utcnow_naive()
+        db.add(row)
+        db.commit()
+        return int(row.id)
+    except Exception:
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
+def _background_job_fail(job_id: int, message: str) -> None:
+    SessionLocal = get_sessionmaker()
+    db = SessionLocal()
+    try:
+        row = db.get(ExternalSyncJob, int(job_id))
+        if row is None:
+            db.rollback()
+            return
+        _finish_sync_job(db, row, status="failed", log_text=message)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _run_background_job_by_id(job_id: int) -> None:
+    SessionLocal = get_sessionmaker()
+    db = SessionLocal()
+    try:
+        row = db.get(ExternalSyncJob, int(job_id))
+        if row is None:
+            db.rollback()
+            return
+        job_key = str(row.job_key or "").strip()
+        if job_key == "customer_init_outsmart":
+            _customer_init_import_outsmart(db, job=row)
+            db.commit()
+            return
+        if job_key == "customer_init_sevdesk":
+            _customer_init_import_sevdesk(db, job=row)
+            db.commit()
+            return
+        if job_key == "customer_init_matching":
+            _customer_init_build_clusters(db, job=row)
+            db.commit()
+            return
+        if job_key == "customer_init_materialize":
+            _customer_init_materialize_ready_clusters(db, job=row)
+            db.commit()
+            return
+        if job_key.startswith("catalog_import_run:"):
+            _catalog_import_execute_job(db, row)
+            db.commit()
+            return
+        raise ValueError(f"Unbekannter Hintergrundjob: {job_key or row.entity_type}")
+    except Exception as exc:
+        db.rollback()
+        _background_job_fail(int(job_id), str(exc))
+    finally:
+        db.close()
+
+
+async def _background_job_loop():
+    await asyncio.to_thread(_background_job_recover_stale_running_jobs)
+    while True:
+        try:
+            job_id = await asyncio.to_thread(_background_job_claim_next_id)
+            if job_id <= 0:
+                await asyncio.sleep(BACKGROUND_JOB_POLL_INTERVAL_SECONDS)
+                continue
+            await asyncio.to_thread(_run_background_job_by_id, int(job_id))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await asyncio.sleep(BACKGROUND_JOB_POLL_INTERVAL_SECONDS)
 
 
 def _upsert_external_link(
@@ -9970,6 +10310,446 @@ def _import_map_page_response(
         ),
     )
 
+
+def _catalog_import_run_job_key(draft_id: int) -> str:
+    return f"catalog_import_run:{int(draft_id)}"
+
+
+def _catalog_import_result_payload(import_run: ImportRun | None) -> dict[str, object]:
+    if import_run is None:
+        return {}
+    payload = _json_load_dict(import_run.log_text)
+    if payload:
+        return payload
+    raw = str(import_run.log_text or "").strip()
+    return {"raw_log": raw} if raw else {}
+
+
+def _catalog_import_result_context(*, draft: ImportDraft, import_run: ImportRun) -> dict[str, object]:
+    payload = _catalog_import_result_payload(import_run)
+    warnings_preview = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+    errors_preview = payload.get("errors") if isinstance(payload.get("errors"), list) else []
+    open_accessory_preview = payload.get("open_accessory_preview") if isinstance(payload.get("open_accessory_preview"), list) else []
+    new_profile_columns = payload.get("new_profile_columns") if isinstance(payload.get("new_profile_columns"), list) else []
+    return {
+        "draft": draft,
+        "created_count": int(import_run.inserted_count or 0),
+        "updated_count": int(import_run.updated_count or 0),
+        "skipped_count": int(payload.get("skipped_count") or 0),
+        "error_count": int(import_run.error_count or 0),
+        "errors_preview": errors_preview[:50],
+        "warning_count": len(warnings_preview),
+        "warnings_preview": warnings_preview[:50],
+        "accessory_linked_count": int(payload.get("accessory_linked_count") or 0),
+        "accessory_open_count": int(payload.get("accessory_open_count") or 0),
+        "resolved_accessory_count": int(payload.get("resolved_accessory_count") or 0),
+        "open_accessory_preview": open_accessory_preview[:50],
+        "profile_updated": bool(payload.get("profile_updated")),
+        "new_profile_columns": [str(value) for value in new_profile_columns[:50]],
+        "reopen_url": f"/catalog/import/{int(draft.id)}/map" if draft.status == IMPORT_DRAFT_STATUS_FAILED else _import_draft_open_url(draft),
+        "import_run": import_run,
+    }
+
+
+def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, object]:
+    progress = _sync_job_progress_payload(job.progress_json)
+    draft_id = _to_int(progress.get("draft_id"), 0)
+    import_run_id = _to_int(progress.get("import_run_id"), 0)
+    if draft_id <= 0 or import_run_id <= 0:
+        raise ValueError("Katalog-Importjob enthält keine gültigen Referenzen.")
+    draft = db.get(ImportDraft, int(draft_id))
+    import_run = db.get(ImportRun, int(import_run_id))
+    if not draft or not import_run:
+        raise ValueError("Importentwurf oder Importlauf wurde nicht gefunden.")
+
+    columns, rows, csv_error = _import_read_draft_csv(draft)
+    if csv_error:
+        raise ValueError(csv_error)
+
+    manufacturer = db.get(Manufacturer, int(draft.manufacturer_id or 0)) if draft.manufacturer_id else None
+    selected_kind = db.get(DeviceKind, int(draft.device_kind_id or 0)) if draft.device_kind_id else None
+    if not manufacturer or not selected_kind:
+        raise ValueError("Import-Kontext fehlt. Bitte Import neu vorbereiten.")
+
+    feature_defs = _feature_defs_for_kind(db, int(selected_kind.id))
+    feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
+    mapping_data = _json_load_dict(draft.mapping_json)
+    validated_mapping, errors = _import_validate_mapping(mapping_data, columns=columns, feature_defs_by_key=feature_defs_by_key)
+    if errors["global_errors"] or errors["field_errors"]:
+        draft.validation_errors_json = _json_dump(errors)
+        draft.status = IMPORT_DRAFT_STATUS_FAILED
+        draft.current_step = "map"
+        draft.updated_at = _utcnow_naive()
+        db.add(draft)
+        db.flush()
+        raise ValueError("Import-Mapping ist nicht mehr gültig. Bitte Zuordnung prüfen.")
+
+    profile = _pick_import_profile(db, _to_int(validated_mapping.get("profile_id"), 0))
+    if profile and (
+        int(profile.manufacturer_id or 0) != int(manufacturer.id)
+        or int(profile.device_kind_id or 0) != int(selected_kind.id)
+    ):
+        raise ValueError("Gewähltes Profil passt nicht zum Import-Kontext.")
+
+    profile_created = False
+    profile_name_default = f"{manufacturer.name} {selected_kind.name}"
+    profile_name = str(validated_mapping.get("profile_name") or "").strip() or profile_name_default
+    if not profile:
+        profile = (
+            db.query(ImportProfile)
+            .filter(
+                ImportProfile.manufacturer_id == int(manufacturer.id),
+                ImportProfile.device_kind_id == int(selected_kind.id),
+                func.lower(ImportProfile.name) == profile_name.lower(),
+            )
+            .one_or_none()
+        )
+    if not profile:
+        profile = ImportProfile(
+            manufacturer_id=int(manufacturer.id),
+            device_kind_id=int(selected_kind.id),
+            name=profile_name,
+            delimiter=str(draft.delimiter or ";"),
+            encoding=str(draft.encoding or "utf-8"),
+            has_header=bool(draft.has_header),
+            ean_column=str(validated_mapping.get("ean_column") or ""),
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+        db.add(profile)
+        db.flush()
+        profile_created = True
+
+    for map_row in validated_mapping.get("feature_maps", []):
+        feature_key = str(map_row.get("feature_key") or "").strip()
+        if not feature_key:
+            continue
+        fdef = feature_defs_by_key.get(feature_key)
+        if not fdef:
+            fdef = _upsert_feature_def(
+                db,
+                device_kind_id=int(selected_kind.id),
+                key=feature_key,
+                label_de=str(map_row.get("label_de") or map_row.get("feature_label") or feature_key),
+                data_type=str(map_row.get("data_type") or "text"),
+            )
+            feature_defs_by_key[feature_key] = fdef
+
+    if int(import_run.profile_id or 0) != int(profile.id):
+        import_run.profile_id = int(profile.id)
+    if not import_run.started_at:
+        import_run.started_at = _utcnow_naive()
+    db.add(import_run)
+    db.flush()
+
+    product_field_map = validated_mapping.get("product_field_map") or {}
+    ean_column = str(validated_mapping.get("ean_column") or "")
+    accessory_map = validated_mapping.get("accessory_map") or {}
+    accessory_source_column = str(accessory_map.get("source_column") or "").strip()
+    accessory_separator_mode = str(accessory_map.get("separator_mode") or "auto").strip().lower()
+    if accessory_separator_mode not in ACCESSORY_SEPARATOR_MODES:
+        accessory_separator_mode = "auto"
+
+    created = 0
+    updated = 0
+    skipped = 0
+    errors_list: list[str] = []
+    warnings_list: list[str] = []
+    open_accessory_preview: list[dict[str, str]] = []
+    accessory_linked_count = 0
+    accessory_open_count = 0
+    start_line = 2 if bool(draft.has_header) else 1
+    total_rows = len(rows)
+    _sync_job_update_progress(
+        db,
+        job,
+        phase="CSV-Daten werden verarbeitet",
+        phase_detail=f"{total_rows} Zeilen werden importiert.",
+        total_count=total_rows,
+        processed_count=0,
+        success_count=0,
+        error_count=0,
+        current_item_label=str(draft.filename_original or import_run.filename or "CSV-Datei"),
+        current_item_ref=f"Entwurf #{int(draft.id)}",
+        result_url=f"/catalog/import/runs/{int(import_run.id)}",
+        commit=True,
+    )
+
+    for line_no, row in enumerate(rows, start=start_line):
+        try:
+            ean_digits = re.sub(r"\D+", "", _csv_value(row, ean_column))
+            if not ean_digits:
+                skipped += 1
+                errors_list.append(f"Zeile {line_no}: EAN fehlt.")
+                continue
+
+            product = db.query(Product).filter(Product.ean == ean_digits).one_or_none()
+            if product:
+                updated += 1
+            else:
+                product = Product(active=True, track_mode="quantity", item_type="appliance")
+                created += 1
+
+            sales_name = _csv_value(row, product_field_map.get("sales_name"))
+            material_no = _csv_value(row, product_field_map.get("material_no"))
+            manufacturer_name = _csv_value(row, product_field_map.get("manufacturer_name"))
+            product_title_1 = _csv_value(row, product_field_map.get("product_title_1"))
+            product_title_2 = _csv_value(row, product_field_map.get("product_title_2"))
+            description = _csv_value(row, product_field_map.get("description"))
+            sale_price_raw = _csv_value(row, product_field_map.get("sale_price"))
+            sale_price_cents = _parse_eur_to_cents(sale_price_raw, "Verkaufspreis") if sale_price_raw else None
+
+            product.ean = ean_digits
+            product.sales_name = sales_name or product.sales_name
+            product.material_no = material_no or product.material_no
+            product.manufacturer_name = manufacturer_name or product.manufacturer_name
+            product.product_title_1 = product_title_1 or product.product_title_1
+            product.product_title_2 = product_title_2 or product.product_title_2
+            product.description = description or product.description
+            if sale_price_cents is not None:
+                product.sale_price_cents = int(sale_price_cents)
+                product.price_source = "csv"
+            product.name = sales_name or product_title_1 or product_title_2 or product.name or f"Produkt {ean_digits}"
+            product.item_type = "appliance"
+            product.track_mode = "quantity"
+            product.manufacturer_id = int(manufacturer.id)
+            product.manufacturer = str(manufacturer.name or "").strip() or product.manufacturer
+            if not product.manufacturer_name:
+                product.manufacturer_name = str(manufacturer.name or "").strip() or None
+            product.device_kind_id = int(selected_kind.id)
+            product.device_type_id = None
+            product.area_id = None
+            product.active = True
+            direct_image_raw = _csv_value(row, product_field_map.get("image_url"))
+            if direct_image_raw:
+                direct_image_url = _normalize_product_image_url(direct_image_raw)
+                if direct_image_url:
+                    product.image_url = direct_image_url
+                else:
+                    warnings_list.append(f"Zeile {line_no}: Ungültige Bild-URL in Feld 'image_url': {direct_image_raw}")
+            for image_key in _product_image_url_keys():
+                image_raw = _csv_value(row, product_field_map.get(image_key))
+                if not image_raw:
+                    continue
+                image_url = _normalize_product_image_url(image_raw)
+                if not image_url:
+                    warnings_list.append(f"Zeile {line_no}: Ungültige Bild-URL in Feld '{image_key}': {image_raw}")
+                    continue
+                setattr(product, image_key, image_url)
+
+            db.add(product)
+            db.flush()
+
+            for feature_map in validated_mapping.get("feature_maps", []):
+                feature_key = str(feature_map.get("feature_key") or "").strip()
+                source_column = str(feature_map.get("source_column") or "").strip()
+                if not feature_key or not source_column:
+                    continue
+                fdef = feature_defs_by_key.get(feature_key)
+                if not fdef:
+                    continue
+                _set_feature_value(
+                    db,
+                    product_id=int(product.id),
+                    feature_def=fdef,
+                    raw_value=_csv_value(row, source_column),
+                    manufacturer_id=int(manufacturer.id),
+                )
+
+            if accessory_source_column:
+                accessory_tokens = _import_parse_accessory_tokens(
+                    _csv_value(row, accessory_source_column),
+                    accessory_separator_mode,
+                )
+                for token in accessory_tokens:
+                    candidates = _import_match_accessory_candidates(
+                        db,
+                        token=token,
+                        product_id=int(product.id),
+                        manufacturer_id=int(manufacturer.id),
+                        device_kind_id=int(selected_kind.id),
+                    )
+                    normalized_value = _normalize_search_text(token) or _compact_search_text(token)
+                    ref_status = "not_found"
+                    matched_product_id = None
+                    if len(candidates) == 1:
+                        matched = candidates[0]
+                        matched_product_id = int(matched.id)
+                        link_added = _import_ensure_accessory_link(
+                            db,
+                            product_id=int(product.id),
+                            accessory_product_id=int(matched.id),
+                            source="csv",
+                            import_run_id=int(import_run.id),
+                        )
+                        if link_added:
+                            accessory_linked_count += 1
+                        ref_status = "linked"
+                    elif len(candidates) > 1:
+                        ref_status = "ambiguous"
+                        accessory_open_count += 1
+                        if len(open_accessory_preview) < 50:
+                            open_accessory_preview.append({"product_id": str(product.id), "token": token, "status": "mehrdeutig"})
+                    else:
+                        accessory_open_count += 1
+                        if len(open_accessory_preview) < 50:
+                            open_accessory_preview.append({"product_id": str(product.id), "token": token, "status": "offen"})
+                    db.add(
+                        ProductAccessoryReference(
+                            product_id=int(product.id),
+                            raw_value=token,
+                            normalized_value=normalized_value[:260],
+                            manufacturer_id=int(manufacturer.id),
+                            device_kind_id=int(selected_kind.id),
+                            status=ref_status,
+                            matched_product_id=matched_product_id,
+                            import_run_id=int(import_run.id),
+                            created_at=_utcnow_naive(),
+                        )
+                    )
+
+            _refresh_product_search_blob(db, product)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            skipped += 1
+            errors_list.append(f"Zeile {line_no}: {exc}")
+
+        processed_count = line_no - start_line + 1
+        if processed_count == 1 or processed_count % 10 == 0 or processed_count == total_rows:
+            row_label = (
+                _csv_value(row, product_field_map.get("sales_name"))
+                or _csv_value(row, product_field_map.get("product_title_1"))
+                or _csv_value(row, product_field_map.get("product_title_2"))
+                or re.sub(r"\D+", "", _csv_value(row, ean_column))
+                or f"Zeile {line_no}"
+            )
+            row_ref = re.sub(r"\D+", "", _csv_value(row, ean_column)) or f"Zeile {line_no}"
+            _sync_job_update_progress(
+                db,
+                job,
+                current_item_label=row_label,
+                current_item_ref=row_ref,
+                processed_count=processed_count,
+                success_count=created + updated,
+                error_count=len(errors_list),
+                result_url=f"/catalog/import/runs/{int(import_run.id)}",
+                commit=True,
+            )
+
+    resolved_accessory_count = 0
+    try:
+        resolved_accessory_count = _import_resolve_open_accessory_references(db)
+        if resolved_accessory_count:
+            db.commit()
+    except Exception:
+        db.rollback()
+        resolved_accessory_count = 0
+
+    should_update_profile = bool(validated_mapping.get("update_profile", True)) or profile_created
+    profile_updated = False
+    new_profile_columns: list[str] = []
+    if profile:
+        existing_map_rows = db.query(ImportProfileMap).filter(ImportProfileMap.profile_id == int(profile.id)).all()
+        existing_cols = {str(profile.ean_column or "").strip()}
+        for existing_map in existing_map_rows:
+            src = str(existing_map.source_column or "").strip()
+            if src:
+                existing_cols.add(src)
+        selected_cols = {str(validated_mapping.get("ean_column") or "").strip()}
+        for src in (validated_mapping.get("product_field_map") or {}).values():
+            src_clean = str(src or "").strip()
+            if src_clean:
+                selected_cols.add(src_clean)
+        for feature_map in validated_mapping.get("feature_maps") or []:
+            src_clean = str(feature_map.get("source_column") or "").strip()
+            if src_clean:
+                selected_cols.add(src_clean)
+        accessory_src_clean = str((validated_mapping.get("accessory_map") or {}).get("source_column") or "").strip()
+        if accessory_src_clean:
+            selected_cols.add(accessory_src_clean)
+        new_profile_columns = sorted([col for col in selected_cols if col and col not in existing_cols])
+
+        if should_update_profile:
+            profile.delimiter = str(draft.delimiter or ";")
+            profile.encoding = str(draft.encoding or "utf-8")
+            profile.has_header = bool(draft.has_header)
+            profile.ean_column = str(validated_mapping.get("ean_column") or profile.ean_column or "")
+            _touch_import_profile(db, profile)
+            _save_import_profile_maps(
+                db,
+                profile=profile,
+                product_field_map=validated_mapping.get("product_field_map") or {},
+                feature_maps=validated_mapping.get("feature_maps") or [],
+                accessory_map=validated_mapping.get("accessory_map") or {},
+            )
+            db.commit()
+            profile_updated = True
+
+    import_run.finished_at = _utcnow_naive()
+    import_run.inserted_count = int(created)
+    import_run.updated_count = int(updated)
+    import_run.error_count = int(len(errors_list))
+    import_run.log_text = _json_dump(
+        {
+            "draft_id": int(draft.id),
+            "errors": errors_list[:120],
+            "warnings": warnings_list[:120],
+            "skipped_count": skipped,
+            "accessory_linked_count": accessory_linked_count,
+            "accessory_open_count": accessory_open_count,
+            "resolved_accessory_count": resolved_accessory_count,
+            "open_accessory_preview": open_accessory_preview[:50],
+            "profile_updated": profile_updated,
+            "new_profile_columns": new_profile_columns,
+        }
+    )
+    db.add(import_run)
+    db.commit()
+
+    has_warnings = bool(warnings_list) or accessory_open_count > 0
+    if len(errors_list) == 0 and not has_warnings:
+        draft.status = IMPORT_DRAFT_STATUS_IMPORTED
+    elif len(errors_list) == 0:
+        draft.status = IMPORT_DRAFT_STATUS_WARNINGS
+    else:
+        draft.status = IMPORT_DRAFT_STATUS_FAILED
+    draft.current_step = "run"
+    draft.mapping_json = _json_dump(validated_mapping)
+    draft.validation_errors_json = _json_dump({"global_errors": errors_list[:50], "field_errors": {}}) if errors_list else None
+    draft.import_profile_id = int(profile.id) if profile else None
+    draft.updated_at = _utcnow_naive()
+    db.add(draft)
+    _sync_job_update_progress(
+        db,
+        job,
+        phase="CSV-Import abgeschlossen",
+        phase_detail=f"Neu {created} | aktualisiert {updated} | Fehler {len(errors_list)}",
+        total_count=total_rows,
+        processed_count=total_rows,
+        success_count=created + updated,
+        error_count=len(errors_list),
+        current_item_label="Fertig",
+        current_item_ref=f"Importlauf #{int(import_run.id)}",
+        result_url=f"/catalog/import/runs/{int(import_run.id)}",
+        commit=False,
+    )
+    _finish_sync_job(
+        db,
+        job,
+        status="done",
+        log_text=f"CSV-Import abgeschlossen: neu={created}, aktualisiert={updated}, fehler={len(errors_list)}",
+        result_url=f"/catalog/import/runs/{int(import_run.id)}",
+    )
+    return {
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": len(errors_list),
+        "warnings": len(warnings_list),
+        "import_run_id": int(import_run.id),
+    }
+
 def _guess_attribute_column(columns: list[str], attr: AttributeDef) -> str:
     candidates: list[str] = []
     name = str(attr.name or "").strip().lower()
@@ -12376,6 +13156,14 @@ def catalog_import_run_get(draft_id: int, request: Request, user=Depends(require
             mapped_product_fields.append({"target": label, "source": src})
     mapped_product_fields.insert(0, {"target": "EAN", "source": str(validated_mapping.get("ean_column") or "")})
     accessory_map = validated_mapping.get("accessory_map") or {}
+    job_key = _catalog_import_run_job_key(int(draft.id))
+    active_job = _sync_job_existing_active(db, job_key=job_key)
+    latest_job = _latest_sync_job_for_key(db, job_key)
+    latest_result_run = None
+    if latest_job and str(latest_job.result_url or "").strip():
+        match = re.search(r"/catalog/import/runs/(\d+)$", str(latest_job.result_url or "").strip())
+        if match:
+            latest_result_run = db.get(ImportRun, int(match.group(1)))
 
     return templates.TemplateResponse(
         "catalog/import_run.html",
@@ -12394,6 +13182,9 @@ def catalog_import_run_get(draft_id: int, request: Request, user=Depends(require
             accessory_separator_mode=str(accessory_map.get("separator_mode") or "auto"),
             total_rows=len(rows),
             unmapped_columns=unmapped_columns,
+            active_job=_sync_job_view(active_job) if active_job else None,
+            latest_job=_sync_job_view(latest_job) if latest_job else None,
+            latest_result_run=latest_result_run,
         ),
     )
 
@@ -12435,6 +13226,15 @@ async def catalog_import_run_post(draft_id: int, request: Request, user=Depends(
             mapping_data=validated_mapping,
             errors=errors,
         )
+
+    job_key = _catalog_import_run_job_key(int(draft.id))
+    active_job = _sync_job_existing_active(db, lock_key="catalog_import", job_key=job_key)
+    if active_job is not None:
+        if str(active_job.job_key or "").strip() == job_key:
+            _flash(request, "Für diesen Entwurf läuft bereits ein Hintergrundimport.", "warn")
+        else:
+            _flash(request, "Ein anderer Katalogimport läuft bereits. Bitte warten, bis dieser Lauf beendet ist.", "warn")
+        return RedirectResponse(f"/catalog/import/{int(draft.id)}/run", status_code=302)
 
     draft.mapping_json = _json_dump(validated_mapping)
     draft.validation_errors_json = None
@@ -12525,280 +13325,58 @@ async def catalog_import_run_post(draft_id: int, request: Request, user=Depends(
     db.add(import_run)
     db.commit()
     db.refresh(import_run)
-
-    product_field_map = validated_mapping.get("product_field_map") or {}
-    ean_column = str(validated_mapping.get("ean_column") or "")
-    accessory_map = validated_mapping.get("accessory_map") or {}
-    accessory_source_column = str(accessory_map.get("source_column") or "").strip()
-    accessory_separator_mode = str(accessory_map.get("separator_mode") or "auto").strip().lower()
-    if accessory_separator_mode not in ACCESSORY_SEPARATOR_MODES:
-        accessory_separator_mode = "auto"
-
-    created = 0
-    updated = 0
-    skipped = 0
-    errors_list: list[str] = []
-    warnings_list: list[str] = []
-    open_accessory_preview: list[dict[str, str]] = []
-    accessory_linked_count = 0
-    accessory_open_count = 0
-
-    start_line = 2 if bool(draft.has_header) else 1
-    for i, row in enumerate(rows, start=start_line):
-        try:
-            ean_digits = re.sub(r"\D+", "", _csv_value(row, ean_column))
-            if not ean_digits:
-                skipped += 1
-                errors_list.append(f"Zeile {i}: EAN fehlt.")
-                continue
-
-            product = db.query(Product).filter(Product.ean == ean_digits).one_or_none()
-            if product:
-                updated += 1
-            else:
-                product = Product(active=True, track_mode="quantity", item_type="appliance")
-                created += 1
-
-            sales_name = _csv_value(row, product_field_map.get("sales_name"))
-            material_no = _csv_value(row, product_field_map.get("material_no"))
-            manufacturer_name = _csv_value(row, product_field_map.get("manufacturer_name"))
-            product_title_1 = _csv_value(row, product_field_map.get("product_title_1"))
-            product_title_2 = _csv_value(row, product_field_map.get("product_title_2"))
-            description = _csv_value(row, product_field_map.get("description"))
-            sale_price_raw = _csv_value(row, product_field_map.get("sale_price"))
-            sale_price_cents = _parse_eur_to_cents(sale_price_raw, "Verkaufspreis") if sale_price_raw else None
-
-            product.ean = ean_digits
-            product.sales_name = sales_name or product.sales_name
-            product.material_no = material_no or product.material_no
-            product.manufacturer_name = manufacturer_name or product.manufacturer_name
-            product.product_title_1 = product_title_1 or product.product_title_1
-            product.product_title_2 = product_title_2 or product.product_title_2
-            product.description = description or product.description
-            if sale_price_cents is not None:
-                product.sale_price_cents = int(sale_price_cents)
-                product.price_source = "csv"
-            product.name = sales_name or product_title_1 or product_title_2 or product.name or f"Produkt {ean_digits}"
-            product.item_type = "appliance"
-            product.track_mode = "quantity"
-            product.manufacturer_id = int(manufacturer.id)
-            product.manufacturer = str(manufacturer.name or "").strip() or product.manufacturer
-            if not product.manufacturer_name:
-                product.manufacturer_name = str(manufacturer.name or "").strip() or None
-            product.device_kind_id = int(selected_kind.id)
-            product.device_type_id = None
-            product.area_id = None
-            product.active = True
-            direct_image_raw = _csv_value(row, product_field_map.get("image_url"))
-            if direct_image_raw:
-                direct_image_url = _normalize_product_image_url(direct_image_raw)
-                if direct_image_url:
-                    product.image_url = direct_image_url
-                else:
-                    warnings_list.append(f"Zeile {i}: Ungültige Bild-URL in Feld 'image_url': {direct_image_raw}")
-            for image_key in _product_image_url_keys():
-                image_raw = _csv_value(row, product_field_map.get(image_key))
-                if not image_raw:
-                    continue
-                image_url = _normalize_product_image_url(image_raw)
-                if not image_url:
-                    warnings_list.append(f"Zeile {i}: Ungültige Bild-URL in Feld '{image_key}': {image_raw}")
-                    continue
-                setattr(product, image_key, image_url)
-
-            db.add(product)
-            db.flush()
-
-            for map_row in validated_mapping.get("feature_maps", []):
-                feature_key = str(map_row.get("feature_key") or "").strip()
-                source_column = str(map_row.get("source_column") or "").strip()
-                if not feature_key or not source_column:
-                    continue
-                fdef = feature_defs_by_key.get(feature_key)
-                if not fdef:
-                    continue
-                _set_feature_value(
-                    db,
-                    product_id=int(product.id),
-                    feature_def=fdef,
-                    raw_value=_csv_value(row, source_column),
-                    manufacturer_id=int(manufacturer.id),
-                )
-
-            if accessory_source_column:
-                accessory_tokens = _import_parse_accessory_tokens(
-                    _csv_value(row, accessory_source_column),
-                    accessory_separator_mode,
-                )
-                for token in accessory_tokens:
-                    candidates = _import_match_accessory_candidates(
-                        db,
-                        token=token,
-                        product_id=int(product.id),
-                        manufacturer_id=int(manufacturer.id),
-                        device_kind_id=int(selected_kind.id),
-                    )
-                    normalized_value = _normalize_search_text(token) or _compact_search_text(token)
-                    ref_status = "not_found"
-                    matched_product_id = None
-                    if len(candidates) == 1:
-                        matched = candidates[0]
-                        matched_product_id = int(matched.id)
-                        link_added = _import_ensure_accessory_link(
-                            db,
-                            product_id=int(product.id),
-                            accessory_product_id=int(matched.id),
-                            source="csv",
-                            import_run_id=int(import_run.id),
-                        )
-                        if link_added:
-                            accessory_linked_count += 1
-                        ref_status = "linked"
-                    elif len(candidates) > 1:
-                        ref_status = "ambiguous"
-                        accessory_open_count += 1
-                        if len(open_accessory_preview) < 50:
-                            open_accessory_preview.append(
-                                {
-                                    "product_id": str(product.id),
-                                    "token": token,
-                                    "status": "mehrdeutig",
-                                }
-                            )
-                    else:
-                        ref_status = "not_found"
-                        accessory_open_count += 1
-                        if len(open_accessory_preview) < 50:
-                            open_accessory_preview.append(
-                                {
-                                    "product_id": str(product.id),
-                                    "token": token,
-                                    "status": "offen",
-                                }
-                            )
-                    db.add(
-                        ProductAccessoryReference(
-                            product_id=int(product.id),
-                            raw_value=token,
-                            normalized_value=normalized_value[:260],
-                            manufacturer_id=int(manufacturer.id),
-                            device_kind_id=int(selected_kind.id),
-                            status=ref_status,
-                            matched_product_id=matched_product_id,
-                            import_run_id=int(import_run.id),
-                            created_at=_utcnow_naive(),
-                        )
-                    )
-
-            _refresh_product_search_blob(db, product)
-            db.commit()
-        except Exception as exc:
-            db.rollback()
-            skipped += 1
-            errors_list.append(f"Zeile {i}: {exc}")
-
-    resolved_accessory_count = 0
-    try:
-        resolved_accessory_count = _import_resolve_open_accessory_references(db)
-        if resolved_accessory_count:
-            db.commit()
-    except Exception:
-        db.rollback()
-        resolved_accessory_count = 0
-
-    should_update_profile = bool(validated_mapping.get("update_profile", True)) or profile_created
-    profile_updated = False
-    new_profile_columns: list[str] = []
-    if profile:
-        existing_map_rows = db.query(ImportProfileMap).filter(ImportProfileMap.profile_id == int(profile.id)).all()
-        existing_cols = {str(profile.ean_column or "").strip()}
-        for row in existing_map_rows:
-            src = str(row.source_column or "").strip()
-            if src:
-                existing_cols.add(src)
-        selected_cols = {str(validated_mapping.get("ean_column") or "").strip()}
-        for src in (validated_mapping.get("product_field_map") or {}).values():
-            src_clean = str(src or "").strip()
-            if src_clean:
-                selected_cols.add(src_clean)
-        for map_row in validated_mapping.get("feature_maps", []):
-            src_clean = str(map_row.get("source_column") or "").strip()
-            if src_clean:
-                selected_cols.add(src_clean)
-        accessory_src_clean = str((validated_mapping.get("accessory_map") or {}).get("source_column") or "").strip()
-        if accessory_src_clean:
-            selected_cols.add(accessory_src_clean)
-        new_profile_columns = sorted([col for col in selected_cols if col and col not in existing_cols])
-
-        if should_update_profile:
-            profile.delimiter = str(draft.delimiter or ";")
-            profile.encoding = str(draft.encoding or "utf-8")
-            profile.has_header = bool(draft.has_header)
-            profile.ean_column = str(validated_mapping.get("ean_column") or profile.ean_column or "")
-            _touch_import_profile(db, profile)
-            _save_import_profile_maps(
-                db,
-                profile=profile,
-                product_field_map=validated_mapping.get("product_field_map") or {},
-                feature_maps=validated_mapping.get("feature_maps") or [],
-                accessory_map=validated_mapping.get("accessory_map") or {},
-            )
-            db.commit()
-            profile_updated = True
-
-    import_run.finished_at = _utcnow_naive()
-    import_run.inserted_count = int(created)
-    import_run.updated_count = int(updated)
-    import_run.error_count = int(len(errors_list))
-    import_run.log_text = _json_dump(
-        {
-            "errors": errors_list[:120],
-            "warnings": warnings_list[:120],
-            "skipped_count": skipped,
-            "accessory_linked_count": accessory_linked_count,
-            "accessory_open_count": accessory_open_count,
-            "resolved_accessory_count": resolved_accessory_count,
-        }
+    job, created_job = _enqueue_sync_job(
+        db,
+        system_name="catalog",
+        direction="pull",
+        entity_type="catalog_import_run",
+        title="CSV-Katalogimport",
+        job_key=job_key,
+        lock_key="catalog_import",
+        log_text="CSV-Katalogimport",
+        progress={
+            "draft_id": int(draft.id),
+            "import_run_id": int(import_run.id),
+            "phase": "Wartet auf Start",
+            "phase_detail": f"{len(rows)} Zeilen sind vorbereitet.",
+            "total_count": len(rows),
+            "processed_count": 0,
+            "success_count": 0,
+            "error_count": 0,
+            "current_item_label": str(draft.filename_original or import_run.filename or "CSV-Datei"),
+            "current_item_ref": f"Entwurf #{int(draft.id)}",
+        },
+        result_url=f"/catalog/import/runs/{int(import_run.id)}",
     )
-    db.add(import_run)
+    if not created_job:
+        db.delete(import_run)
     db.commit()
-
-    has_warnings = bool(warnings_list) or accessory_open_count > 0
-    if len(errors_list) == 0 and not has_warnings:
-        draft.status = IMPORT_DRAFT_STATUS_IMPORTED
-    elif len(errors_list) == 0:
-        draft.status = IMPORT_DRAFT_STATUS_WARNINGS
+    if created_job:
+        _flash(
+            request,
+            f"CSV-Import wurde als Hintergrundjob gestartet. {len(rows)} Zeilen werden verarbeitet, du kannst in anderen Bereichen weiterarbeiten.",
+            "info",
+        )
     else:
-        draft.status = IMPORT_DRAFT_STATUS_FAILED
-    draft.current_step = "run"
-    draft.mapping_json = _json_dump(validated_mapping)
-    draft.validation_errors_json = _json_dump({"global_errors": errors_list[:50], "field_errors": {}}) if errors_list else None
-    draft.import_profile_id = int(profile.id) if profile else None
-    draft.updated_at = _utcnow_naive()
-    db.add(draft)
-    db.commit()
+        _flash(request, "Für diesen Entwurf läuft bereits ein Hintergrundimport.", "warn")
+    return RedirectResponse(f"/catalog/import/{int(draft.id)}/run", status_code=302)
 
-    reopen_url = f"/catalog/import/{int(draft.id)}/map" if draft.status == IMPORT_DRAFT_STATUS_FAILED else _import_draft_open_url(draft)
+
+@app.get("/catalog/import/runs/{import_run_id}", response_class=HTMLResponse)
+def catalog_import_result_get(import_run_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    import_run = db.get(ImportRun, int(import_run_id))
+    if not import_run:
+        raise HTTPException(status_code=404)
+    payload = _catalog_import_result_payload(import_run)
+    draft = db.get(ImportDraft, _to_int(payload.get("draft_id"), 0))
+    if not draft:
+        raise HTTPException(status_code=404)
     return templates.TemplateResponse(
         "catalog/import_result.html",
         _ctx(
             request,
             user=user,
-            draft=draft,
-            created_count=created,
-            updated_count=updated,
-            skipped_count=skipped,
-            error_count=len(errors_list),
-            errors_preview=errors_list[:50],
-            warning_count=len(warnings_list),
-            warnings_preview=warnings_list[:50],
-            accessory_linked_count=accessory_linked_count,
-            accessory_open_count=accessory_open_count,
-            resolved_accessory_count=resolved_accessory_count,
-            open_accessory_preview=open_accessory_preview[:50],
-            profile_updated=profile_updated,
-            new_profile_columns=new_profile_columns,
-            reopen_url=reopen_url,
+            **_catalog_import_result_context(draft=draft, import_run=import_run),
         ),
     )
 
@@ -18387,14 +18965,21 @@ def _customer_init_upsert_sevdesk_contact_stats_stage(db: Session, *, contact_id
     return "created" if created else "updated" if changed else "skipped"
 
 
-def _sevdesk_list_all(fetch_fn, *, page_size: int = 200, max_rows: int = 5000) -> list[dict]:
+def _sevdesk_list_all(fetch_fn, *, page_size: int = 200, max_rows: int = 5000, progress_cb=None) -> list[dict]:
     rows: list[dict] = []
     offset = 0
+    page_no = 0
     while len(rows) < max_rows:
+        page_no += 1
         batch = fetch_fn(limit=page_size, offset=offset)
         if not batch:
             break
         rows.extend(batch)
+        if callable(progress_cb):
+            try:
+                progress_cb(count=len(rows), page_no=page_no, batch_count=len(batch))
+            except Exception:
+                pass
         if len(batch) < page_size:
             break
         offset += page_size
@@ -18411,7 +18996,7 @@ def _customer_init_outsmart_payload_key(payload: dict) -> str:
     )
 
 
-def _customer_init_collect_outsmart_workorders(settings: dict[str, str | bool]) -> tuple[list[dict], list[str]]:
+def _customer_init_collect_outsmart_workorders(settings: dict[str, str | bool], progress_cb=None) -> tuple[list[dict], list[str]]:
     warnings: list[str] = []
     rows: list[dict] = []
     seen: set[str] = set()
@@ -18457,6 +19042,11 @@ def _customer_init_collect_outsmart_workorders(settings: dict[str, str | bool]) 
                 return
             before = len(seen)
             add_batch(batch)
+            if callable(progress_cb):
+                try:
+                    progress_cb(label=label, page_no=page_no, count=len(rows), batch_count=len(batch))
+                except Exception:
+                    pass
             if len(batch) < page_size:
                 return
             if len(seen) == before:
@@ -18480,16 +19070,38 @@ def _customer_init_collect_outsmart_workorders(settings: dict[str, str | bool]) 
     return rows, warnings
 
 
-def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
+def _customer_init_import_outsmart(db: Session, job: ExternalSyncJob | None = None) -> dict[str, int]:
     settings = _outsmart_settings(db, include_secret=True)
-    job = _start_sync_job(db, system_name="outsmart", direction="pull", entity_type="customer_init_outsmart", log_text="Kunden-Initialisierung: OutSmart")
+    created_job = job is None
+    if job is None:
+        job = _start_sync_job(
+            db,
+            system_name="outsmart",
+            direction="pull",
+            entity_type="customer_init_outsmart",
+            job_key="customer_init_outsmart",
+            lock_key="customer_init",
+            title="OutSmart-Initialimport",
+            log_text="Kunden-Initialisierung: OutSmart",
+        )
     summary = {"relations": 0, "projects": 0, "workorders": 0, "errors": 0, "warnings": []}
     try:
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="OutSmart-Daten werden geladen",
+            phase_detail="Relationen, Projekte und Arbeitsaufträge werden aus OutSmart gelesen.",
+            processed_count=0,
+            success_count=0,
+            error_count=0,
+            commit=True,
+        )
         relation_rows: list[dict] = []
         project_rows: list[dict] = []
         workorder_rows: list[dict] = []
         try:
             relation_rows = _outsmart_extract_rows(outsmart_fetch_relations(settings))
+            _sync_job_update_progress(db, job, phase_detail=f"Relationen geladen: {len(relation_rows)}", current_item_label="OutSmart-Relationen", commit=True)
         except Exception as exc:
             message = str(exc)
             if "OutSmart-Fehler 404" in message and "\"code\":1001" in message:
@@ -18498,6 +19110,7 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
                 raise
         try:
             project_rows = _outsmart_extract_rows(outsmart_fetch_projects(settings))
+            _sync_job_update_progress(db, job, phase_detail=f"Projekte geladen: {len(project_rows)}", current_item_label="OutSmart-Projekte", commit=True)
         except Exception as exc:
             message = str(exc)
             if "timed out" in message.lower():
@@ -18506,8 +19119,33 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
                 summary["warnings"].append("GetProjects ist in dieser OutSmart-Instanz nicht verfügbar. Projekte werden soweit möglich aus Arbeitsaufträgen abgeleitet.")
             else:
                 raise
-        workorder_rows, workorder_warnings = _customer_init_collect_outsmart_workorders(settings)
+        workorder_rows, workorder_warnings = _customer_init_collect_outsmart_workorders(
+            settings,
+            progress_cb=lambda **info: _sync_job_update_progress(
+                db,
+                job,
+                phase="OutSmart-Arbeitsaufträge werden geladen",
+                phase_detail=f"{info.get('label') or 'GetWorkorders'} | Seite {int(info.get('page_no') or 0)} | bisher {int(info.get('count') or 0)}",
+                current_item_label="OutSmart-Workorders",
+                processed_count=int(info.get("count") or 0),
+                commit=True,
+            ),
+        )
         summary["warnings"].extend(workorder_warnings)
+        total_count = len(relation_rows) + len(project_rows) + len(workorder_rows)
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="OutSmart-Stage-Daten werden gespeichert",
+            phase_detail=f"Gesamt {total_count} Datensätze",
+            total_count=total_count,
+            processed_count=0,
+            success_count=0,
+            error_count=0,
+            current_item_label="Stage-Import",
+            commit=True,
+        )
+        processed_count = 0
         for payload in relation_rows:
             try:
                 state = _customer_init_upsert_outsmart_relation_stage(db, payload)
@@ -18515,6 +19153,18 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
                     summary["relations"] += 1
             except Exception:
                 summary["errors"] += 1
+            processed_count += 1
+            if processed_count == 1 or processed_count % 25 == 0 or processed_count == total_count:
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(payload.get("name") or payload.get("relation_no") or "OutSmart-Relation"),
+                    current_item_ref=str(payload.get("relation_no") or payload.get("debtor_no") or ""),
+                    processed_count=processed_count,
+                    success_count=summary["relations"] + summary["projects"] + summary["workorders"],
+                    error_count=summary["errors"],
+                    commit=True,
+                )
         relations_before_projects = int(db.query(OutsmartRelationStage).count())
         for payload in project_rows:
             try:
@@ -18523,6 +19173,18 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
                     summary["projects"] += 1
             except Exception:
                 summary["errors"] += 1
+            processed_count += 1
+            if processed_count == 1 or processed_count % 25 == 0 or processed_count == total_count:
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(payload.get("name") or payload.get("project_code") or "OutSmart-Projekt"),
+                    current_item_ref=str(payload.get("project_code") or ""),
+                    processed_count=processed_count,
+                    success_count=summary["relations"] + summary["projects"] + summary["workorders"],
+                    error_count=summary["errors"],
+                    commit=True,
+                )
         relations_before_workorders = int(db.query(OutsmartRelationStage).count())
         projects_before_workorders = int(db.query(OutsmartProjectStage).count())
         for payload in workorder_rows:
@@ -18532,6 +19194,18 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
                     summary["workorders"] += 1
             except Exception:
                 summary["errors"] += 1
+            processed_count += 1
+            if processed_count == 1 or processed_count % 25 == 0 or processed_count == total_count:
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(payload.get("CustomerName") or payload.get("customer_name") or payload.get("WorkorderNo") or "OutSmart-Workorder"),
+                    current_item_ref=str(payload.get("WorkorderNo") or payload.get("workorder_no") or ""),
+                    processed_count=processed_count,
+                    success_count=summary["relations"] + summary["projects"] + summary["workorders"],
+                    error_count=summary["errors"],
+                    commit=True,
+                )
         projects_after_workorders = int(db.query(OutsmartProjectStage).count())
         if projects_after_workorders > projects_before_workorders:
             summary["projects"] += projects_after_workorders - projects_before_workorders
@@ -18543,22 +19217,103 @@ def _customer_init_import_outsmart(db: Session) -> dict[str, int]:
             summary["relations"] += relations_after_workorders - relations_before_workorders
         if not relation_rows and not project_rows and not workorder_rows:
             raise ValueError("OutSmart lieferte keine Seed-Daten für die Kunden-Initialisierung.")
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="OutSmart-Initialimport abgeschlossen",
+            phase_detail=f"Relationen {summary['relations']} | Projekte {summary['projects']} | Arbeitsaufträge {summary['workorders']}",
+            total_count=total_count,
+            processed_count=total_count,
+            success_count=summary["relations"] + summary["projects"] + summary["workorders"],
+            error_count=summary["errors"],
+            current_item_label="Fertig",
+            current_item_ref="",
+            note=" | ".join([str(message) for message in summary.get("warnings") or []][:3]) or None,
+            commit=False,
+        )
         _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
         _customer_init_mark_now(db, CUSTOMER_INIT_LAST_OUTSMART_IMPORT_AT)
         return summary
     except Exception as exc:
-        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        if created_job:
+            _finish_sync_job(db, job, status="failed", log_text=str(exc))
         raise
 
 
-def _customer_init_import_sevdesk(db: Session) -> dict[str, int]:
+def _customer_init_import_sevdesk(db: Session, job: ExternalSyncJob | None = None) -> dict[str, int]:
     settings = _sevdesk_settings(db, include_secret=True)
-    job = _start_sync_job(db, system_name="sevdesk", direction="pull", entity_type="customer_init_sevdesk", log_text="Kunden-Initialisierung: sevDesk")
+    created_job = job is None
+    if job is None:
+        job = _start_sync_job(
+            db,
+            system_name="sevdesk",
+            direction="pull",
+            entity_type="customer_init_sevdesk",
+            job_key="customer_init_sevdesk",
+            lock_key="customer_init",
+            title="sevDesk-Initialimport",
+            log_text="Kunden-Initialisierung: sevDesk",
+        )
     summary = {"contacts": 0, "orders": 0, "invoices": 0, "stats": 0, "errors": 0}
     try:
-        contacts = _sevdesk_list_all(lambda **kw: sevdesk_list_contacts(settings, **kw))
-        orders = _sevdesk_list_all(lambda **kw: sevdesk_list_orders(settings, **kw))
-        invoices = _sevdesk_list_all(lambda **kw: sevdesk_list_invoices(settings, **kw))
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="sevDesk-Daten werden geladen",
+            phase_detail="Kontakte, Angebote und Rechnungen werden gelesen.",
+            processed_count=0,
+            success_count=0,
+            error_count=0,
+            commit=True,
+        )
+        contacts = _sevdesk_list_all(
+            lambda **kw: sevdesk_list_contacts(settings, **kw),
+            progress_cb=lambda **info: _sync_job_update_progress(
+                db,
+                job,
+                phase="sevDesk-Kontakte werden geladen",
+                phase_detail=f"Seite {int(info.get('page_no') or 0)} | bisher {int(info.get('count') or 0)} Kontakte",
+                current_item_label="sevDesk-Kontakte",
+                processed_count=int(info.get("count") or 0),
+                commit=True,
+            ),
+        )
+        orders = _sevdesk_list_all(
+            lambda **kw: sevdesk_list_orders(settings, **kw),
+            progress_cb=lambda **info: _sync_job_update_progress(
+                db,
+                job,
+                phase="sevDesk-Angebote werden geladen",
+                phase_detail=f"Seite {int(info.get('page_no') or 0)} | bisher {int(info.get('count') or 0)} Angebote",
+                current_item_label="sevDesk-Angebote",
+                commit=True,
+            ),
+        )
+        invoices = _sevdesk_list_all(
+            lambda **kw: sevdesk_list_invoices(settings, **kw),
+            progress_cb=lambda **info: _sync_job_update_progress(
+                db,
+                job,
+                phase="sevDesk-Rechnungen werden geladen",
+                phase_detail=f"Seite {int(info.get('page_no') or 0)} | bisher {int(info.get('count') or 0)} Rechnungen",
+                current_item_label="sevDesk-Rechnungen",
+                commit=True,
+            ),
+        )
+        total_count = len(contacts) + len(orders) + len(invoices)
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="sevDesk-Stage-Daten werden gespeichert",
+            phase_detail=f"Gesamt {total_count} Datensätze",
+            total_count=total_count,
+            processed_count=0,
+            success_count=0,
+            error_count=0,
+            current_item_label="Stage-Import",
+            commit=True,
+        )
+        processed_count = 0
         for payload in contacts:
             try:
                 state = _customer_init_upsert_sevdesk_contact_stage(db, payload)
@@ -18566,6 +19321,18 @@ def _customer_init_import_sevdesk(db: Session) -> dict[str, int]:
                     summary["contacts"] += 1
             except Exception:
                 summary["errors"] += 1
+            processed_count += 1
+            if processed_count == 1 or processed_count % 25 == 0 or processed_count == total_count:
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(payload.get("name") or payload.get("customerNumber") or "sevDesk-Kontakt"),
+                    current_item_ref=sevdesk_first_value(payload, ("customerNumber", "id", "ID")),
+                    processed_count=processed_count,
+                    success_count=summary["contacts"] + summary["orders"] + summary["invoices"] + summary["stats"],
+                    error_count=summary["errors"],
+                    commit=True,
+                )
         for payload in orders:
             try:
                 state = _customer_init_upsert_sevdesk_order_stage(db, payload)
@@ -18573,6 +19340,18 @@ def _customer_init_import_sevdesk(db: Session) -> dict[str, int]:
                     summary["orders"] += 1
             except Exception:
                 summary["errors"] += 1
+            processed_count += 1
+            if processed_count == 1 or processed_count % 25 == 0 or processed_count == total_count:
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(sevdesk_first_value(payload, ("orderNumber", "name", "id")) or "sevDesk-Angebot"),
+                    current_item_ref=sevdesk_first_value(payload, ("orderNumber", "id")),
+                    processed_count=processed_count,
+                    success_count=summary["contacts"] + summary["orders"] + summary["invoices"] + summary["stats"],
+                    error_count=summary["errors"],
+                    commit=True,
+                )
         for payload in invoices:
             try:
                 state = _customer_init_upsert_sevdesk_invoice_stage(db, payload)
@@ -18580,6 +19359,18 @@ def _customer_init_import_sevdesk(db: Session) -> dict[str, int]:
                     summary["invoices"] += 1
             except Exception:
                 summary["errors"] += 1
+            processed_count += 1
+            if processed_count == 1 or processed_count % 25 == 0 or processed_count == total_count:
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(sevdesk_first_value(payload, ("invoiceNumber", "id")) or "sevDesk-Rechnung"),
+                    current_item_ref=sevdesk_first_value(payload, ("invoiceNumber", "id")),
+                    processed_count=processed_count,
+                    success_count=summary["contacts"] + summary["orders"] + summary["invoices"] + summary["stats"],
+                    error_count=summary["errors"],
+                    commit=True,
+                )
         stats_by_contact: dict[str, dict[str, int]] = {}
         for payload in orders:
             contact = sevdesk_first_value(payload, ("contact.id", "contact", "contact_id"))
@@ -18608,11 +19399,25 @@ def _customer_init_import_sevdesk(db: Session) -> dict[str, int]:
                     summary["stats"] += 1
             except Exception:
                 summary["errors"] += 1
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="sevDesk-Initialimport abgeschlossen",
+            phase_detail=f"Kontakte {summary['contacts']} | Angebote {summary['orders']} | Rechnungen {summary['invoices']}",
+            total_count=total_count,
+            processed_count=total_count,
+            success_count=summary["contacts"] + summary["orders"] + summary["invoices"] + summary["stats"],
+            error_count=summary["errors"],
+            current_item_label="Fertig",
+            current_item_ref="",
+            commit=False,
+        )
         _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
         _customer_init_mark_now(db, CUSTOMER_INIT_LAST_SEVDESK_IMPORT_AT)
         return summary
     except Exception as exc:
-        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        if created_job:
+            _finish_sync_job(db, job, status="failed", log_text=str(exc))
         raise
 
 
@@ -18659,9 +19464,41 @@ def _customer_init_existing_customer_for_members(db: Session, members: list[dict
     return None, ""
 
 
-def _customer_init_build_clusters(db: Session) -> dict[str, int]:
-    job = _start_sync_job(db, system_name="local", direction="pull", entity_type="customer_init_matching", log_text="Kunden-Initialisierung: Matching")
+def _customer_init_build_clusters(db: Session, job: ExternalSyncJob | None = None) -> dict[str, int]:
+    created_job = job is None
+    if job is None:
+        job = _start_sync_job(
+            db,
+            system_name="local",
+            direction="pull",
+            entity_type="customer_init_matching",
+            job_key="customer_init_matching",
+            lock_key="customer_init",
+            title="Kunden-Matching",
+            log_text="Kunden-Initialisierung: Matching",
+        )
     try:
+        stage_total = (
+            int(db.query(OutsmartRelationStage).count())
+            + int(db.query(OutsmartProjectStage).count())
+            + int(db.query(OutsmartWorkorderStage).count())
+            + int(db.query(SevdeskContactStage).count())
+            + int(db.query(SevdeskOrderStage).count())
+            + int(db.query(SevdeskInvoiceStage).count())
+            + int(db.query(SevdeskContactStatsStage).count())
+        )
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="Matching-Regeln werden berechnet",
+            phase_detail=f"{stage_total} Stage-Datensätze werden ausgewertet.",
+            total_count=0,
+            processed_count=0,
+            success_count=0,
+            error_count=0,
+            current_item_label="Clusterregeln",
+            commit=True,
+        )
         payloads = build_customer_init_clusters(
             outsmart_relations=[
                 {
@@ -18753,7 +19590,20 @@ def _customer_init_build_clusters(db: Session) -> dict[str, int]:
                 for row in db.query(SevdeskContactStatsStage).all()
             ],
         )
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="Cluster werden gespeichert",
+            phase_detail=f"{len(payloads)} Cluster werden geschrieben.",
+            total_count=len(payloads),
+            processed_count=0,
+            success_count=0,
+            error_count=0,
+            current_item_label="Cluster",
+            commit=True,
+        )
         seen_keys: set[str] = set()
+        processed_count = 0
         for payload in payloads:
             cluster_key = str(payload.get("cluster_key") or "").strip()
             if not cluster_key:
@@ -18797,6 +19647,18 @@ def _customer_init_build_clusters(db: Session) -> dict[str, int]:
                         created_at=_utcnow_naive(),
                     )
                 )
+            processed_count += 1
+            if processed_count == 1 or processed_count % 25 == 0 or processed_count == len(payloads):
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(payload.get("display_name") or cluster_key or "Cluster"),
+                    current_item_ref=cluster_key,
+                    processed_count=processed_count,
+                    success_count=processed_count,
+                    error_count=0,
+                    commit=True,
+                )
         stale_rows = (
             db.query(CustomerInitCluster)
             .filter(~CustomerInitCluster.cluster_key.in_(list(seen_keys) or ["__none__"]), CustomerInitCluster.status != "materialized")
@@ -18811,11 +19673,25 @@ def _customer_init_build_clusters(db: Session) -> dict[str, int]:
             "needs_review": int(db.query(CustomerInitCluster).filter(CustomerInitCluster.status == "needs_review").count()),
             "materialized": int(db.query(CustomerInitCluster).filter(CustomerInitCluster.status == "materialized").count()),
         }
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="Matching abgeschlossen",
+            phase_detail=f"Cluster {summary['clusters']} | bereit {summary['ready']} | prüfen {summary['needs_review']}",
+            total_count=len(payloads),
+            processed_count=len(payloads),
+            success_count=summary["clusters"],
+            error_count=0,
+            current_item_label="Fertig",
+            current_item_ref="",
+            commit=False,
+        )
         _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
         _customer_init_mark_now(db, CUSTOMER_INIT_LAST_MATCH_AT)
         return summary
     except Exception as exc:
-        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        if created_job:
+            _finish_sync_job(db, job, status="failed", log_text=str(exc))
         raise
 
 
@@ -19040,8 +19916,19 @@ def _customer_init_materialize_cluster(db: Session, cluster: CustomerInitCluster
     return customer, created
 
 
-def _customer_init_materialize_ready_clusters(db: Session) -> dict[str, int]:
-    job = _start_sync_job(db, system_name="local", direction="pull", entity_type="customer_init_materialize", log_text="Kunden-Initialisierung: Übernahme")
+def _customer_init_materialize_ready_clusters(db: Session, job: ExternalSyncJob | None = None) -> dict[str, int]:
+    created_job = job is None
+    if job is None:
+        job = _start_sync_job(
+            db,
+            system_name="local",
+            direction="pull",
+            entity_type="customer_init_materialize",
+            job_key="customer_init_materialize",
+            lock_key="customer_init",
+            title="Master-Kunden erzeugen",
+            log_text="Kunden-Initialisierung: Übernahme",
+        )
     created = 0
     updated = 0
     skipped = 0
@@ -19052,9 +19939,24 @@ def _customer_init_materialize_ready_clusters(db: Session) -> dict[str, int]:
             .order_by(CustomerInitCluster.anchor_system.asc(), CustomerInitCluster.id.asc())
             .all()
         )
+        total_count = len(rows)
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="Master-Kunden werden erzeugt",
+            phase_detail=f"{total_count} Cluster werden übernommen oder geprüft.",
+            total_count=total_count,
+            processed_count=0,
+            success_count=0,
+            error_count=0,
+            current_item_label="Materialisierung",
+            commit=True,
+        )
+        processed_count = 0
         for row in rows:
             if _crm_normalize_key(row.status) == "materialized" and int(row.master_customer_id or 0) > 0:
                 skipped += 1
+                processed_count += 1
                 continue
             customer, was_created = _customer_init_materialize_cluster(db, row)
             if was_created:
@@ -19072,12 +19974,38 @@ def _customer_init_materialize_ready_clusters(db: Session) -> dict[str, int]:
                 external_ref=row.cluster_key,
                 meta={"cluster_id": int(row.id)},
             )
+            processed_count += 1
+            if processed_count == 1 or processed_count % 10 == 0 or processed_count == total_count:
+                _sync_job_update_progress(
+                    db,
+                    job,
+                    current_item_label=str(row.display_name or row.cluster_key or "Cluster"),
+                    current_item_ref=str(row.cluster_key or ""),
+                    processed_count=processed_count,
+                    success_count=created + updated,
+                    error_count=0,
+                    commit=True,
+                )
         summary = {"created": created, "updated": updated, "skipped": skipped}
+        _sync_job_update_progress(
+            db,
+            job,
+            phase="Materialisierung abgeschlossen",
+            phase_detail=f"Neu {created} | aktualisiert {updated} | übersprungen {skipped}",
+            total_count=total_count,
+            processed_count=total_count,
+            success_count=created + updated,
+            error_count=0,
+            current_item_label="Fertig",
+            current_item_ref="",
+            commit=False,
+        )
         _finish_sync_job(db, job, status="done", log_text=json.dumps(summary, ensure_ascii=False))
         _customer_init_mark_now(db, CUSTOMER_INIT_LAST_MATERIALIZE_AT)
         return summary
     except Exception as exc:
-        _finish_sync_job(db, job, status="failed", log_text=str(exc))
+        if created_job:
+            _finish_sync_job(db, job, status="failed", log_text=str(exc))
         raise
 
 
@@ -21916,6 +22844,11 @@ def _sync_job_entity_label(entity_type: str | None) -> str:
         "workorder": "Arbeitsauftrag",
         "timeline": "Timeline",
         "document": "Dokument",
+        "customer_init_outsmart": "OutSmart-Initialimport",
+        "customer_init_sevdesk": "sevDesk-Initialimport",
+        "customer_init_matching": "Kunden-Matching",
+        "customer_init_materialize": "Materialisierung",
+        "catalog_import_run": "CSV-Katalogimport",
     }
     key = str(entity_type or "").strip().lower()
     return mapping.get(key, entity_type or "")
@@ -23120,8 +24053,48 @@ async def einkauf_document_match_post(item_id: int, request: Request, user=Depen
 
 @app.get("/system/sync-log", response_class=HTMLResponse)
 def system_sync_log(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
-    rows = db.query(ExternalSyncJob).order_by(func.coalesce(ExternalSyncJob.started_at, ExternalSyncJob.id).desc()).limit(300).all()
-    return templates.TemplateResponse("system/sync_log.html", _ctx(request, user=user, rows=rows))
+    rows = (
+        db.query(ExternalSyncJob)
+        .order_by(
+            case((ExternalSyncJob.status == "running", 0), (ExternalSyncJob.status == "queued", 1), else_=2),
+            case((ExternalSyncJob.started_at.is_(None), 1), else_=0),
+            ExternalSyncJob.started_at.desc(),
+            case((ExternalSyncJob.queued_at.is_(None), 1), else_=0),
+            ExternalSyncJob.queued_at.desc(),
+            ExternalSyncJob.id.desc(),
+        )
+        .limit(300)
+        .all()
+    )
+    return templates.TemplateResponse("system/sync_log.html", _ctx(request, user=user, rows=[_sync_job_view(row) for row in rows]))
+
+
+@app.get("/api/jobs/active")
+def api_jobs_active(user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ = user
+    rows = (
+        db.query(ExternalSyncJob)
+        .filter(ExternalSyncJob.status.in_(BACKGROUND_JOB_ACTIVE_STATUSES))
+        .order_by(
+            case((ExternalSyncJob.status == "running", 0), else_=1),
+            case((ExternalSyncJob.started_at.is_(None), 1), else_=0),
+            ExternalSyncJob.started_at.asc(),
+            case((ExternalSyncJob.queued_at.is_(None), 1), else_=0),
+            ExternalSyncJob.queued_at.asc(),
+            ExternalSyncJob.id.asc(),
+        )
+        .all()
+    )
+    return JSONResponse({"items": [_sync_job_view(row) for row in rows]})
+
+
+@app.get("/api/jobs/{job_id}")
+def api_job_get(job_id: int, user=Depends(require_admin), db: Session = Depends(db_session)):
+    _ = user
+    row = db.get(ExternalSyncJob, int(job_id))
+    if row is None:
+        raise HTTPException(status_code=404)
+    return JSONResponse(_sync_job_view(row))
 
 
 @app.get("/einkauf/wareneingaenge", response_class=HTMLResponse)
@@ -27706,15 +28679,29 @@ def system_customer_init_outsmart_import(request: Request, user=Depends(require_
         db.commit()
         _flash(request, "OutSmart ist nicht vollständig konfiguriert.", "error")
         return RedirectResponse("/system/kunden-initialisierung", status_code=302)
-    try:
-        summary = _customer_init_import_outsmart(db)
-        db.commit()
-        _flash(request, f"OutSmart-Seed importiert: Relationen {summary['relations']}, Projekte {summary['projects']}, Arbeitsaufträge {summary['workorders']}.", "info")
-        for message in summary.get("warnings") or []:
-            _flash(request, str(message), "warn")
-    except Exception as exc:
-        db.rollback()
-        _flash(request, f"OutSmart-Import fehlgeschlagen: {exc}", "error")
+    job, created = _enqueue_sync_job(
+        db,
+        system_name="outsmart",
+        direction="pull",
+        entity_type="customer_init_outsmart",
+        title="OutSmart-Initialimport",
+        job_key="customer_init_outsmart",
+        lock_key="customer_init",
+        log_text="Kunden-Initialisierung: OutSmart",
+        progress={
+            "phase": "Wartet auf Start",
+            "phase_detail": "OutSmart-Initialimport wurde in die Warteschlange gestellt.",
+            "processed_count": 0,
+            "success_count": 0,
+            "error_count": 0,
+        },
+        result_url="/system/kunden-initialisierung",
+    )
+    db.commit()
+    if created:
+        _flash(request, "OutSmart-Initialimport wurde als Hintergrundjob gestartet.", "info")
+    else:
+        _flash(request, f"Es läuft bereits ein Job im Bereich Kunden-Initialisierung: {_sync_job_view(job)['title']}.", "warn")
     return RedirectResponse("/system/kunden-initialisierung", status_code=302)
 
 
@@ -27727,13 +28714,29 @@ def system_customer_init_sevdesk_import(request: Request, user=Depends(require_a
         db.commit()
         _flash(request, "sevDesk ist nicht vollständig konfiguriert.", "error")
         return RedirectResponse("/system/kunden-initialisierung", status_code=302)
-    try:
-        summary = _customer_init_import_sevdesk(db)
-        db.commit()
-        _flash(request, f"sevDesk-Seed importiert: Kontakte {summary['contacts']}, Angebote {summary['orders']}, Rechnungen {summary['invoices']}.", "info")
-    except Exception as exc:
-        db.rollback()
-        _flash(request, f"sevDesk-Import fehlgeschlagen: {exc}", "error")
+    job, created = _enqueue_sync_job(
+        db,
+        system_name="sevdesk",
+        direction="pull",
+        entity_type="customer_init_sevdesk",
+        title="sevDesk-Initialimport",
+        job_key="customer_init_sevdesk",
+        lock_key="customer_init",
+        log_text="Kunden-Initialisierung: sevDesk",
+        progress={
+            "phase": "Wartet auf Start",
+            "phase_detail": "sevDesk-Initialimport wurde in die Warteschlange gestellt.",
+            "processed_count": 0,
+            "success_count": 0,
+            "error_count": 0,
+        },
+        result_url="/system/kunden-initialisierung",
+    )
+    db.commit()
+    if created:
+        _flash(request, "sevDesk-Initialimport wurde als Hintergrundjob gestartet.", "info")
+    else:
+        _flash(request, f"Es läuft bereits ein Job im Bereich Kunden-Initialisierung: {_sync_job_view(job)['title']}.", "warn")
     return RedirectResponse("/system/kunden-initialisierung", status_code=302)
 
 
@@ -27741,25 +28744,57 @@ def system_customer_init_sevdesk_import(request: Request, user=Depends(require_a
 def system_customer_init_matching(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     if not _customer_init_mode(db):
         _customer_init_set_mode(db, True)
-    try:
-        summary = _customer_init_build_clusters(db)
-        db.commit()
-        _flash(request, f"Matching aktualisiert: Cluster {summary['clusters']}, bereit {summary['ready']}, prüfen {summary['needs_review']}.", "info")
-    except Exception as exc:
-        db.rollback()
-        _flash(request, f"Matching fehlgeschlagen: {exc}", "error")
+    job, created = _enqueue_sync_job(
+        db,
+        system_name="local",
+        direction="pull",
+        entity_type="customer_init_matching",
+        title="Kunden-Matching",
+        job_key="customer_init_matching",
+        lock_key="customer_init",
+        log_text="Kunden-Initialisierung: Matching",
+        progress={
+            "phase": "Wartet auf Start",
+            "phase_detail": "Matching wurde in die Warteschlange gestellt.",
+            "processed_count": 0,
+            "success_count": 0,
+            "error_count": 0,
+        },
+        result_url="/system/kunden-initialisierung/review",
+    )
+    db.commit()
+    if created:
+        _flash(request, "Matching wurde als Hintergrundjob gestartet.", "info")
+    else:
+        _flash(request, f"Es läuft bereits ein Job im Bereich Kunden-Initialisierung: {_sync_job_view(job)['title']}.", "warn")
     return RedirectResponse("/system/kunden-initialisierung", status_code=302)
 
 
 @app.post("/system/kunden-initialisierung/materialisieren")
 def system_customer_init_materialize(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
-    try:
-        summary = _customer_init_materialize_ready_clusters(db)
-        db.commit()
-        _flash(request, f"Master-Kunden erzeugt/aktualisiert: neu {summary['created']}, aktualisiert {summary['updated']}, übersprungen {summary['skipped']}.", "info")
-    except Exception as exc:
-        db.rollback()
-        _flash(request, f"Übernahme fehlgeschlagen: {exc}", "error")
+    job, created = _enqueue_sync_job(
+        db,
+        system_name="local",
+        direction="pull",
+        entity_type="customer_init_materialize",
+        title="Master-Kunden erzeugen",
+        job_key="customer_init_materialize",
+        lock_key="customer_init",
+        log_text="Kunden-Initialisierung: Übernahme",
+        progress={
+            "phase": "Wartet auf Start",
+            "phase_detail": "Materialisierung wurde in die Warteschlange gestellt.",
+            "processed_count": 0,
+            "success_count": 0,
+            "error_count": 0,
+        },
+        result_url="/system/kunden-initialisierung",
+    )
+    db.commit()
+    if created:
+        _flash(request, "Materialisierung wurde als Hintergrundjob gestartet.", "info")
+    else:
+        _flash(request, f"Es läuft bereits ein Job im Bereich Kunden-Initialisierung: {_sync_job_view(job)['title']}.", "warn")
     return RedirectResponse("/system/kunden-initialisierung", status_code=302)
 
 

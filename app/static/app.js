@@ -290,8 +290,8 @@
         if(!detail) detail = 'Zuordnungen werden validiert.';
         delay = 0;
       }else if(/^\/catalog\/import\/\d+\/run$/.test(actionPath)){
-        if(!message) message = 'CSV-Import läuft...';
-        if(!detail) detail = 'Produkte, Merkmale und Zubehör werden verarbeitet. Bitte Seite nicht schließen.';
+        if(!message) message = 'CSV-Import wird gestartet...';
+        if(!detail) detail = 'Der Lauf wechselt in den Hintergrund. Du kannst danach normal weiterarbeiten.';
         delay = 0;
       }else{
         if(!message){
@@ -362,6 +362,154 @@
       pageLoadingMarkPending(actionKey);
       schedulePageLoading(message, detail, 350, actionKey);
     });
+  }
+
+  const JOB_MONITOR_COLLAPSED_KEY = 'kdaJobMonitorCollapsedV1';
+  const jobMonitorState = {
+    rootEl: null,
+    summaryEl: null,
+    bodyEl: null,
+    toggleEl: null,
+    timer: null,
+    collapsed: false
+  };
+
+  function escapeHtml(value){
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function jobMonitorStatusLabel(status){
+    const key = String(status || '').trim().toLowerCase();
+    if(key === 'queued') return 'Wartet';
+    if(key === 'running') return 'Läuft';
+    if(key === 'done') return 'Erfolgreich';
+    if(key === 'failed') return 'Fehlgeschlagen';
+    return String(status || '');
+  }
+
+  function jobMonitorProgressText(job){
+    const progress = (job && job.progress && typeof job.progress === 'object') ? job.progress : {};
+    const processed = Number(progress.processed_count || 0);
+    const total = Number(progress.total_count || 0);
+    if(total > 0){
+      return String(processed) + ' / ' + String(total);
+    }
+    if(processed > 0){
+      return String(processed) + ' bearbeitet';
+    }
+    return 'läuft';
+  }
+
+  function jobMonitorItemHtml(job){
+    const progress = (job && job.progress && typeof job.progress === 'object') ? job.progress : {};
+    const eta = Number(job && job.eta_seconds || 0);
+    const links = [];
+    if(job && job.result_url){
+      links.push('<a href="' + escapeHtml(job.result_url) + '">Ergebnis</a>');
+    }
+    links.push('<a href="/system/sync-log">Protokoll</a>');
+    return [
+      '<article class="job-monitor-item">',
+      '<div class="job-monitor-item-head">',
+      '<div><b>' + escapeHtml(job.title || job.entity_type || 'Job') + '</b></div>',
+      '<div class="muted">' + escapeHtml(jobMonitorStatusLabel(job.status)) + '</div>',
+      '</div>',
+      '<div class="job-monitor-phase">' + escapeHtml(progress.phase || 'Bitte warten') + '</div>',
+      progress.phase_detail ? '<div class="muted">' + escapeHtml(progress.phase_detail) + '</div>' : '',
+      progress.current_item_label ? '<div class="muted">Datensatz: ' + escapeHtml(progress.current_item_label) + (progress.current_item_ref ? ' | ' + escapeHtml(progress.current_item_ref) : '') + '</div>' : '',
+      '<div class="job-monitor-metrics">',
+      '<span>Fortschritt: ' + escapeHtml(jobMonitorProgressText(job)) + '</span>',
+      Number(progress.error_count || 0) > 0 ? '<span>Fehler: ' + escapeHtml(progress.error_count) + '</span>' : '',
+      eta > 0 ? '<span>ETA: ' + escapeHtml(pageLoadingDurationLabel(eta)) + '</span>' : '',
+      '</div>',
+      '<div class="job-monitor-links">' + links.join(' | ') + '</div>',
+      '</article>'
+    ].join('');
+  }
+
+  function jobMonitorApplyCollapsed(){
+    if(!jobMonitorState.rootEl || !jobMonitorState.bodyEl || !jobMonitorState.toggleEl){
+      return;
+    }
+    jobMonitorState.rootEl.classList.toggle('job-monitor-collapsed', !!jobMonitorState.collapsed);
+    jobMonitorState.bodyEl.hidden = !!jobMonitorState.collapsed;
+    const foot = jobMonitorState.rootEl.querySelector('.job-monitor-foot');
+    if(foot){
+      foot.hidden = !!jobMonitorState.collapsed;
+    }
+    jobMonitorState.toggleEl.textContent = jobMonitorState.collapsed ? 'Öffnen' : 'Minimieren';
+    jobMonitorState.toggleEl.setAttribute('aria-expanded', jobMonitorState.collapsed ? 'false' : 'true');
+    try{
+      window.localStorage.setItem(JOB_MONITOR_COLLAPSED_KEY, jobMonitorState.collapsed ? '1' : '0');
+    }catch(_e){}
+  }
+
+  function jobMonitorRender(items){
+    if(!jobMonitorState.rootEl || !jobMonitorState.summaryEl || !jobMonitorState.bodyEl){
+      return;
+    }
+    if(!Array.isArray(items) || !items.length){
+      jobMonitorState.rootEl.hidden = true;
+      jobMonitorState.bodyEl.innerHTML = '';
+      jobMonitorState.summaryEl.textContent = 'Keine aktiven Jobs';
+      return;
+    }
+    const running = items.filter(function(item){ return String(item.status || '').toLowerCase() === 'running'; }).length;
+    const queued = items.filter(function(item){ return String(item.status || '').toLowerCase() === 'queued'; }).length;
+    const parts = [];
+    if(running) parts.push(String(running) + ' läuft');
+    if(queued) parts.push(String(queued) + ' wartet');
+    jobMonitorState.summaryEl.textContent = parts.join(' | ') || String(items.length) + ' aktiv';
+    jobMonitorState.bodyEl.innerHTML = items.map(jobMonitorItemHtml).join('');
+    jobMonitorState.rootEl.hidden = false;
+    jobMonitorApplyCollapsed();
+  }
+
+  async function jobMonitorPoll(){
+    if(!isAuthenticated() || !jobMonitorState.rootEl){
+      return;
+    }
+    try{
+      const res = await fetch('/api/jobs/active', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if(!res.ok){
+        return;
+      }
+      const payload = await res.json();
+      jobMonitorRender(Array.isArray(payload.items) ? payload.items : []);
+    }catch(_e){}
+  }
+
+  function initJobMonitor(){
+    if(!isAuthenticated()){
+      return;
+    }
+    jobMonitorState.rootEl = document.getElementById('jobMonitor');
+    jobMonitorState.summaryEl = document.getElementById('jobMonitorSummary');
+    jobMonitorState.bodyEl = document.getElementById('jobMonitorBody');
+    jobMonitorState.toggleEl = document.getElementById('jobMonitorToggle');
+    if(!jobMonitorState.rootEl || !jobMonitorState.summaryEl || !jobMonitorState.bodyEl || !jobMonitorState.toggleEl){
+      return;
+    }
+    try{
+      jobMonitorState.collapsed = window.localStorage.getItem(JOB_MONITOR_COLLAPSED_KEY) === '1';
+    }catch(_e){
+      jobMonitorState.collapsed = false;
+    }
+    jobMonitorState.toggleEl.addEventListener('click', function(){
+      jobMonitorState.collapsed = !jobMonitorState.collapsed;
+      jobMonitorApplyCollapsed();
+    });
+    jobMonitorApplyCollapsed();
+    jobMonitorPoll();
+    if(jobMonitorState.timer){
+      window.clearInterval(jobMonitorState.timer);
+    }
+    jobMonitorState.timer = window.setInterval(jobMonitorPoll, 1500);
   }
 
   let kbdRows = [];
@@ -2839,6 +2987,7 @@
 
   initKeyboardList();
   initPageLoadingStatus();
+  initJobMonitor();
   initGenericScanButtons();
   initSerialScanButtons();
   initHelpPanel();
