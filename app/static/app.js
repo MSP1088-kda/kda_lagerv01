@@ -423,6 +423,9 @@
     const eta = Number(job && job.eta_seconds || 0);
     const percent = jobMonitorPercent(job);
     const determinate = Number(progress.total_count || 0) > 0;
+    const localCount = Number(progress.local_decision_count || 0);
+    const openaiCount = Number(progress.openai_decision_count || 0);
+    const cachedCount = Number(progress.cached_decision_count || 0);
     const links = [];
     if(job && job.result_url){
       links.push('<a href="' + escapeHtml(job.result_url) + '">Ergebnis</a>');
@@ -441,8 +444,12 @@
       '<div class="job-monitor-metrics">',
       '<span>Fortschritt: ' + escapeHtml(jobMonitorProgressText(job)) + (determinate ? ' (' + String(percent) + '%)' : '') + '</span>',
       Number(progress.error_count || 0) > 0 ? '<span>Fehler: ' + escapeHtml(progress.error_count) + '</span>' : '',
+      localCount > 0 ? '<span>Lokal: ' + escapeHtml(localCount) + '</span>' : '',
+      openaiCount > 0 ? '<span>OpenAI: ' + escapeHtml(openaiCount) + '</span>' : '',
+      cachedCount > 0 ? '<span>Cache: ' + escapeHtml(cachedCount) + '</span>' : '',
       eta > 0 ? '<span>ETA: ' + escapeHtml(pageLoadingDurationLabel(eta)) + '</span>' : '',
       '</div>',
+      progress.note ? '<div class="muted">' + escapeHtml(progress.note) + '</div>' : '',
       '<div class="job-monitor-links">' + links.join(' | ') + '</div>',
       '</article>'
     ].join('');

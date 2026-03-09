@@ -4338,6 +4338,9 @@ def _sync_job_update_progress(
     processed_count: int | None = None,
     success_count: int | None = None,
     error_count: int | None = None,
+    local_decision_count: int | None = None,
+    openai_decision_count: int | None = None,
+    cached_decision_count: int | None = None,
     current_item_label: str | None = None,
     current_item_ref: str | None = None,
     note: str | None = None,
@@ -4352,6 +4355,9 @@ def _sync_job_update_progress(
         "processed_count": int(processed_count) if processed_count is not None and int(processed_count) >= 0 else None,
         "success_count": int(success_count) if success_count is not None and int(success_count) >= 0 else None,
         "error_count": int(error_count) if error_count is not None and int(error_count) >= 0 else None,
+        "local_decision_count": int(local_decision_count) if local_decision_count is not None and int(local_decision_count) >= 0 else None,
+        "openai_decision_count": int(openai_decision_count) if openai_decision_count is not None and int(openai_decision_count) >= 0 else None,
+        "cached_decision_count": int(cached_decision_count) if cached_decision_count is not None and int(cached_decision_count) >= 0 else None,
         "current_item_label": str(current_item_label or "").strip() or None,
         "current_item_ref": str(current_item_ref or "").strip() or None,
         "note": str(note or "").strip() or None,
@@ -20049,6 +20055,22 @@ def _customer_init_dashboard_context(db: Session) -> dict[str, object]:
     }
 
 
+def _customer_init_cluster_ordering():
+    return (
+        case((CustomerInitCluster.status == "needs_review", 0), (CustomerInitCluster.status == "ready", 1), else_=2),
+        CustomerInitCluster.confidence.desc(),
+        CustomerInitCluster.id.asc(),
+    )
+
+
+def _customer_init_ai_candidate_query(db: Session, cluster_ids: list[int] | None = None):
+    query = db.query(CustomerInitCluster)
+    selected_ids = [int(value) for value in cluster_ids or [] if int(value or 0) > 0]
+    if selected_ids:
+        return query.filter(CustomerInitCluster.id.in_(selected_ids))
+    return query.filter(CustomerInitCluster.status == "needs_review")
+
+
 def _customer_init_cluster_ai_input(
     db: Session,
     cluster: CustomerInitCluster,
@@ -20192,30 +20214,23 @@ def _customer_init_ai_review_clusters(
             log_text="Kunden-Initialisierung: KI-Review",
         )
     try:
-        query = (
-            db.query(CustomerInitCluster)
-            .filter(CustomerInitCluster.status.in_(("ready", "needs_review")))
-            .order_by(
-                case((CustomerInitCluster.status == "needs_review", 0), else_=1),
-                CustomerInitCluster.confidence.desc(),
-                CustomerInitCluster.id.asc(),
-            )
-        )
         cluster_id_values = [int(value) for value in cluster_ids or [] if int(value or 0) > 0]
-        if cluster_id_values:
-            query = query.filter(CustomerInitCluster.id.in_(cluster_id_values))
-        rows = query.all()
+        rows = _customer_init_ai_candidate_query(db, cluster_id_values).order_by(*_customer_init_cluster_ordering()).all()
         total_count = len(rows)
         _sync_job_update_progress(
             db,
             job,
             phase="KI prueft Cluster",
-            phase_detail=f"{total_count} Cluster werden fachlich bewertet.",
+            phase_detail=f"{total_count} unsichere Cluster werden fachlich bewertet.",
             total_count=total_count,
             processed_count=0,
             success_count=0,
             error_count=0,
             current_item_label="KI-Review",
+            local_decision_count=0,
+            openai_decision_count=0,
+            cached_decision_count=0,
+            note="Lokal 0 | OpenAI 0 | Cache 0",
             commit=True,
         )
         settings = _openai_settings(db, include_secret=True)
@@ -20223,6 +20238,9 @@ def _customer_init_ai_review_clusters(
         auto_rejected = 0
         manual_review = 0
         review_queue = 0
+        local_decisions = 0
+        openai_decisions = 0
+        cached_decisions = 0
         processed_count = 0
         cluster_keys = [int(row.id) for row in rows]
         member_rows = (
@@ -20257,6 +20275,14 @@ def _customer_init_ai_review_clusters(
                 settings=settings,
                 force_refresh=force_refresh,
             )
+            if result.get("cached"):
+                cached_decisions += 1
+            else:
+                model_name = str(getattr(result.get("log"), "model_name", "") or "")
+                if model_name and model_name != "local-heuristic":
+                    openai_decisions += 1
+                else:
+                    local_decisions += 1
             output = result.get("output") if isinstance(result.get("output"), dict) else {}
             suggested_status = _crm_normalize_key(str(output.get("recommended_status") or "needs_review"))
             if bool(output.get("hard_case")):
@@ -20287,6 +20313,10 @@ def _customer_init_ai_review_clusters(
                     processed_count=processed_count,
                     success_count=auto_ready + auto_rejected,
                     error_count=0,
+                    local_decision_count=local_decisions,
+                    openai_decision_count=openai_decisions,
+                    cached_decision_count=cached_decisions,
+                    note=f"Lokal {local_decisions} | OpenAI {openai_decisions} | Cache {cached_decisions}",
                     commit=True,
                 )
         summary_payload = {
@@ -20295,6 +20325,9 @@ def _customer_init_ai_review_clusters(
             "auto_rejected": auto_rejected,
             "manual_review": manual_review,
             "review_queue": review_queue,
+            "local_decisions": local_decisions,
+            "openai_decisions": openai_decisions,
+            "cached_decisions": cached_decisions,
         }
         _sync_job_update_progress(
             db,
@@ -20305,8 +20338,12 @@ def _customer_init_ai_review_clusters(
             processed_count=total_count,
             success_count=auto_ready + auto_rejected,
             error_count=0,
+            local_decision_count=local_decisions,
+            openai_decision_count=openai_decisions,
+            cached_decision_count=cached_decisions,
             current_item_label="Fertig",
             current_item_ref="",
+            note=f"Lokal {local_decisions} | OpenAI {openai_decisions} | Cache {cached_decisions}",
             commit=False,
         )
         _finish_sync_job(db, job, status="done", log_text=json.dumps(summary_payload, ensure_ascii=False), result_url="/system/kunden-initialisierung/review")
@@ -20317,26 +20354,54 @@ def _customer_init_ai_review_clusters(
         raise
 
 
-def _customer_init_review_rows(db: Session, status: str = "", focus_cluster_id: int = 0) -> list[dict[str, object]]:
+def _customer_init_review_rows(db: Session, status: str = "", focus_cluster_id: int = 0, limit: int = 40) -> list[dict[str, object]]:
     query = db.query(CustomerInitCluster)
     status_norm = _crm_normalize_key(status)
-    if status_norm in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES:
+    if status_norm == "open":
+        query = query.filter(CustomerInitCluster.status.in_(("ready", "needs_review")))
+    elif status_norm in CUSTOMER_INIT_CLUSTER_STATUS_CHOICES:
         query = query.filter(CustomerInitCluster.status == status_norm)
-    rows = query.order_by(
-        case((CustomerInitCluster.status == "needs_review", 0), (CustomerInitCluster.status == "ready", 1), else_=2),
-        CustomerInitCluster.confidence.desc(),
-        CustomerInitCluster.id.asc(),
-    ).all()
-    decision_map, review_map = _customer_init_ai_decision_maps(db, [int(row.id) for row in rows])
+    row_limit = max(1, min(int(limit or 40), 120))
+    ordered_ids = [int(value) for value, in query.with_entities(CustomerInitCluster.id).order_by(*_customer_init_cluster_ordering()).limit(row_limit).all()]
+    focus_id = int(focus_cluster_id or 0)
+    if focus_id > 0 and focus_id not in ordered_ids:
+        focus_row = db.get(CustomerInitCluster, focus_id)
+        if focus_row is not None:
+            focus_status = _crm_normalize_key(focus_row.status)
+            if status_norm in ("", "open") and focus_status in ("ready", "needs_review"):
+                ordered_ids.insert(0, focus_id)
+            elif status_norm == focus_status:
+                ordered_ids.insert(0, focus_id)
+    if not ordered_ids:
+        return []
+    rows = db.query(CustomerInitCluster).filter(CustomerInitCluster.id.in_(ordered_ids)).all()
+    row_map = {int(row.id): row for row in rows}
+    rows = [row_map[row_id] for row_id in ordered_ids if row_id in row_map]
+    cluster_ids = [int(row.id) for row in rows]
+    decision_map, review_map = _customer_init_ai_decision_maps(db, cluster_ids)
+    member_rows = (
+        db.query(CustomerInitClusterMember)
+        .filter(CustomerInitClusterMember.cluster_id.in_(cluster_ids or [0]))
+        .order_by(
+            CustomerInitClusterMember.cluster_id.asc(),
+            CustomerInitClusterMember.is_anchor.desc(),
+            CustomerInitClusterMember.match_score.desc(),
+            CustomerInitClusterMember.id.asc(),
+        )
+        .all()
+    )
+    member_map: dict[int, list[CustomerInitClusterMember]] = {}
+    for member in member_rows:
+        member_map.setdefault(int(member.cluster_id), []).append(member)
+    customer_ids = [int(row.master_customer_id or 0) for row in rows if int(row.master_customer_id or 0) > 0]
+    customer_map = {
+        int(row.id): row
+        for row in db.query(MasterCustomer).filter(MasterCustomer.id.in_(customer_ids or [0])).all()
+    } if customer_ids else {}
     out: list[dict[str, object]] = []
     for row in rows:
-        members = (
-            db.query(CustomerInitClusterMember)
-            .filter(CustomerInitClusterMember.cluster_id == int(row.id))
-            .order_by(CustomerInitClusterMember.is_anchor.desc(), CustomerInitClusterMember.match_score.desc(), CustomerInitClusterMember.id.asc())
-            .all()
-        )
-        customer = db.get(MasterCustomer, int(row.master_customer_id or 0)) if int(row.master_customer_id or 0) > 0 else None
+        members = list(member_map.get(int(row.id), []))
+        customer = customer_map.get(int(row.master_customer_id or 0))
         ai_decision = decision_map.get(int(row.id))
         ai_output = ai_decision_output(ai_decision) if ai_decision else {}
         ai_review_item = review_map.get(int(ai_decision.id)) if ai_decision is not None else None
@@ -20352,8 +20417,6 @@ def _customer_init_review_rows(db: Session, status: str = "", focus_cluster_id: 
                 "focus": int(focus_cluster_id or 0) == int(row.id),
             }
         )
-    if int(focus_cluster_id or 0) > 0:
-        out.sort(key=lambda item: (0 if item.get("focus") else 1, 0 if _crm_normalize_key(item["cluster"].status) == "needs_review" else 1, -int(float(item["cluster"].confidence or 0))))
     return out
 
 
@@ -28982,8 +29045,8 @@ def system_customer_init_dashboard(request: Request, user=Depends(require_admin)
             request,
             user=user,
             dashboard=dashboard,
-            review_preview=_customer_init_review_rows(db, status="needs_review")[:6],
-            ready_preview=_customer_init_review_rows(db, status="ready")[:6],
+            review_preview=_customer_init_review_rows(db, status="needs_review", limit=6),
+            ready_preview=_customer_init_review_rows(db, status="ready", limit=6),
         ),
     )
 
@@ -29183,15 +29246,13 @@ def system_customer_init_review(
     db: Session = Depends(db_session),
 ):
     status_norm = _crm_normalize_key(status)
-    rows = _customer_init_review_rows(db, status="" if status_norm == "open" else status_norm, focus_cluster_id=int(focus_cluster_id or 0))
-    if status_norm == "open":
-        rows = [row for row in rows if _crm_normalize_key(row["cluster"].status) in ("ready", "needs_review")]
+    rows = _customer_init_review_rows(db, status=status_norm or "open", focus_cluster_id=int(focus_cluster_id or 0), limit=int(limit or 40))
     return templates.TemplateResponse(
         "system/customer_init_review.html",
         _ctx(
             request,
             user=user,
-            rows=rows[: max(1, min(int(limit or 40), 120))],
+            rows=rows,
             status=status_norm or "open",
             cluster_counts=_customer_init_cluster_counts(db),
             focus_cluster_id=int(focus_cluster_id or 0),
