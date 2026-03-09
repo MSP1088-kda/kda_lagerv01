@@ -367,7 +367,10 @@
   const JOB_MONITOR_COLLAPSED_KEY = 'kdaJobMonitorCollapsedV1';
   const jobMonitorState = {
     rootEl: null,
+    primaryEl: null,
     summaryEl: null,
+    etaEl: null,
+    headBarEl: null,
     bodyEl: null,
     toggleEl: null,
     timer: null,
@@ -445,16 +448,39 @@
     ].join('');
   }
 
+  function jobMonitorHeadUpdate(job, runningCount, queuedCount){
+    if(!jobMonitorState.primaryEl || !jobMonitorState.summaryEl || !jobMonitorState.etaEl || !jobMonitorState.headBarEl){
+      return;
+    }
+    const progress = (job && job.progress && typeof job.progress === 'object') ? job.progress : {};
+    const percent = jobMonitorPercent(job);
+    const determinate = Number(progress.total_count || 0) > 0;
+    const eta = Number(job && job.eta_seconds || 0);
+    const parts = [];
+    if(runningCount) parts.push(String(runningCount) + ' läuft');
+    if(queuedCount) parts.push(String(queuedCount) + ' wartet');
+    if(progress.phase){
+      parts.push(String(progress.phase));
+    }
+    jobMonitorState.primaryEl.textContent = String(job && job.title || 'Hintergrundjob');
+    jobMonitorState.summaryEl.textContent = parts.join(' | ') || 'aktiv';
+    if(eta > 0){
+      jobMonitorState.etaEl.textContent = 'ETA: ' + pageLoadingDurationLabel(eta);
+      jobMonitorState.etaEl.hidden = false;
+    }else{
+      jobMonitorState.etaEl.textContent = '';
+      jobMonitorState.etaEl.hidden = true;
+    }
+    jobMonitorState.headBarEl.classList.toggle('indeterminate', !determinate);
+    jobMonitorState.headBarEl.style.width = determinate ? (String(percent) + '%') : '35%';
+  }
+
   function jobMonitorApplyCollapsed(){
     if(!jobMonitorState.rootEl || !jobMonitorState.bodyEl || !jobMonitorState.toggleEl){
       return;
     }
     jobMonitorState.rootEl.classList.toggle('job-monitor-collapsed', !!jobMonitorState.collapsed);
     jobMonitorState.bodyEl.hidden = !!jobMonitorState.collapsed;
-    const foot = jobMonitorState.rootEl.querySelector('.job-monitor-foot');
-    if(foot){
-      foot.hidden = !!jobMonitorState.collapsed;
-    }
     jobMonitorState.toggleEl.textContent = jobMonitorState.collapsed ? 'Details' : 'Details aus';
     jobMonitorState.toggleEl.setAttribute('aria-expanded', jobMonitorState.collapsed ? 'false' : 'true');
     try{
@@ -463,26 +489,22 @@
   }
 
   function jobMonitorRender(items){
-    if(!jobMonitorState.rootEl || !jobMonitorState.summaryEl || !jobMonitorState.bodyEl){
+    if(!jobMonitorState.rootEl || !jobMonitorState.primaryEl || !jobMonitorState.summaryEl || !jobMonitorState.bodyEl || !jobMonitorState.etaEl || !jobMonitorState.headBarEl){
       return;
     }
     if(!Array.isArray(items) || !items.length){
       jobMonitorState.rootEl.hidden = true;
+      jobMonitorState.primaryEl.textContent = 'Kein aktiver Job';
       jobMonitorState.bodyEl.innerHTML = '';
       jobMonitorState.summaryEl.textContent = 'Keine aktiven Jobs';
+      jobMonitorState.etaEl.textContent = '';
+      jobMonitorState.etaEl.hidden = true;
       return;
     }
     const running = items.filter(function(item){ return String(item.status || '').toLowerCase() === 'running'; }).length;
     const queued = items.filter(function(item){ return String(item.status || '').toLowerCase() === 'queued'; }).length;
     const first = items[0] || null;
-    const firstProgress = first && first.progress && typeof first.progress === 'object' ? first.progress : {};
-    const parts = [];
-    if(running) parts.push(String(running) + ' läuft');
-    if(queued) parts.push(String(queued) + ' wartet');
-    if(first && firstProgress.phase){
-      parts.push(String(first.title || 'Job') + ': ' + String(firstProgress.phase));
-    }
-    jobMonitorState.summaryEl.textContent = parts.join(' | ') || String(items.length) + ' aktiv';
+    jobMonitorHeadUpdate(first, running, queued);
     jobMonitorState.bodyEl.innerHTML = items.map(jobMonitorItemHtml).join('');
     jobMonitorState.rootEl.hidden = false;
     jobMonitorApplyCollapsed();
@@ -507,16 +529,20 @@
       return;
     }
     jobMonitorState.rootEl = document.getElementById('jobMonitor');
+    jobMonitorState.primaryEl = document.getElementById('jobMonitorPrimary');
     jobMonitorState.summaryEl = document.getElementById('jobMonitorSummary');
+    jobMonitorState.etaEl = document.getElementById('jobMonitorEta');
+    jobMonitorState.headBarEl = document.getElementById('jobMonitorHeadBar');
     jobMonitorState.bodyEl = document.getElementById('jobMonitorBody');
     jobMonitorState.toggleEl = document.getElementById('jobMonitorToggle');
-    if(!jobMonitorState.rootEl || !jobMonitorState.summaryEl || !jobMonitorState.bodyEl || !jobMonitorState.toggleEl){
+    if(!jobMonitorState.rootEl || !jobMonitorState.primaryEl || !jobMonitorState.summaryEl || !jobMonitorState.etaEl || !jobMonitorState.headBarEl || !jobMonitorState.bodyEl || !jobMonitorState.toggleEl){
       return;
     }
     try{
-      jobMonitorState.collapsed = window.localStorage.getItem(JOB_MONITOR_COLLAPSED_KEY) === '1';
+      const saved = window.localStorage.getItem(JOB_MONITOR_COLLAPSED_KEY);
+      jobMonitorState.collapsed = saved === null ? true : saved === '1';
     }catch(_e){
-      jobMonitorState.collapsed = false;
+      jobMonitorState.collapsed = true;
     }
     jobMonitorState.toggleEl.addEventListener('click', function(){
       jobMonitorState.collapsed = !jobMonitorState.collapsed;

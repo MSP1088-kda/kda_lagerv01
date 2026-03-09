@@ -97,7 +97,16 @@
     <div class="job-monitor-strip-head">
       <div class="job-monitor-strip-main">
         <div class="job-monitor-title">Hintergrundjobs</div>
-        <div id="jobMonitorSummary" class="muted">Keine aktiven Jobs</div>
+        <div class="job-monitor-strip-overview">
+          <div id="jobMonitorPrimary" class="job-monitor-primary">Kein aktiver Job</div>
+          <div class="job-monitor-strip-meta">
+            <span id="jobMonitorSummary" class="muted">Keine aktiven Jobs</span>
+            <span id="jobMonitorEta" class="muted" hidden></span>
+          </div>
+          <div class="job-monitor-bar job-monitor-bar-head">
+            <div id="jobMonitorHeadBar" class="job-monitor-bar-fill indeterminate"></div>
+          </div>
+        </div>
       </div>
       <div class="job-monitor-strip-actions">
         <a class="muted" href="/system/sync-log">Protokoll</a>
