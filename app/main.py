@@ -16704,6 +16704,27 @@ def crm_customer_detail(
     party = db.get(Party, int(customer.party_id))
     if not party:
         raise HTTPException(status_code=404)
+    customer_init_summary = _customer_init_customer_summary(db, int(customer.id))
+    outsmart_stage_workorders_total = int(customer_init_summary.get("workorder_count") or 0)
+    sevdesk_stage_documents_total = int(customer_init_summary.get("order_count") or 0) + int(customer_init_summary.get("invoice_count") or 0)
+    outsmart_workorders_total = int(
+        db.query(OutsmartWorkorder)
+        .filter(OutsmartWorkorder.master_customer_id == int(customer.id))
+        .count()
+    )
+    if outsmart_stage_workorders_total > outsmart_workorders_total:
+        try:
+            backfill_summary = _outsmart_backfill_existing_workorders(db, customer_id=int(customer.id))
+            if any(int(backfill_summary.get(key) or 0) > 0 for key in ("matched_customer", "matched_case", "contact_updates", "updated_rows")):
+                db.commit()
+                outsmart_workorders_total = int(
+                    db.query(OutsmartWorkorder)
+                    .filter(OutsmartWorkorder.master_customer_id == int(customer.id))
+                    .count()
+                )
+        except Exception as exc:
+            db.rollback()
+            _flash(request, f"OutSmart-Nachverknüpfung fehlgeschlagen: {exc}", "error")
     addresses = (
         db.query(CrmAddress)
         .filter(CrmAddress.party_id == int(party.id))
@@ -16782,7 +16803,9 @@ def crm_customer_detail(
     paperless_settings = _paperless_settings(db, include_secret=False)
     recent_case_rows = _crm_recent_case_rows(db, int(customer.id))
     outsmart_workorders_preview = _customer_outsmart_workorder_rows(db, int(customer.id), limit=8)
+    outsmart_stage_workorders_preview = _customer_outsmart_stage_workorder_rows(db, int(customer.id), limit=8)
     sevdesk_documents_preview = _customer_sevdesk_document_rows(db, int(customer.id), limit=8)
+    sevdesk_stage_documents_preview = _customer_sevdesk_stage_document_rows(db, int(customer.id), limit=8)
     related_case_ids = [int(item["row"].id) for item in recent_case_rows if int(item["row"].id or 0) > 0]
     ai_related_logs = (
         db.query(AiDecisionLog)
@@ -16817,15 +16840,19 @@ def crm_customer_detail(
             recent_case_rows=recent_case_rows,
             customer_objects=_customer_objects_for_customer(db, int(customer.id), limit=8),
             outsmart_workorders_preview=outsmart_workorders_preview,
-            outsmart_workorders_total=int(db.query(OutsmartWorkorder).filter(OutsmartWorkorder.master_customer_id == int(customer.id)).count()),
+            outsmart_workorders_total=outsmart_workorders_total,
+            outsmart_stage_workorders_preview=outsmart_stage_workorders_preview,
+            outsmart_stage_workorders_total=outsmart_stage_workorders_total,
             sevdesk_documents_preview=sevdesk_documents_preview,
             sevdesk_documents_total=int(db.query(OfferDraft).filter(OfferDraft.master_customer_id == int(customer.id)).count()) + int(db.query(InvoiceDraft).filter(InvoiceDraft.master_customer_id == int(customer.id)).count()),
+            sevdesk_stage_documents_preview=sevdesk_stage_documents_preview,
+            sevdesk_stage_documents_total=sevdesk_stage_documents_total,
             timeline_rows=_crm_timeline_rows_for_customer(db, int(customer.id), limit=20, timeline_filter=timeline_filter),
             timeline_filter=(timeline_filter or "all").strip().lower() or "all",
             outsmart_enabled=bool(outsmart_settings.get("enabled")),
             outsmart_relation_link=outsmart_relation_link,
             ai_related_logs=ai_related_logs,
-            customer_init_summary=_customer_init_customer_summary(db, int(customer.id)),
+            customer_init_summary=customer_init_summary,
             paperless_links=_paperless_links_for_object(db, "customer", int(customer.id)),
             local_attachments=_attachments_for_entity(db, "customer", int(customer.id)),
             paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
@@ -28092,6 +28119,8 @@ def _outsmart_status_to_case_status(raw: str | None) -> str:
 
 def _crm_customer_from_outsmart_identity(db: Session, payload: dict) -> MasterCustomer | None:
     candidates = [
+        _outsmart_customer_debtor_key(payload),
+        _outsmart_invoice_debtor_key(payload),
         _outsmart_relation_key(payload),
         _outsmart_pick(payload, ("RelationNo", "relation_no")),
         _outsmart_pick(payload, ("DebtorNo", "debtor_no")),
@@ -28186,6 +28215,47 @@ def _crm_customer_labels_map(db: Session, customer_ids: list[int]) -> dict[int, 
     }
 
 
+def _crm_extract_mobile_from_text(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    tokens = re.findall(r"\+49|[0-9]+", text)
+    for index, token in enumerate(tokens):
+        parts: list[str] = []
+        if token == "+49":
+            if index + 1 >= len(tokens):
+                continue
+            next_token = re.sub(r"[^0-9]", "", tokens[index + 1])
+            if not re.fullmatch(r"1[5-7]\d{1,11}", next_token or ""):
+                continue
+            digits = f"49{next_token}"
+            parts = ["+49", tokens[index + 1]]
+            next_index = index + 2
+        else:
+            digits = re.sub(r"[^0-9]", "", token)
+            if not re.fullmatch(r"0?1[5-7]\d{1,11}", digits or ""):
+                continue
+            parts = [token]
+            next_index = index + 1
+        if 10 <= len(digits) <= 13:
+            return _crm_clean_text(" ".join(parts))
+        while next_index < len(tokens):
+            next_token = tokens[next_index]
+            if next_token == "+49":
+                break
+            next_digits = re.sub(r"[^0-9]", "", next_token)
+            if next_digits.startswith("0") and len(digits) >= 10:
+                break
+            digits += next_digits
+            parts.append(next_token)
+            if 10 <= len(digits) <= 13:
+                return _crm_clean_text(" ".join(parts))
+            if len(digits) > 13:
+                break
+            next_index += 1
+    return ""
+
+
 def _crm_phone_is_mobile(value: str | None) -> bool:
     raw = re.sub(r"[^0-9+]", "", str(value or "").strip())
     if raw.startswith("00"):
@@ -28221,7 +28291,7 @@ def _crm_customer_header_summary(
             phone_candidates.append(_crm_clean_text(default_address.phone))
         add_email(default_address.email, default_address.label or "Hauptadresse")
 
-    contact_summary_rows: list[dict[str, str]] = []
+    contact_candidates: list[dict[str, str]] = []
     for item in contact_rows:
         row = item.get("row")
         party_row = item.get("party")
@@ -28230,12 +28300,14 @@ def _crm_customer_header_summary(
         name = _crm_clean_text(getattr(party_row, "display_name", "")) or "Kontakt"
         role_label = _crm_clean_text(getattr(row, "role_label", "")) or "Ansprechpartner"
         phone_value = _crm_clean_text(getattr(row, "phone", ""))
+        if phone_value and _crm_phone_is_mobile(phone_value):
+            phone_value = _crm_extract_mobile_from_text(phone_value) or phone_value
         email_value = _crm_clean_text(getattr(row, "email", ""))
         if phone_value:
             phone_candidates.append(phone_value)
         if email_value:
             add_email(email_value, name)
-        contact_summary_rows.append(
+        contact_candidates.append(
             {
                 "name": name,
                 "role_label": role_label,
@@ -28243,6 +28315,38 @@ def _crm_customer_header_summary(
                 "email": email_value,
             }
         )
+    contact_candidates.sort(
+        key=lambda item: (
+            0 if any(ch.isalpha() for ch in str(item.get("name") or "")) else 1,
+            0 if str(item.get("email") or "").strip() else 1,
+            0 if str(item.get("phone") or "").strip() else 1,
+            _crm_normalize_key(str(item.get("name") or "")),
+        )
+    )
+    contact_summary_rows: list[dict[str, str]] = []
+    seen_contact_keys: set[str] = set()
+    seen_contact_emails: set[str] = set()
+    seen_contact_phones: set[str] = set()
+    for item in contact_candidates:
+        email_key = _crm_normalize_email(item.get("email"))
+        phone_key = _crm_normalize_phone(item.get("phone"))
+        name_key = _crm_normalize_key(item.get("name"))
+        if email_key and email_key in seen_contact_emails:
+            continue
+        if phone_key and phone_key in seen_contact_phones:
+            continue
+        if not any(ch.isalpha() for ch in str(item.get("name") or "")) and (seen_contact_emails or seen_contact_phones):
+            continue
+        dedupe_key = email_key or phone_key or name_key
+        if dedupe_key and dedupe_key in seen_contact_keys:
+            continue
+        if dedupe_key:
+            seen_contact_keys.add(dedupe_key)
+        if email_key:
+            seen_contact_emails.add(email_key)
+        if phone_key:
+            seen_contact_phones.add(phone_key)
+        contact_summary_rows.append(item)
 
     main_phone = next((value for value in phone_candidates if value and not _crm_phone_is_mobile(value)), "")
     main_mobile = next((value for value in phone_candidates if value and _crm_phone_is_mobile(value)), "")
@@ -28267,6 +28371,165 @@ def _crm_customer_header_summary(
         "emails": email_rows,
         "contacts": contact_summary_rows,
     }
+
+
+def _outsmart_contact_person_name(payload: dict) -> str:
+    return _crm_clean_text(
+        _outsmart_pick(
+            payload,
+            (
+                "CustomerContactPerson",
+                "customer_contact_person",
+                "CustomerContactperson",
+                "customer_contactperson",
+                "CustomerContactPersonInvoice",
+                "customer_contact_person_invoice",
+                "SignatureContactperson",
+                "signature_contactperson",
+            ),
+        )
+    )
+
+
+def _outsmart_apply_customer_contact_fallback(db: Session, customer: MasterCustomer | None, payload: dict) -> bool:
+    if not customer:
+        return False
+    party = db.get(Party, int(customer.party_id or 0))
+    if not party:
+        return False
+    email_value = _crm_clean_text(
+        _outsmart_pick(
+            payload,
+            (
+                "CustomerEmail",
+                "customer_email",
+                "Email",
+                "email",
+                "CustomerEmailInvoice",
+                "customer_email_invoice",
+            ),
+        )
+    )
+    phone_value = _crm_clean_text(
+        _outsmart_pick(
+            payload,
+            (
+                "CustomerPhone",
+                "customer_phone",
+                "Phone",
+                "phone",
+                "CustomerPhoneInvoice",
+                "customer_phone_invoice",
+            ),
+        )
+    )
+    mobile_value = _crm_extract_mobile_from_text(
+        "\n".join(
+            [
+                _outsmart_pick(payload, ("CustomerRemark", "customer_remark")),
+                _outsmart_pick(payload, ("CustomerRemarkInvoice", "customer_remark_invoice")),
+                _outsmart_pick(payload, ("Remark", "remark")),
+            ]
+        )
+    )
+    street_value = _crm_clean_text(_outsmart_pick(payload, ("CustomerStreet", "customer_street", "Street", "street")))
+    house_no_value = _crm_clean_text(_outsmart_pick(payload, ("CustomerStreetNo", "CustomerHouseNo", "customer_house_no", "HouseNo", "house_no")))
+    zip_value = _crm_clean_text(_outsmart_pick(payload, ("CustomerZIP", "CustomerZipCode", "customer_zip", "ZipCode", "zip_code")))
+    city_value = _crm_clean_text(_outsmart_pick(payload, ("CustomerCity", "customer_city", "City", "city")))
+    contact_name = _outsmart_contact_person_name(payload)
+    changed = False
+    address = _outsmart_customer_default_address(db, customer)
+    if address is None and any((street_value, zip_value, city_value, email_value, phone_value)):
+        address = CrmAddress(party_id=int(party.id), label="Hauptadresse", is_default=True, active=True)
+        db.add(address)
+        db.flush()
+        _crm_clear_default_addresses(db, int(party.id), int(address.id))
+        changed = True
+    if address is not None:
+        updates = {
+            "street": street_value,
+            "house_no": house_no_value,
+            "zip_code": zip_value,
+            "city": city_value,
+            "email": email_value,
+            "phone": phone_value,
+        }
+        for field_name, new_value in updates.items():
+            current_value = _crm_clean_text(getattr(address, field_name, "") or "")
+            if not current_value and new_value:
+                setattr(address, field_name, new_value)
+                changed = True
+        if not _crm_clean_text(address.label):
+            address.label = "Hauptadresse"
+            changed = True
+        db.add(address)
+    contact_rows = db.query(CustomerContactPerson).filter(CustomerContactPerson.master_customer_id == int(customer.id)).all()
+    contact_parties = {
+        int(row.party_id): db.get(Party, int(row.party_id))
+        for row in contact_rows
+        if int(row.party_id or 0) > 0
+    }
+    if contact_name or email_value or mobile_value:
+        existing = None
+        email_norm = _crm_normalize_email(email_value)
+        mobile_norm = _crm_normalize_phone(mobile_value)
+        contact_name_norm = _crm_normalize_key(contact_name)
+        for row in contact_rows:
+            party_row = contact_parties.get(int(row.party_id or 0))
+            if email_norm and _crm_normalize_email(row.email) == email_norm:
+                existing = (row, party_row)
+                break
+            if mobile_norm and _crm_normalize_phone(row.phone) == mobile_norm:
+                existing = (row, party_row)
+                break
+            if contact_name_norm and party_row and _crm_normalize_key(party_row.display_name) == contact_name_norm:
+                existing = (row, party_row)
+                break
+        if existing is None:
+            contact_party = Party(
+                party_type="person",
+                display_name=contact_name or party.display_name,
+                active=True,
+                created_at=_utcnow_naive(),
+                updated_at=_utcnow_naive(),
+            )
+            db.add(contact_party)
+            db.flush()
+            contact_row = CustomerContactPerson(
+                master_customer_id=int(customer.id),
+                party_id=int(contact_party.id),
+                role_label="Ansprechpartner",
+                email=email_value or None,
+                phone=mobile_value or phone_value or None,
+                active=True,
+            )
+            db.add(contact_row)
+            changed = True
+        else:
+            contact_row, contact_party = existing
+            if contact_party and contact_name and not _crm_clean_text(contact_party.display_name):
+                contact_party.display_name = contact_name
+                contact_party.updated_at = _utcnow_naive()
+                db.add(contact_party)
+                changed = True
+            if contact_row:
+                if not _crm_clean_text(contact_row.email) and email_value:
+                    contact_row.email = email_value
+                    changed = True
+                preferred_phone = mobile_value or phone_value
+                if not _crm_clean_text(contact_row.phone) and preferred_phone:
+                    contact_row.phone = preferred_phone
+                    changed = True
+                if not _crm_clean_text(contact_row.role_label):
+                    contact_row.role_label = "Ansprechpartner"
+                    changed = True
+                db.add(contact_row)
+    if changed:
+        party.updated_at = _utcnow_naive()
+        customer.updated_at = _utcnow_naive()
+        db.add(party)
+        db.add(customer)
+    return changed
 
 
 def _crm_add_timeline_event(
@@ -28737,6 +29000,8 @@ def _outsmart_upsert_workorder_summary(db: Session, payload: dict) -> tuple[Outs
     created = row is None
     case_row = _outsmart_match_case_for_workorder(db, payload)
     customer = _crm_customer_from_outsmart_identity(db, payload)
+    if customer:
+        _outsmart_apply_customer_contact_fallback(db, customer, payload)
     customer_object = _outsmart_match_customer_object(db, payload)
     location = None
     if case_row:
@@ -28866,6 +29131,66 @@ def _outsmart_upsert_workorder_summary(db: Session, payload: dict) -> tuple[Outs
             meta={"status": row.status, "deep_link_url": row.deep_link_url},
         )
     return row, ("created" if created else "updated" if changed else "skipped"), event_changed
+
+
+def _outsmart_backfill_existing_workorders(db: Session, *, customer_id: int | None = None, limit: int = 0) -> dict[str, int]:
+    query = db.query(OutsmartWorkorder).order_by(OutsmartWorkorder.id.asc())
+    if int(customer_id or 0) > 0:
+        workorder_keys = {
+            str(item["row"].workorder_no or "").strip()
+            for item in _customer_outsmart_stage_workorder_rows(db, int(customer_id), limit=5000)
+            if str(item["row"].workorder_no or "").strip()
+        }
+        if workorder_keys:
+            query = query.filter(
+                or_(
+                    OutsmartWorkorder.master_customer_id == int(customer_id),
+                    OutsmartWorkorder.workorder_no.in_(list(workorder_keys)),
+                )
+            )
+        else:
+            query = query.filter(OutsmartWorkorder.master_customer_id == int(customer_id))
+    rows = query.limit(int(limit)) if int(limit or 0) > 0 else query
+    summary = {"matched_customer": 0, "matched_case": 0, "contact_updates": 0, "updated_rows": 0}
+    for row in rows.all():
+        payload = _json_dict(row.raw_json)
+        if not payload:
+            continue
+        changed = False
+        customer = _crm_customer_from_outsmart_identity(db, payload)
+        if customer and int(row.master_customer_id or 0) != int(customer.id):
+            row.master_customer_id = int(customer.id)
+            summary["matched_customer"] += 1
+            changed = True
+        if customer and _outsmart_apply_customer_contact_fallback(db, customer, payload):
+            summary["contact_updates"] += 1
+        if int(row.case_id or 0) <= 0:
+            case_row = _outsmart_match_case_for_workorder(db, payload)
+            if case_row:
+                row.case_id = int(case_row.id)
+                summary["matched_case"] += 1
+                changed = True
+        if int(row.customer_object_id or 0) <= 0:
+            customer_object = _outsmart_match_customer_object(db, payload)
+            if customer_object:
+                row.customer_object_id = int(customer_object.id)
+                changed = True
+        if int(row.service_location_id or 0) <= 0:
+            if int(row.customer_object_id or 0) > 0:
+                customer_object = db.get(CustomerObject, int(row.customer_object_id))
+                if customer_object and int(customer_object.service_location_id or 0) > 0:
+                    row.service_location_id = int(customer_object.service_location_id)
+                    changed = True
+            if int(row.service_location_id or 0) <= 0 and int(row.master_customer_id or 0) > 0:
+                location = _crm_default_location_for_customer(db, int(row.master_customer_id))
+                if location:
+                    row.service_location_id = int(location.id)
+                    changed = True
+        if changed:
+            row.updated_at = _utcnow_naive()
+            db.add(row)
+            summary["updated_rows"] += 1
+    return summary
 
 
 def _outsmart_import_relations_once(db: Session) -> dict[str, object]:

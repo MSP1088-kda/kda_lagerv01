@@ -268,8 +268,23 @@
                 <div><a href="/outsmart/arbeitsauftraege/{{ item.row.id }}"><b>{{ item.row.workorder_no }}</b></a></div>
                 <div class="muted">{{ item.display.status_label }}{% if item.display.scheduled_start %} | {{ format_datetime(item.display.scheduled_start) }}{% endif %}</div>
                 {% if item.crm_case %}<div><a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a></div>{% endif %}
+                {% if item.case_hint and not item.crm_case %}<div class="hint">{{ item.case_hint }}</div>{% endif %}
                 <div class="muted">{{ item.object_label }}</div>
                 {% if item.row.deep_link_url %}<div><a href="{{ item.row.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a></div>{% endif %}
+              </div>
+              {% endfor %}
+              {% if outsmart_stage_workorders_total > outsmart_workorders_total %}
+              <div class="hint">Im Initialimport liegen weitere {{ outsmart_stage_workorders_total - outsmart_workorders_total }} Arbeitsaufträge vor.</div>
+              <div style="margin-top:8px;"><a class="btn small" href="/crm/kunden/{{ customer.id }}/initialisierung/outsmart-workorders">Initialimport-Arbeitsaufträge ansehen</a></div>
+              {% endif %}
+            {% elif outsmart_stage_workorders_preview %}
+              <div class="hint">Lokal ist noch nichts verknüpft. Die folgenden Arbeitsaufträge sind bereits im Initialimport vorhanden.</div>
+              {% for item in outsmart_stage_workorders_preview %}
+              <div style="margin-bottom:10px;">
+                <div><b>{{ item.row.workorder_no or item.row.external_row_id or ('WORKORDER-' ~ item.row.id) }}</b></div>
+                <div class="muted">{{ item.row.status or '-' }}{% if item.row.updated_at %} | {{ format_date(item.row.updated_at) }}{% endif %}</div>
+                {% if item.project %}<div class="muted">Projekt: {{ item.project.project_code or '-' }} | {{ item.project.project_name or '-' }}</div>{% endif %}
+                <div style="margin-top:4px;"><a class="btn small" href="/crm/kunden/{{ customer.id }}/initialisierung/outsmart-workorders">Initialimport-Arbeitsaufträge öffnen</a></div>
               </div>
               {% endfor %}
             {% else %}
@@ -295,6 +310,19 @@
                 </div>
               </div>
               {% endfor %}
+              {% if sevdesk_stage_documents_total > sevdesk_documents_total %}
+              <div class="hint">Im Initialimport liegen weitere {{ sevdesk_stage_documents_total - sevdesk_documents_total }} sevDesk-Belege vor.</div>
+              <div style="margin-top:8px;"><a class="btn small" href="/crm/kunden/{{ customer.id }}/initialisierung/sevdesk-belege">Initialimport-sevDesk-Belege ansehen</a></div>
+              {% endif %}
+            {% elif sevdesk_stage_documents_preview %}
+              <div class="hint">Lokal sind noch keine sevDesk-Belege verknüpft. Die folgenden Belege liegen bereits im Initialimport.</div>
+              {% for item in sevdesk_stage_documents_preview %}
+              <div style="margin-bottom:10px;">
+                <div><b>{{ item.type_label }}</b> {{ item.number_label }}</div>
+                <div class="muted">{{ item.status_label }}{% if item.event_date %} | {{ format_date(item.event_date) }}{% endif %}</div>
+              </div>
+              {% endfor %}
+              <div style="margin-top:8px;"><a class="btn small" href="/crm/kunden/{{ customer.id }}/initialisierung/sevdesk-belege">Initialimport-sevDesk-Belege öffnen</a></div>
             {% else %}
             <div class="muted">Noch keine lokalen sevDesk-Belege vorhanden.</div>
             {% endif %}
