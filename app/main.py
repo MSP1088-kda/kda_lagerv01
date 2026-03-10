@@ -3893,6 +3893,181 @@ def _document_search_blob(item: DocumentInboxItem) -> str:
     return "\n".join(parts)
 
 
+def _paperless_customer_candidate_items(db: Session, customer_id: int, limit: int = 12) -> list[DocumentInboxItem]:
+    linked_doc_ids = {
+        str(row.paperless_document_id or "").strip()
+        for row in _paperless_links_for_object(db, "customer", int(customer_id))
+        if str(row.paperless_document_id or "").strip()
+    }
+    rows = (
+        db.query(DocumentInboxItem)
+        .filter(
+            DocumentInboxItem.suggested_object_type == "customer",
+            DocumentInboxItem.suggested_object_id == int(customer_id),
+            DocumentInboxItem.status != "matched",
+        )
+        .order_by(DocumentInboxItem.created_date.desc(), DocumentInboxItem.id.desc())
+        .limit(max(1, int(limit or 12)))
+        .all()
+    )
+    return [row for row in rows if str(row.paperless_document_id or "").strip() not in linked_doc_ids]
+
+
+def _paperless_customer_search_terms(
+    customer: MasterCustomer,
+    party: Party,
+    default_address: CrmAddress | None,
+    identities: list[ExternalIdentity],
+    contact_rows: list[dict[str, object]] | None = None,
+) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add_term(value: str | None, *, min_len: int = 4) -> None:
+        text = _crm_clean_text(value)
+        if len(text) < min_len:
+            return
+        key = _crm_normalize_key(text)
+        if key in seen:
+            return
+        seen.add(key)
+        terms.append(text)
+
+    add_term(customer.customer_no_internal, min_len=3)
+    add_term(party.display_name)
+    if default_address:
+        add_term(default_address.email, min_len=6)
+        add_term(default_address.phone, min_len=6)
+        zip_city = _crm_clean_text(f"{default_address.zip_code or ''} {default_address.city or ''}")
+        add_term(zip_city, min_len=8)
+    for row in identities:
+        add_term(row.external_key, min_len=4)
+        add_term(row.external_id, min_len=4)
+    for item in list(contact_rows or [])[:4]:
+        row = item.get("row")
+        party_row = item.get("party")
+        if party_row:
+            add_term(getattr(party_row, "display_name", None))
+        if row:
+            add_term(getattr(row, "email", None), min_len=6)
+            add_term(getattr(row, "phone", None), min_len=6)
+    return terms[:8]
+
+
+def _paperless_customer_match_score(
+    *,
+    text: str,
+    customer: MasterCustomer,
+    party: Party,
+    default_address: CrmAddress | None,
+    identities: list[ExternalIdentity],
+    contact_rows: list[dict[str, object]] | None = None,
+) -> tuple[int, list[str]]:
+    blob = _crm_normalize_key(text)
+    score = 0
+    reasons: list[str] = []
+    if not blob:
+        return score, reasons
+
+    def hit(value: str | None) -> bool:
+        key = _crm_normalize_key(value)
+        return bool(key) and key in blob
+
+    if hit(customer.customer_no_internal):
+        score += 6
+        reasons.append("Kundennummer")
+    if hit(party.display_name):
+        score += 5
+        reasons.append("Anzeigename")
+    if default_address:
+        if _crm_normalize_email(default_address.email) and _crm_normalize_email(default_address.email) in blob:
+            score += 6
+            reasons.append("E-Mail")
+        if hit(default_address.zip_code) and hit(default_address.city):
+            score += 2
+            reasons.append("PLZ/Ort")
+    for row in identities:
+        key = _crm_clean_text(row.external_key or row.external_id)
+        if len(key) >= 4 and hit(key):
+            score += 4
+            reasons.append(f"{_crm_external_system_label(row.system_name)}-Kennung")
+            break
+    for item in list(contact_rows or [])[:4]:
+        row = item.get("row")
+        party_row = item.get("party")
+        if party_row and hit(getattr(party_row, "display_name", None)):
+            score += 3
+            reasons.append("Ansprechpartner")
+            break
+        if row and _crm_normalize_email(getattr(row, "email", None)) and _crm_normalize_email(getattr(row, "email", None)) in blob:
+            score += 3
+            reasons.append("Kontakt-Mail")
+            break
+    return score, reasons
+
+
+def _paperless_scan_customer_documents(
+    db: Session,
+    *,
+    customer: MasterCustomer,
+    party: Party,
+    default_address: CrmAddress | None,
+    identities: list[ExternalIdentity],
+    contact_rows: list[dict[str, object]] | None = None,
+    limit: int = 16,
+) -> dict[str, int]:
+    settings = _paperless_settings(db, include_secret=True)
+    if not bool(settings.get("enabled")) or not bool(settings.get("token")):
+        raise ValueError("Paperless ist nicht aktiviert oder es fehlt das API-Token.")
+    terms = _paperless_customer_search_terms(customer, party, default_address, identities, contact_rows)
+    if not terms:
+        return {"queries": 0, "fetched": 0, "suggested": 0}
+    linked_doc_ids = {
+        str(row.paperless_document_id or "").strip()
+        for row in _paperless_links_for_object(db, "customer", int(customer.id))
+        if str(row.paperless_document_id or "").strip()
+    }
+    fetched = 0
+    suggested = 0
+    seen_doc_ids: set[str] = set()
+    per_query_limit = max(8, min(int(limit or 16), 24))
+    for term in terms:
+        rows = paperless_list_documents(settings, limit=per_query_limit, query=term)
+        for payload in rows:
+            document_id = str(payload.get("id") or payload.get("document_id") or "").strip()
+            if not document_id or document_id in seen_doc_ids or document_id in linked_doc_ids:
+                continue
+            seen_doc_ids.add(document_id)
+            item = _upsert_document_inbox_item(db, payload)
+            if item is None:
+                continue
+            fetched += 1
+            if str(item.status or "").strip() == "matched":
+                continue
+            score, reasons = _paperless_customer_match_score(
+                text=_document_search_blob(item),
+                customer=customer,
+                party=party,
+                default_address=default_address,
+                identities=identities,
+                contact_rows=contact_rows,
+            )
+            if score < 5:
+                continue
+            item.suggested_object_type = "customer"
+            item.suggested_object_id = int(customer.id)
+            meta = _json_dict(item.metadata_json)
+            meta["customer_scan"] = {
+                "customer_id": int(customer.id),
+                "score": score,
+                "reasons": reasons,
+            }
+            item.metadata_json = json.dumps(meta, ensure_ascii=False)
+            db.add(item)
+            suggested += 1
+    return {"queries": len(terms), "fetched": fetched, "suggested": suggested}
+
+
 def _document_match_candidates(db: Session, item: DocumentInboxItem) -> dict[str, list[object]]:
     text = _document_search_blob(item).lower()
     customers = []
@@ -16806,6 +16981,15 @@ def crm_customer_detail(
     outsmart_stage_workorders_preview = _customer_outsmart_stage_workorder_rows(db, int(customer.id), limit=8)
     sevdesk_documents_preview = _customer_sevdesk_document_rows(db, int(customer.id), limit=8)
     sevdesk_stage_documents_preview = _customer_sevdesk_stage_document_rows(db, int(customer.id), limit=8)
+    paperless_candidate_items = _paperless_customer_candidate_items(db, int(customer.id), limit=10)
+    paperless_candidate_rows = [
+        {
+            "row": row,
+            "scan": _json_dict(row.metadata_json).get("customer_scan") if isinstance(_json_dict(row.metadata_json).get("customer_scan"), dict) else {},
+            "paperless_url": paperless_build_document_url(paperless_settings, row.paperless_document_id),
+        }
+        for row in paperless_candidate_items
+    ]
     related_case_ids = [int(item["row"].id) for item in recent_case_rows if int(item["row"].id or 0) > 0]
     ai_related_logs = (
         db.query(AiDecisionLog)
@@ -16854,10 +17038,63 @@ def crm_customer_detail(
             ai_related_logs=ai_related_logs,
             customer_init_summary=customer_init_summary,
             paperless_links=_paperless_links_for_object(db, "customer", int(customer.id)),
+            paperless_candidate_rows=paperless_candidate_rows,
             local_attachments=_attachments_for_entity(db, "customer", int(customer.id)),
             paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
         ),
     )
+
+
+@app.post("/crm/kunden/{customer_id}/paperless/pruefen")
+def crm_customer_paperless_scan(customer_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id or 0))
+    if not party:
+        raise HTTPException(status_code=404)
+    addresses = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id == int(party.id))
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.active.desc(), CrmAddress.id.asc())
+        .all()
+    )
+    default_address = _crm_pick_default_address(addresses)
+    contact_rows_raw = (
+        db.query(CustomerContactPerson)
+        .filter(CustomerContactPerson.master_customer_id == int(customer.id))
+        .order_by(CustomerContactPerson.active.desc(), CustomerContactPerson.id.asc())
+        .all()
+    )
+    contact_party_ids = [int(row.party_id) for row in contact_rows_raw if int(row.party_id or 0) > 0]
+    contact_parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(contact_party_ids)).all()} if contact_party_ids else {}
+    contact_rows = [{"row": row, "party": contact_parties.get(int(row.party_id))} for row in contact_rows_raw]
+    identities = (
+        db.query(ExternalIdentity)
+        .filter(ExternalIdentity.master_customer_id == int(customer.id))
+        .order_by(ExternalIdentity.system_name.asc(), ExternalIdentity.external_type.asc(), ExternalIdentity.id.asc())
+        .all()
+    )
+    try:
+        summary = _paperless_scan_customer_documents(
+            db,
+            customer=customer,
+            party=party,
+            default_address=default_address,
+            identities=identities,
+            contact_rows=contact_rows,
+            limit=16,
+        )
+        db.commit()
+        _flash(
+            request,
+            f"Paperless geprüft: {int(summary.get('queries') or 0)} Suchläufe, {int(summary.get('fetched') or 0)} Dokumente gelesen, {int(summary.get('suggested') or 0)} Kundentreffer vorgemerkt.",
+            "info",
+        )
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Paperless-Prüfung fehlgeschlagen: {exc}", "error")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
 
 
 @app.get("/crm/kunden/{customer_id}/arbeitsauftraege", response_class=HTMLResponse)

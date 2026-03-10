@@ -30,6 +30,7 @@
         <a class="btn small" href="/crm/mahnfaelle">Mahnwesen</a>
         <a class="btn small" href="/crm/dokumente/upload?object_type=customer&object_id={{ customer.id }}">Dokument hochladen</a>
         <a class="btn small" href="/crm/dokumente">Dokumenten-Inbox</a>
+        <form method="post" action="/crm/kunden/{{ customer.id }}/paperless/pruefen" class="inline"><button class="btn small" type="submit">Paperless prüfen</button></form>
         {% if role_flags.is_admin and outsmart_enabled %}<form method="post" action="/crm/kunden/{{ customer.id }}/outsmart/synchronisieren" class="inline"><button class="btn small" type="submit">Nach OutSmart synchronisieren</button></form>{% endif %}
         {% if outsmart_relation_link and outsmart_relation_link.deep_link_url %}<a class="btn small" href="{{ outsmart_relation_link.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}
       </div>
@@ -463,6 +464,28 @@
         <div class="box">
           <div class="box-title">Paperless-Dokumente</div>
           <div class="box-body">
+            {% if paperless_candidate_rows %}
+              <div style="margin-bottom:10px;">
+                <b>Prüfkandidaten</b>
+                <div class="hint">Diese Dokumente wurden in Paperless gefunden und sind noch nicht fest mit dem Kunden verknüpft.</div>
+              </div>
+              {% for item in paperless_candidate_rows %}
+                <div style="margin-bottom:10px;">
+                  <div><b>{{ item.row.title or item.row.paperless_document_id }}</b></div>
+                  <div class="muted">{{ item.row.correspondent or '-' }} | {{ item.row.document_type or '-' }}{% if item.row.created_date %} | {{ format_date(item.row.created_date) }}{% endif %}</div>
+                  {% if item.scan.get('reasons') %}<div class="hint">Treffer: {{ item.scan.get('reasons')|join(', ') }}</div>{% endif %}
+                  <div class="row" style="margin-top:6px; gap:8px; flex-wrap:wrap;">
+                    <a class="btn small" href="/crm/dokumente/{{ item.row.id }}">Dokument prüfen</a>
+                    {% if item.paperless_url %}<a class="btn small" href="{{ item.paperless_url }}" target="_blank" rel="noopener">In Paperless öffnen</a>{% endif %}
+                    <form method="post" action="/crm/dokumente/{{ item.row.id }}/zuweisen" class="inline">
+                      <input type="hidden" name="object_type" value="customer">
+                      <input type="hidden" name="customer_id" value="{{ customer.id }}">
+                      <button class="btn small" type="submit">Dem Kunden zuordnen</button>
+                    </form>
+                  </div>
+                </div>
+              {% endfor %}
+            {% endif %}
             {% for link in paperless_links %}
               <div style="margin-bottom:8px;">
                 {% if paperless_build_url(link.paperless_document_id) %}
@@ -472,7 +495,7 @@
                 {% endif %}
               </div>
             {% endfor %}
-            {% if not paperless_links %}<div class="muted">Noch keine Paperless-Dokumente verknüpft.</div>{% endif %}
+            {% if not paperless_links and not paperless_candidate_rows %}<div class="muted">Noch keine Paperless-Dokumente verknüpft.</div>{% endif %}
           </div>
         </div>
         <div class="box">
