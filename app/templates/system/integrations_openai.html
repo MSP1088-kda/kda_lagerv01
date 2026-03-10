@@ -9,9 +9,11 @@
       <div class="box-body">
         <form method="post" action="/system/integrationen/openai" class="form">
           <label><input type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %}> Aktiv</label>
+          <label><input type="checkbox" name="strict_privacy" {% if settings.strict_privacy %}checked{% endif %}> DSGVO-Privatheitsmodus</label>
           <label>API-Schlüssel</label>
           <input type="password" name="api_key" value="" autocomplete="off" placeholder="Leer lassen = unverändert">
           <div class="hint">Schlüsselstatus: {% if settings.api_key_set %}gesetzt{% else %}nicht gesetzt{% endif %}</div>
+          <div class="hint">Bei aktivem Privatheitsmodus bleiben Mailinhalte, OCR-Rohtexte und Angebots-/Rechnungstexte lokal. Extern freigegeben sind nur eng abstrahierte KI-Aufgaben.</div>
 
           <div class="grid3">
             <div>
@@ -58,6 +60,8 @@
       <div class="box-body">
         <div><b>Aktiv:</b> {{ 'Ja' if settings.enabled else 'Nein' }}</div>
         <div><b>API-Schlüssel:</b> {{ 'Gesetzt' if settings.api_key_set else 'Fehlt' }}</div>
+        <div><b>Privatheitsmodus:</b> {{ 'Aktiv' if settings.strict_privacy else 'Aus' }}</div>
+        <div><b>Extern freigegebene Aufgaben:</b> {% if settings.external_allowed_tasks %}{% for task_name in settings.external_allowed_tasks %}{{ ai_task_label(task_name) }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}keine{% endif %}</div>
         <div><b>Prompt-Aufgaben:</b> {{ prompt_rows|length }}</div>
         {% if test_result %}
           <div style="margin-top:10px;"><b>Test:</b> {{ test_result.message }}</div>

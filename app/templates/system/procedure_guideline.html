@@ -5,6 +5,7 @@
   <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:10px;">
     <a class="btn primary" href="/system/verfahrensrichtlinie/bearbeiten">Bearbeiten</a>
     <form method="post" action="/system/verfahrensrichtlinie/aus-datei" class="inline"><button class="btn" type="submit">Aus CODEX_AGENT_GUIDELINE.md übernehmen</button></form>
+    <a class="btn" href="/system/verfahrensrichtlinie/export.md">Markdown-Export</a>
     <a class="btn" href="/system/integrationen/openai">OpenAI</a>
   </div>
 
@@ -19,6 +20,20 @@
       <div class="box-body" style="white-space:pre-wrap;">{{ row.content_markdown }}</div>
     </div>
   {% endfor %}
+
+  {% if runtime_rows %}
+    <div class="box" style="margin-top:12px;">
+      <div class="box-title">Systemanhang</div>
+      <div class="box-body">
+        {% for row in runtime_rows %}
+          <div class="box" style="margin-top:8px;">
+            <div class="box-title">{{ row.title }}</div>
+            <div class="box-body" style="white-space:pre-wrap;">{{ row.content_markdown }}</div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
 </div>
 {% endblock %}
 

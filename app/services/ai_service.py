@@ -23,6 +23,12 @@ RISK_GREEN = "gruen"
 RISK_YELLOW = "gelb"
 RISK_RED = "rot"
 
+STRICT_PRIVACY_ALLOWED_TASKS: tuple[str, ...] = (
+    "customer_merge_candidate",
+    "customer_init_cluster_review",
+    "voucher_accounting_suggestion",
+)
+
 TASK_RISK_CLASS: dict[str, str] = {
     "email_classification": RISK_GREEN,
     "document_classification": RISK_GREEN,
@@ -163,6 +169,25 @@ def openai_ready(settings: dict[str, Any]) -> bool:
     return bool(settings.get("enabled")) and bool(str(settings.get("api_key") or "").strip())
 
 
+def privacy_mode_enabled(settings: dict[str, Any]) -> bool:
+    return bool(settings.get("strict_privacy", True))
+
+
+def external_task_allowlist(settings: dict[str, Any]) -> list[str]:
+    if not privacy_mode_enabled(settings):
+        return sorted(schema_names())
+    return list(STRICT_PRIVACY_ALLOWED_TASKS)
+
+
+def openai_task_allowed(settings: dict[str, Any], task_name: str) -> bool:
+    task = str(task_name or "").strip()
+    if not task:
+        return False
+    if not privacy_mode_enabled(settings):
+        return True
+    return task in STRICT_PRIVACY_ALLOWED_TASKS
+
+
 def test_connection(settings: dict[str, Any]) -> dict[str, Any]:
     if not openai_ready(settings):
         raise ValueError("OpenAI ist nicht vollstaendig konfiguriert.")
@@ -257,18 +282,26 @@ def run_task(
     output = None
     model_name = "local-heuristic"
     error_message = ""
-    if allow_openai and openai_ready(settings):
+    if allow_openai and openai_ready(settings) and openai_task_allowed(settings, task):
         try:
             output = _call_openai_structured(
                 settings=settings,
                 prompt=prompt,
+                task_name=task,
                 input_payload=public_input_payload,
                 tool_context=_public_tool_context(task, tool_context or {}),
                 model_name_override=model_name_override,
             )
-            model_name = str(model_name_override or settings.get("model_default") or "gpt-5-mini")
+            if model_name_override:
+                model_name = str(model_name_override)
+            elif task in STRICT_PRIVACY_ALLOWED_TASKS:
+                model_name = str(settings.get("model_fast") or settings.get("model_default") or "gpt-5-mini")
+            else:
+                model_name = str(settings.get("model_default") or "gpt-5-mini")
         except Exception as exc:
             error_message = str(exc)
+    elif allow_openai and openai_ready(settings) and not openai_task_allowed(settings, task):
+        error_message = "DSGVO-Privatheitsmodus: Aufgabe bleibt lokal."
     if output is None:
         output = fallback_output
     validated = validate_output(task, output)
@@ -392,13 +425,14 @@ def _call_openai_structured(
     *,
     settings: dict[str, Any],
     prompt: AiPromptDefinition,
+    task_name: str,
     input_payload: dict[str, Any],
     tool_context: dict[str, Any],
     model_name_override: str | None = None,
 ) -> dict[str, Any]:
     timeout = max(5, int(settings.get("timeout_seconds") or 45))
-    max_output_tokens = max(300, int(settings.get("max_tokens") or 1500))
-    model_name = str(model_name_override or settings.get("model_default") or "gpt-5-mini").strip() or "gpt-5-mini"
+    model_name = str(model_name_override or _task_model_name(settings, task_name) or "gpt-5-mini").strip() or "gpt-5-mini"
+    max_output_tokens = _task_max_output_tokens(settings, task_name)
     schema_name = str(prompt.output_schema_name or prompt.task_name or "output")
     schema = schema_for(schema_name)
     user_text = _render_user_text(prompt, input_payload, tool_context)
@@ -507,22 +541,21 @@ def _public_input_payload(task_name: str, payload: dict[str, Any]) -> dict[str, 
         }
     if task == "email_classification":
         return {
-            "thread_subject": _redact_text(data.get("thread_subject"), 180),
-            "subject": _redact_text(data.get("subject"), 180),
-            "body_excerpt": _redact_text(data.get("body_text") or data.get("snippet"), 700),
+            "thread_subject_hint": _redact_text(data.get("thread_subject"), 60),
+            "subject_hint": _redact_text(data.get("subject"), 60),
+            "body_length": len(str(data.get("body_text") or data.get("snippet") or "")),
             "from_domain": _email_domain(data.get("from_email")),
             "to_domains": _email_domains(data.get("to_emails")),
             "cc_domains": _email_domains(data.get("cc_emails")),
-            "attachment_names": [_redact_text(item, 80) for item in list(data.get("attachment_names") or [])[:8]],
+            "attachment_count": len(list(data.get("attachment_names") or [])[:8]),
         }
     if task == "document_classification":
-        metadata = data.get("metadata") if isinstance(data.get("metadata"), str) else json.dumps(data.get("metadata") or {}, ensure_ascii=False)
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
         return {
             "paperless_document_id": str(data.get("paperless_document_id") or ""),
-            "title": _redact_text(data.get("title"), 180),
-            "correspondent": _redact_text(data.get("correspondent"), 160),
             "document_type": _redact_text(data.get("document_type"), 120),
-            "metadata_excerpt": _redact_text(metadata, 900),
+            "title_hint": _redact_text(data.get("title"), 60),
+            "metadata_keys": sorted(str(key) for key in metadata.keys())[:12],
         }
     if task in {"incoming_invoice_extract", "voucher_accounting_suggestion"}:
         return {
@@ -530,8 +563,8 @@ def _public_input_payload(task_name: str, payload: dict[str, Any]) -> dict[str, 
             "supplier_id": int(data.get("supplier_id") or 0) or None,
             "purchase_order_id": int(data.get("purchase_order_id") or 0) or None,
             "goods_receipt_id": int(data.get("goods_receipt_id") or 0) or None,
-            "invoice_no": _redact_text(data.get("invoice_no"), 80),
-            "description": _redact_text(data.get("description") or data.get("text"), 700),
+            "invoice_no_hint": _redact_text(data.get("invoice_no"), 24),
+            "description_length": len(str(data.get("description") or data.get("text") or "")),
             "voucher_date": str(data.get("voucher_date") or ""),
             "due_date": str(data.get("due_date") or ""),
             "net_total": str(data.get("net_total") or ""),
@@ -546,8 +579,7 @@ def _public_input_payload(task_name: str, payload: dict[str, Any]) -> dict[str, 
             "offer_draft_id": int(data.get("offer_draft_id") or 0) or None,
             "case_no": str(data.get("case_no") or ""),
             "invoice_date": str(data.get("invoice_date") or ""),
-            "line_hint": _redact_text(data.get("line_hint"), 180),
-            "case_title": _redact_text(data.get("case_title") or data.get("title"), 180),
+            "line_hint": _redact_text(data.get("line_hint"), 60),
         }
         offer_lines = data.get("offer_lines") or data.get("lines") or []
         if isinstance(offer_lines, list):
@@ -557,7 +589,6 @@ def _public_input_payload(task_name: str, payload: dict[str, Any]) -> dict[str, 
                     "unit": str(item.get("unit") or ""),
                     "tax_rate": item.get("tax_rate"),
                     "product_id": item.get("product_id"),
-                    "text": _redact_text(item.get("text"), 120),
                 }
                 for item in offer_lines[:6]
                 if isinstance(item, dict)
@@ -572,7 +603,10 @@ def _public_tool_context(task_name: str, tool_context: dict[str, Any]) -> dict[s
     if task in {"customer_merge_candidate", "customer_init_cluster_review"}:
         return _sanitize_generic_payload(context, keep_keys={"id", "customer_id", "status", "system_name", "external_type", "is_primary"})
     if task in {"email_classification", "document_classification", "incoming_invoice_extract", "voucher_accounting_suggestion", "offer_draft_prepare", "invoice_draft_prepare", "role_assignment_suggestion"}:
-        return _sanitize_generic_payload(context, keep_keys={"id", "customer_id", "case_id", "status", "customer_no", "case_no", "workorder_no", "invoice_no", "voucher_ref", "paperless_document_id", "document_type", "object_type", "object_id"})
+        return _sanitize_generic_payload(
+            {key: value for key, value in context.items() if str(key) in {"id", "customer_id", "case_id", "status", "customer_no", "case_no", "workorder_no", "invoice_no", "voucher_ref", "paperless_document_id", "document_type", "object_type", "object_id"}},
+            keep_keys={"id", "customer_id", "case_id", "status", "customer_no", "case_no", "workorder_no", "invoice_no", "voucher_ref", "paperless_document_id", "document_type", "object_type", "object_id"},
+        )
     return _sanitize_generic_payload(context)
 
 
@@ -604,6 +638,25 @@ def _redact_text(value: Any, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return f"{text[:max_len - 3].rstrip()}..."
+
+
+def _task_model_name(settings: dict[str, Any], task_name: str) -> str:
+    task = str(task_name or "").strip()
+    if task in STRICT_PRIVACY_ALLOWED_TASKS:
+        return str(settings.get("model_fast") or settings.get("model_default") or "gpt-5-mini")
+    return str(settings.get("model_default") or "gpt-5-mini")
+
+
+def _task_max_output_tokens(settings: dict[str, Any], task_name: str) -> int:
+    base = max(300, int(settings.get("max_tokens") or 1500))
+    task = str(task_name or "").strip()
+    if task in {"customer_merge_candidate", "customer_init_cluster_review"}:
+        return min(base, 500)
+    if task == "voucher_accounting_suggestion":
+        return min(base, 700)
+    if task in {"email_classification", "document_classification"}:
+        return min(base, 450)
+    return min(base, 900)
 
 
 def _normalize_cmp(value: Any) -> str:

@@ -24,7 +24,7 @@ import uuid
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.routing import APIRoute
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import Float, and_, case, cast, exists, func, or_
@@ -195,8 +195,10 @@ from .services.ai_service import (
     decision_input as ai_decision_input,
     decision_output as ai_decision_output,
     ensure_prompt_definitions as ai_ensure_prompt_definitions,
+    external_task_allowlist as ai_external_task_allowlist,
     find_review_item as ai_find_review_item,
     openai_ready as ai_openai_ready,
+    privacy_mode_enabled as ai_privacy_mode_enabled,
     review_priority as ai_review_priority,
     task_names as ai_task_names,
     task_risk_class as ai_task_risk_class,
@@ -358,6 +360,7 @@ OPENAI_SETTING_MODEL_REASONING = "openai_model_reasoning"
 OPENAI_SETTING_TIMEOUT = "openai_timeout_seconds"
 OPENAI_SETTING_RETRY = "openai_retry_count"
 OPENAI_SETTING_MAX_TOKENS = "openai_max_tokens"
+OPENAI_SETTING_STRICT_PRIVACY = "openai_strict_privacy"
 
 LEGACY_CONDITION_MAP = {
     "ok": "A_WARE",
@@ -28649,7 +28652,7 @@ def _write_openai_api_key(api_key: str) -> None:
 
 def _openai_settings(db: Session, include_secret: bool = False) -> dict[str, str | bool | int]:
     api_key = _read_openai_api_key()
-    return {
+    settings = {
         "enabled": _bool_from_setting(_system_setting_get(db, OPENAI_SETTING_ENABLED, "0"), default=False),
         "api_key_set": bool(api_key),
         "api_key": api_key if include_secret else "",
@@ -28659,7 +28662,11 @@ def _openai_settings(db: Session, include_secret: bool = False) -> dict[str, str
         "timeout_seconds": _int_from_setting(_system_setting_get(db, OPENAI_SETTING_TIMEOUT, "45"), default=45, minimum=5),
         "retry_count": _int_from_setting(_system_setting_get(db, OPENAI_SETTING_RETRY, "1"), default=1, minimum=0),
         "max_tokens": _int_from_setting(_system_setting_get(db, OPENAI_SETTING_MAX_TOKENS, "1500"), default=1500, minimum=300),
+        "strict_privacy": _bool_from_setting(_system_setting_get(db, OPENAI_SETTING_STRICT_PRIVACY, "1"), default=True),
     }
+    settings["privacy_mode_active"] = ai_privacy_mode_enabled(settings)
+    settings["external_allowed_tasks"] = ai_external_task_allowlist(settings)
+    return settings
 
 
 def _ai_task_label(task_name: str) -> str:
@@ -28738,9 +28745,16 @@ def _dashboard_ai_stats(db: Session) -> dict[str, object]:
 
 def _procedure_guideline_defaults() -> list[dict[str, str]]:
     file_sections = _procedure_guideline_sections_from_source()
-    if file_sections:
-        return file_sections
-    return _procedure_guideline_builtin_defaults()
+    builtin = _procedure_guideline_builtin_defaults()
+    if not file_sections:
+        return builtin
+    existing_keys = {str(item.get("section_key") or "").strip() for item in file_sections}
+    merged = list(file_sections)
+    for item in builtin:
+        if str(item.get("section_key") or "").strip() in existing_keys:
+            continue
+        merged.append(item)
+    return merged
 
 
 def _procedure_guideline_builtin_defaults() -> list[dict[str, str]]:
@@ -28754,6 +28768,9 @@ def _procedure_guideline_builtin_defaults() -> list[dict[str, str]]:
         {"section_key": "ki_regeln", "title": "KI-Regeln und Risikoklassen", "content_markdown": "Gruen = Vorschlaege ohne harte Wirkung. Gelb = fachliche Vorschlaege mit Pruefpflicht. Rot = keine automatische Ausfuehrung; nur nach expliziter Freigabe."},
         {"section_key": "audit_logging", "title": "Audit, Logging und Freigaben", "content_markdown": "Jede KI-Entscheidung landet im KI-Log. Gelbe und rote Entscheidungen erscheinen in der KI-Freigabe."},
         {"section_key": "ausnahmen", "title": "Ausnahmebehandlung", "content_markdown": "Unsichere Felder bleiben leer. Fachseiten muessen immer manuell korrigierbar bleiben. Externe Ausfaelle duerfen nur Vorschlaege verhindern, nicht Kernprozesse blockieren."},
+        {"section_key": "datenschutz_ki", "title": "Datenschutz und KI-Datensparsamkeit", "content_markdown": "OpenAI erhaelt nur minimierte, pseudonymisierte Nutzdaten. Personenbezogene Freitexte, Mailinhalte und OCR-Rohtexte bleiben im DSGVO-Privatheitsmodus lokal. Externe KI ist nur fuer eng freigegebene, abstrahierte Aufgaben erlaubt."},
+        {"section_key": "gobd_finanzjournal", "title": "GoBD und Finanzjournal", "content_markdown": "Finanzrelevante Einkaufsobjekte schreiben ein append-only Finanzjournal mit Vorher-/Nachher-Stand und Hash-Kette. Statusregressionen bei Rechnungen sind technisch eingeschraenkt. Das Journal ist ueber /system/finanzjournal pruefbar."},
+        {"section_key": "sicherung_wiederanlauf", "title": "Sicherung, Wiederanlauf und Restore", "content_markdown": "Backups arbeiten mit Manifest und SHA-256-Pruefung. Restore ersetzt DB und Uploads atomar. Secrets werden nicht still ueberschrieben. Der Wiederanlauf ist ueber Docker/Compose dokumentiert."},
     ]
 
 
@@ -28934,6 +28951,64 @@ def _active_procedure_guideline_sections(db: Session) -> list[ProcedureGuideline
             int(row.id or 0),
         ),
     )
+
+
+def _procedure_guideline_runtime_sections(db: Session) -> list[dict[str, str]]:
+    ai_settings = _openai_settings(db, include_secret=False)
+    finance_count = int(db.query(func.count(FinanceAuditLog.id)).scalar() or 0)
+    finance_last = db.query(FinanceAuditLog.created_at).order_by(FinanceAuditLog.id.desc()).limit(1).scalar()
+    external_tasks = [_ai_task_label(task) for task in ai_settings.get("external_allowed_tasks") or []]
+    return [
+        {
+            "title": "Anhang: KI-Datenschutz und Betriebsmodus",
+            "content_markdown": "\n".join(
+                [
+                    f"- OpenAI aktiv: {'Ja' if ai_settings.get('enabled') else 'Nein'}",
+                    f"- DSGVO-Privatheitsmodus: {'Aktiv' if ai_settings.get('strict_privacy') else 'Aus'}",
+                    f"- Extern freigegebene KI-Aufgaben: {', '.join(external_tasks) if external_tasks else 'keine'}",
+                    "- Externe KI erhaelt nur minimierte/pseudonymisierte Payloads; Rohtexte bleiben lokal, sofern der Privatheitsmodus aktiv ist.",
+                ]
+            ),
+        },
+        {
+            "title": "Anhang: GoBD-nahe Finanzkontrollen",
+            "content_markdown": "\n".join(
+                [
+                    f"- Finanzjournal aktiv: {'Ja' if _table_exists('finance_audit_logs') else 'Nein'}",
+                    f"- Journal-Eintraege: {finance_count}",
+                    f"- Letzter Eintrag: {format_date(finance_last) if finance_last else '-'}",
+                    "- Einkaufsobjekte schreiben Vorher-/Nachher-Staende mit Hash-Kette in das Finanzjournal.",
+                    "- Rechnungsstatus kann nicht beliebig in fruehere fachliche Zustaende zurueckgesetzt werden.",
+                ]
+            ),
+        },
+        {
+            "title": "Anhang: Betriebs- und Wiederanlaufhinweise",
+            "content_markdown": "\n".join(
+                [
+                    f"- Datenverzeichnis: {DATA_DIR}",
+                    "- Docker/Compose fuehrt Migrationen beim Containerstart aus.",
+                    "- Startup vermeidet Vollreindexe und indexiert Suchfelder nur bei fehlenden Daten nach.",
+                    "- Backup/Restore arbeitet mit Manifest und Integritaetspruefung.",
+                ]
+            ),
+        },
+    ]
+
+
+def _procedure_guideline_export_markdown(db: Session) -> str:
+    rows = _active_procedure_guideline_sections(db)
+    runtime_rows = _procedure_guideline_runtime_sections(db)
+    parts = ["# Verfahrensrichtlinie", ""]
+    for row in rows:
+        parts.append(f"## {row.title}")
+        parts.append(str(row.content_markdown or "").strip())
+        parts.append("")
+    for row in runtime_rows:
+        parts.append(f"## {row['title']}")
+        parts.append(str(row["content_markdown"]).strip())
+        parts.append("")
+    return "\n".join(parts).strip() + "\n"
 
 
 def _ai_eval_defaults() -> list[dict[str, str | bool]]:
@@ -35201,6 +35276,7 @@ def system_integration_openai_get(request: Request, user=Depends(require_admin),
 async def system_integration_openai_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     form = await request.form()
     _system_setting_set(db, OPENAI_SETTING_ENABLED, "1" if form.get("enabled") == "on" else "0")
+    _system_setting_set(db, OPENAI_SETTING_STRICT_PRIVACY, "1" if form.get("strict_privacy") == "on" else "0")
     _system_setting_set(db, OPENAI_SETTING_MODEL_DEFAULT, str(form.get("model_default") or "gpt-5-mini").strip() or "gpt-5-mini")
     _system_setting_set(db, OPENAI_SETTING_MODEL_FAST, str(form.get("model_fast") or "gpt-5-mini").strip() or "gpt-5-mini")
     _system_setting_set(db, OPENAI_SETTING_MODEL_REASONING, str(form.get("model_reasoning") or "gpt-5").strip() or "gpt-5")
@@ -35393,7 +35469,22 @@ def system_procedure_guideline(request: Request, user=Depends(require_admin), db
     db.commit()
     return templates.TemplateResponse(
         "system/procedure_guideline.html",
-        _ctx(request, user=user, rows=rows, guideline_source=_procedure_guideline_source_info()),
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            guideline_source=_procedure_guideline_source_info(),
+            runtime_rows=_procedure_guideline_runtime_sections(db),
+        ),
+    )
+
+
+@app.get("/system/verfahrensrichtlinie/export.md", response_class=PlainTextResponse)
+def system_procedure_guideline_export(user=Depends(require_admin), db: Session = Depends(db_session)):
+    return PlainTextResponse(
+        _procedure_guideline_export_markdown(db),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="verfahrensrichtlinie.md"'},
     )
 
 
