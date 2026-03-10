@@ -474,6 +474,14 @@
                   <div><b>{{ item.row.title or item.row.paperless_document_id }}</b></div>
                   <div class="muted">{{ item.row.correspondent or '-' }} | {{ item.row.document_type or '-' }}{% if item.row.created_date %} | {{ format_date(item.row.created_date) }}{% endif %}</div>
                   {% if item.scan.get('reasons') %}<div class="hint">Treffer: {{ item.scan.get('reasons')|join(', ') }}</div>{% endif %}
+                  {% if item.scan.get('matched_name') or item.scan.get('matched_ref') %}
+                    <div class="hint">
+                      Match:
+                      {% if item.scan.get('matched_name') %}Name {{ item.scan.get('matched_name') }}{% endif %}
+                      {% if item.scan.get('matched_name') and item.scan.get('matched_ref') %} | {% endif %}
+                      {% if item.scan.get('matched_ref') %}AF/SA {{ item.scan.get('matched_ref') }}{% endif %}
+                    </div>
+                  {% endif %}
                   <div class="row" style="margin-top:6px; gap:8px; flex-wrap:wrap;">
                     <a class="btn small" href="/crm/dokumente/{{ item.row.id }}?next={{ ('/crm/kunden/' ~ customer.id)|urlencode }}">Dokument prüfen</a>
                     {% if item.paperless_url %}<a class="btn small" href="{{ item.paperless_url }}" target="_blank" rel="noopener">In Paperless öffnen</a>{% endif %}

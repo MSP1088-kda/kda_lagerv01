@@ -4226,12 +4226,13 @@ def _paperless_customer_match_score(
     identities: list[ExternalIdentity],
     contact_rows: list[dict[str, object]] | None = None,
     workorder_refs: list[str] | None = None,
-) -> tuple[int, list[str]]:
+) -> tuple[int, list[str], dict[str, object]]:
     blob = _crm_normalize_key(text)
     score = 0
     reasons: list[str] = []
+    details: dict[str, object] = {"matched_name": "", "matched_ref": ""}
     if not blob:
-        return score, reasons
+        return score, reasons, details
 
     def hit(value: str | None) -> bool:
         key = _crm_normalize_key(value)
@@ -4248,11 +4249,15 @@ def _paperless_customer_match_score(
 
     if list(workorder_refs or []):
         if not name_hits or not ref_hits:
-            return 0, []
+            return 0, [], details
         score += 6
         reasons.append("Name")
         score += 8
         reasons.append("AF/SA-Nummer")
+        details["matched_name"] = name_hits[0]
+        details["matched_ref"] = ref_hits[0]
+    elif name_hits:
+        details["matched_name"] = name_hits[0]
 
     if hit(customer.customer_no_internal):
         score += 6
@@ -4288,7 +4293,7 @@ def _paperless_customer_match_score(
     score += topic_score
     for label in topic_reasons:
         reasons.append(f"Dokumenttyp: {label}")
-    return score, reasons
+    return score, reasons, details
 
 
 def _paperless_scan_customer_documents(
@@ -4330,7 +4335,7 @@ def _paperless_scan_customer_documents(
             fetched += 1
             if str(item.status or "").strip() == "matched":
                 continue
-            score, reasons = _paperless_customer_match_score(
+            score, reasons, match_details = _paperless_customer_match_score(
                 text=_document_search_blob(item),
                 customer=customer,
                 party=party,
@@ -4361,6 +4366,8 @@ def _paperless_scan_customer_documents(
                 "priority_rank": priority_rank,
                 "topic_reasons": topic_reasons,
                 "workorder_refs": workorder_refs[:8],
+                "matched_name": str(match_details.get("matched_name") or ""),
+                "matched_ref": str(match_details.get("matched_ref") or ""),
             }
             item.metadata_json = json.dumps(meta, ensure_ascii=False)
             db.add(item)
