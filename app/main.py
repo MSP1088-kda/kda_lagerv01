@@ -4067,7 +4067,87 @@ def _paperless_customer_candidate_items(db: Session, customer_id: int, limit: in
     return filtered[: max(1, int(limit or 12))]
 
 
+def _paperless_af_sa_ref_token(value: str | None) -> str:
+    text = _crm_clean_text(value).upper()
+    if not text:
+        return ""
+    match = re.search(r"\b((?:AF|SA)[\s/_-]*\d{2,})\b", text)
+    if not match:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", match.group(1))
+
+
+def _paperless_customer_name_terms(party: Party, contact_rows: list[dict[str, object]] | None = None) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add_term(value: str | None) -> None:
+        text = _crm_clean_text(value)
+        if len(text) < 3:
+            return
+        key = _crm_normalize_key(text)
+        if key in seen:
+            return
+        seen.add(key)
+        terms.append(text)
+
+    def add_name_variants(value: str | None) -> None:
+        text = _crm_clean_text(value)
+        if not text:
+            return
+        add_term(text)
+        parts = [part for part in re.split(r"\s+", text) if _crm_clean_text(part)]
+        if len(parts) >= 2:
+            add_term(parts[-1])
+
+    add_name_variants(party.display_name)
+    for item in list(contact_rows or [])[:6]:
+        party_row = item.get("party")
+        if party_row:
+            add_name_variants(getattr(party_row, "display_name", None))
+    return terms[:6]
+
+
+def _paperless_customer_outsmart_refs(db: Session, customer_id: int, limit: int = 12) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    def add_ref(value: str | None) -> None:
+        token = _paperless_af_sa_ref_token(value)
+        if not token or token in seen:
+            return
+        seen.add(token)
+        refs.append(token)
+
+    local_rows = (
+        db.query(OutsmartWorkorder)
+        .filter(OutsmartWorkorder.master_customer_id == int(customer_id))
+        .order_by(OutsmartWorkorder.updated_at.desc(), OutsmartWorkorder.id.desc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+    for row in local_rows:
+        payload = _json_dict(row.raw_json)
+        add_ref(row.workorder_no)
+        add_ref(payload.get("JobNr"))
+        add_ref(payload.get("Reference"))
+        add_ref(payload.get("ExternalReference"))
+        add_ref(payload.get("OrderNr"))
+    for item in _customer_outsmart_stage_workorder_rows(db, int(customer_id), limit=max(1, int(limit))):
+        row = item.get("row")
+        if not row:
+            continue
+        payload = _json_dict(getattr(row, "raw_json", ""))
+        add_ref(getattr(row, "workorder_no", None))
+        add_ref(payload.get("JobNr"))
+        add_ref(payload.get("Reference"))
+        add_ref(payload.get("ExternalReference"))
+        add_ref(payload.get("OrderNr"))
+    return refs[: max(1, int(limit))]
+
+
 def _paperless_customer_search_terms(
+    db: Session,
     customer: MasterCustomer,
     party: Party,
     default_address: CrmAddress | None,
@@ -4087,8 +4167,18 @@ def _paperless_customer_search_terms(
         seen.add(key)
         terms.append(text)
 
+    name_terms = _paperless_customer_name_terms(party, contact_rows)
+    workorder_refs = _paperless_customer_outsmart_refs(db, int(customer.id), limit=8)
+    if name_terms and workorder_refs:
+        for ref in workorder_refs[:8]:
+            for name_term in name_terms[:4]:
+                add_term(f"{name_term} {ref}", min_len=6)
+                add_term(f"{ref} {name_term}", min_len=6)
+        return terms[:12]
+
     add_term(customer.customer_no_internal, min_len=3)
-    add_term(party.display_name)
+    for name_term in name_terms:
+        add_term(name_term)
     if default_address:
         add_term(default_address.email, min_len=6)
         add_term(default_address.phone, min_len=6)
@@ -4135,6 +4225,7 @@ def _paperless_customer_match_score(
     default_address: CrmAddress | None,
     identities: list[ExternalIdentity],
     contact_rows: list[dict[str, object]] | None = None,
+    workorder_refs: list[str] | None = None,
 ) -> tuple[int, list[str]]:
     blob = _crm_normalize_key(text)
     score = 0
@@ -4145,6 +4236,23 @@ def _paperless_customer_match_score(
     def hit(value: str | None) -> bool:
         key = _crm_normalize_key(value)
         return bool(key) and key in blob
+
+    name_hits: list[str] = []
+    for value in _paperless_customer_name_terms(party, contact_rows):
+        if hit(value):
+            name_hits.append(value)
+    ref_hits: list[str] = []
+    for value in list(workorder_refs or [])[:12]:
+        if _crm_normalize_key(value) and _crm_normalize_key(value) in blob:
+            ref_hits.append(value)
+
+    if list(workorder_refs or []):
+        if not name_hits or not ref_hits:
+            return 0, []
+        score += 6
+        reasons.append("Name")
+        score += 8
+        reasons.append("AF/SA-Nummer")
 
     if hit(customer.customer_no_internal):
         score += 6
@@ -4196,7 +4304,8 @@ def _paperless_scan_customer_documents(
     settings = _paperless_settings(db, include_secret=True)
     if not bool(settings.get("enabled")) or not bool(settings.get("token")):
         raise ValueError("Paperless ist nicht aktiviert oder es fehlt das API-Token.")
-    terms = _paperless_customer_search_terms(customer, party, default_address, identities, contact_rows)
+    workorder_refs = _paperless_customer_outsmart_refs(db, int(customer.id), limit=8)
+    terms = _paperless_customer_search_terms(db, customer, party, default_address, identities, contact_rows)
     if not terms:
         return {"queries": 0, "fetched": 0, "suggested": 0}
     linked_doc_ids = {
@@ -4228,6 +4337,7 @@ def _paperless_scan_customer_documents(
                 default_address=default_address,
                 identities=identities,
                 contact_rows=contact_rows,
+                workorder_refs=workorder_refs,
             )
             if score < 5:
                 continue
@@ -4250,6 +4360,7 @@ def _paperless_scan_customer_documents(
                 "reasons": reasons,
                 "priority_rank": priority_rank,
                 "topic_reasons": topic_reasons,
+                "workorder_refs": workorder_refs[:8],
             }
             item.metadata_json = json.dumps(meta, ensure_ascii=False)
             db.add(item)
