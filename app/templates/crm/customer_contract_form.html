@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  {% import "macros/forms.html" as f %}
+  {% set fd = form_data or {} %}
+  {% set fe = form_errors or {} %}
+  <h1>{{ page_title }}</h1>
+  {{ f.render_errors(fe) }}
+  <div class="box"><div class="box-body">{{ customer.customer_no_internal }} | {{ party.display_name }}</div></div>
+  <form method="post" action="{{ form_action }}" class="form" style="margin-top:10px;">
+    <div class="grid3">
+      <div>
+        <label for="crm_contract_type">Vertragsart</label>
+        <select id="crm_contract_type" name="contract_type">
+          {% for item in contract_type_choices %}
+            <option value="{{ item }}" {% if f.old(fd, 'contract_type', 'other') == item %}selected{% endif %}>{{ crm_contract_type_label(item) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="crm_contract_provider">Anbieter</label>
+        <input id="crm_contract_provider" type="text" name="provider_label" value="{{ f.old(fd, 'provider_label', '') }}">
+      </div>
+      <div>
+        <label for="crm_contract_no">Vertragsnummer</label>
+        <input id="crm_contract_no" type="text" name="contract_no" value="{{ f.old(fd, 'contract_no', '') }}">
+      </div>
+      <div>
+        <label for="crm_contract_location">Leistungsort</label>
+        <select id="crm_contract_location" name="service_location_id">
+          <option value="0">Kein Leistungsort</option>
+          {% for item in location_options %}
+            <option value="{{ item.id }}" {% if f.old(fd, 'service_location_id', '0') == item.id|string %}selected{% endif %}>{{ item.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="crm_contract_status">Status</label>
+        <select id="crm_contract_status" name="status">
+          {% for item in contract_status_choices %}
+            <option value="{{ item }}" {% if f.old(fd, 'status', 'active') == item %}selected{% endif %}>{{ crm_contract_status_label(item) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="crm_contract_amount">Betrag pro Jahr / Monat in EUR</label>
+        <input id="crm_contract_amount" type="text" name="amount_eur" value="{{ f.old(fd, 'amount_eur', '') }}">
+      </div>
+      <div>
+        <label for="crm_contract_starts_at">Beginn</label>
+        <input id="crm_contract_starts_at" type="date" name="starts_at" value="{{ f.old(fd, 'starts_at', '') }}">
+      </div>
+      <div>
+        <label for="crm_contract_ends_at">Ende</label>
+        <input id="crm_contract_ends_at" type="date" name="ends_at" value="{{ f.old(fd, 'ends_at', '') }}">
+      </div>
+    </div>
+    <label for="crm_contract_note">Notiz</label>
+    <textarea id="crm_contract_note" name="note" rows="4">{{ f.old(fd, 'note', '') }}</textarea>
+    <div class="row" style="margin-top:10px; gap:8px;">
+      <button class="btn primary" type="submit">Speichern</button>
+      <a class="btn" href="/crm/kunden/{{ customer.id }}">Zurueck</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

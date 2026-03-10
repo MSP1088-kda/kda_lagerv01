@@ -51,10 +51,12 @@ from .models import (
     Case as CrmCase,
     CompanyProfile,
     CrmTimelineEvent,
+    CustomerContract,
     CustomerObject,
     CustomerContactPerson,
     CustomerInitCluster,
     CustomerInitClusterMember,
+    CustomerTask,
     DeviceKind,
     DeviceType,
     DunningAction,
@@ -275,13 +277,16 @@ from .services.sevdesk_service import (
     generate_download_hash as sevdesk_generate_download_hash,
     get_bookkeeping_system_version as sevdesk_get_bookkeeping_system_version,
     get_check_accounts as sevdesk_get_check_accounts,
+    get_contact as sevdesk_get_contact,
     get_export_progress as sevdesk_get_export_progress,
     get_job_download_info as sevdesk_get_job_download_info,
     get_next_customer_number as sevdesk_get_next_customer_number,
     get_transactions as sevdesk_get_transactions,
+    list_contact_addresses as sevdesk_list_contact_addresses,
     list_contacts as sevdesk_list_contacts,
     list_invoices as sevdesk_list_invoices,
     list_orders as sevdesk_list_orders,
+    list_vouchers as sevdesk_list_vouchers,
     send_invoice as sevdesk_send_invoice,
     send_order as sevdesk_send_order,
     test_connection as sevdesk_test_connection,
@@ -1040,6 +1045,11 @@ def _ctx(request: Request, user=None, **kwargs):
         "crm_case_priority_label": _crm_case_priority_label,
         "crm_party_type_label": _crm_party_type_label,
         "crm_customer_status_label": _crm_customer_status_label,
+        "crm_address_usage_label": _crm_address_usage_label,
+        "crm_contract_type_label": _crm_contract_type_label,
+        "crm_contract_status_label": _crm_contract_status_label,
+        "crm_task_entry_type_label": _crm_task_entry_type_label,
+        "crm_task_status_label": _crm_task_status_label,
         "crm_role_label": _crm_role_label,
         "crm_external_system_label": _crm_external_system_label,
         "crm_external_type_label": _crm_external_type_label,
@@ -16278,6 +16288,11 @@ CRM_PARTY_TYPE_CHOICES = ("company", "person", "public_entity", "other")
 CRM_CUSTOMER_STATUS_CHOICES = ("active", "inactive", "prospect")
 CRM_CASE_STATUS_CHOICES = ("open", "planned", "in_progress", "completed", "closed", "cancelled")
 CRM_CASE_PRIORITY_CHOICES = ("low", "normal", "high", "urgent")
+CRM_ADDRESS_USAGE_CHOICES = ("main", "billing", "service", "other")
+CRM_CONTRACT_TYPE_CHOICES = ("warranty", "rental", "service", "insurance", "other")
+CRM_CONTRACT_STATUS_CHOICES = ("active", "paused", "ended")
+CRM_TASK_ENTRY_TYPE_CHOICES = ("task", "note", "phone_note")
+CRM_TASK_STATUS_CHOICES = ("open", "in_progress", "done")
 CRM_ROLE_ORDERING_PARTY = "ordering_party"
 CRM_ROLE_SERVICE_LOCATION = "service_location"
 CRM_ROLE_INVOICE_RECIPIENT = "invoice_recipient"
@@ -16385,6 +16400,59 @@ def _crm_external_type_label(value: str | None) -> str:
     return mapping.get(key, str(value or "").strip() or "-")
 
 
+def _crm_address_usage_label(value: str | None) -> str:
+    mapping = {
+        "main": "Hauptadresse",
+        "billing": "Rechnungsadresse",
+        "service": "Leistungsort",
+        "other": "Sonstige Adresse",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_contract_type_label(value: str | None) -> str:
+    mapping = {
+        "warranty": "Wertgarantie / Garantie",
+        "rental": "Mietvertrag",
+        "service": "Servicevertrag",
+        "insurance": "Versicherung",
+        "other": "Sonstiger Vertrag",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_contract_status_label(value: str | None) -> str:
+    mapping = {
+        "active": "Aktiv",
+        "paused": "Pausiert",
+        "ended": "Beendet",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_task_entry_type_label(value: str | None) -> str:
+    mapping = {
+        "task": "Aufgabe",
+        "note": "Notiz",
+        "phone_note": "Telefonnotiz",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
+def _crm_task_status_label(value: str | None) -> str:
+    mapping = {
+        "open": "Offen",
+        "in_progress": "In Arbeit",
+        "done": "Erledigt",
+    }
+    key = _crm_normalize_key(value)
+    return mapping.get(key, str(value or "").strip() or "-")
+
+
 def _customer_init_cluster_status_label(value: str | None) -> str:
     mapping = {
         "ready": "Bereit",
@@ -16456,8 +16524,11 @@ def _crm_address_summary(address: CrmAddress | None) -> str:
     if not address:
         return ""
     parts = []
+    usage_label = _crm_address_usage_label(getattr(address, "usage_type", "") or "")
     street = _crm_clean_text(f"{str(address.street or '').strip()} {str(address.house_no or '').strip()}")
     city = _crm_clean_text(f"{str(address.zip_code or '').strip()} {str(address.city or '').strip()}")
+    if usage_label and usage_label != "-":
+        parts.append(usage_label)
     if street:
         parts.append(street)
     if city:
@@ -16488,8 +16559,12 @@ def _crm_location_label(location: ServiceLocation | None, address: CrmAddress | 
 
 
 def _crm_parse_address_payload(form, prefix: str = "") -> dict[str, str | bool | None]:
+    usage_type = _crm_normalize_key(form.get(f"{prefix}usage_type")) or "other"
+    if usage_type not in CRM_ADDRESS_USAGE_CHOICES:
+        usage_type = "other"
     return {
         "label": _crm_clean_text(form.get(f"{prefix}label") or "") or None,
+        "usage_type": usage_type,
         "street": _crm_clean_text(form.get(f"{prefix}street") or "") or None,
         "house_no": _crm_clean_text(form.get(f"{prefix}house_no") or "") or None,
         "zip_code": _crm_clean_text(form.get(f"{prefix}zip_code") or "") or None,
@@ -16509,6 +16584,7 @@ def _crm_address_payload_has_content(payload: dict[str, str | bool | None]) -> b
 
 def _crm_apply_address_payload(address: CrmAddress, payload: dict[str, str | bool | None]) -> None:
     address.label = str(payload.get("label") or "").strip() or None
+    address.usage_type = str(payload.get("usage_type") or "other").strip() or "other"
     address.street = str(payload.get("street") or "").strip() or None
     address.house_no = str(payload.get("house_no") or "").strip() or None
     address.zip_code = str(payload.get("zip_code") or "").strip() or None
@@ -17378,6 +17454,7 @@ def _crm_render_address_form(
             customer=customer,
             party=party,
             row=row,
+            address_usage_choices=CRM_ADDRESS_USAGE_CHOICES,
             form_data=form_data,
             form_errors=form_errors,
             first_error_field_id=first_error_field_id,
@@ -17419,6 +17496,7 @@ def _crm_render_location_form(
             address_row=address_row,
             address_options=address_options,
             selected_address_id=int(selected_address_id or 0),
+            address_usage_choices=CRM_ADDRESS_USAGE_CHOICES,
             page_title=page_title,
             form_action=form_action,
             form_data=form_data,
@@ -17709,28 +17787,20 @@ def crm_customer_detail(
     party = db.get(Party, int(customer.party_id))
     if not party:
         raise HTTPException(status_code=404)
-    backfill_summary = _crm_backfill_customer_contact_data(db, customer)
-    if int(backfill_summary.get("updated") or 0) > 0:
+    contact_backfill = _crm_backfill_customer_contact_data(db, customer)
+    location_backfill = _crm_backfill_customer_service_locations(db, customer)
+    if int(contact_backfill.get("updated") or 0) > 0 or int(location_backfill.get("created") or 0) > 0 or int(location_backfill.get("updated") or 0) > 0:
         db.commit()
         party = db.get(Party, int(customer.party_id))
     customer_init_summary = _customer_init_customer_summary(db, int(customer.id))
     outsmart_stage_workorders_total = int(customer_init_summary.get("workorder_count") or 0)
     sevdesk_stage_documents_total = int(customer_init_summary.get("order_count") or 0) + int(customer_init_summary.get("invoice_count") or 0)
-    outsmart_workorders_total = int(
-        db.query(OutsmartWorkorder)
-        .filter(OutsmartWorkorder.master_customer_id == int(customer.id))
-        .count()
-    )
+    outsmart_workorders_total = int(db.query(OutsmartWorkorder).filter(OutsmartWorkorder.master_customer_id == int(customer.id)).count())
     if outsmart_stage_workorders_total > outsmart_workorders_total:
         try:
-            backfill_summary = _outsmart_backfill_existing_workorders(db, customer_id=int(customer.id))
-            if any(int(backfill_summary.get(key) or 0) > 0 for key in ("matched_customer", "matched_case", "contact_updates", "updated_rows")):
+            workorder_backfill = _outsmart_backfill_existing_workorders(db, customer_id=int(customer.id))
+            if any(int(workorder_backfill.get(key) or 0) > 0 for key in ("matched_customer", "matched_case", "contact_updates", "updated_rows")):
                 db.commit()
-                outsmart_workorders_total = int(
-                    db.query(OutsmartWorkorder)
-                    .filter(OutsmartWorkorder.master_customer_id == int(customer.id))
-                    .count()
-                )
         except Exception as exc:
             db.rollback()
             _flash(request, f"OutSmart-Nachverknüpfung fehlgeschlagen: {exc}", "error")
@@ -17747,18 +17817,11 @@ def crm_customer_detail(
         .order_by(CustomerContactPerson.active.desc(), CustomerContactPerson.id.asc())
         .all()
     )
-    contact_party_ids = [int(row.party_id) for row in contact_rows_raw]
+    contact_party_ids = [int(row.party_id) for row in contact_rows_raw if int(row.party_id or 0) > 0]
     contact_parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(contact_party_ids)).all()} if contact_party_ids else {}
-    contact_rows = [{"row": row, "party": contact_parties.get(int(row.party_id))} for row in contact_rows_raw]
-    location_rows_raw = (
-        db.query(ServiceLocation)
-        .filter(ServiceLocation.master_customer_id == int(customer.id))
-        .order_by(ServiceLocation.active.desc(), ServiceLocation.location_label.asc(), ServiceLocation.id.asc())
-        .all()
-    )
-    location_address_ids = [int(row.address_id) for row in location_rows_raw if int(row.address_id or 0) > 0]
-    location_addresses = {int(row.id): row for row in db.query(CrmAddress).filter(CrmAddress.id.in_(location_address_ids)).all()} if location_address_ids else {}
-    location_rows = [{"row": row, "address": location_addresses.get(int(row.address_id or 0))} for row in location_rows_raw]
+    contact_rows = [{"row": row, "party": contact_parties.get(int(row.party_id or 0))} for row in contact_rows_raw]
+    header_summary = _crm_customer_header_summary(customer, party, default_address, contact_rows)
+    header_summary["first_contact_at"] = _customer_first_contact_at(db, int(customer.id))
     identities = (
         db.query(ExternalIdentity)
         .filter(ExternalIdentity.master_customer_id == int(customer.id))
@@ -17775,46 +17838,18 @@ def crm_customer_detail(
         )
         .one_or_none()
     )
-    sevdesk_settings = _sevdesk_settings(db, include_secret=True)
-    sevdesk_results: list[dict] = []
-    sevdesk_identities = [row for row in identities if _crm_normalize_key(row.system_name) == "sevdesk"]
-    if str(sevdesk_q or "").strip() and bool(sevdesk_settings.get("enabled")) and bool(sevdesk_settings.get("api_token")):
-        try:
-            search_text = str(sevdesk_q or "").strip()
-            sevdesk_results = sevdesk_find_contact(
-                sevdesk_settings,
-                customer_number=search_text if search_text.replace("-", "").replace("/", "").isdigit() else str(customer.customer_no_internal or ""),
-                name=search_text if "@" not in search_text else str(party.display_name or ""),
-                city=str(default_address.city or "") if default_address else "",
-                zip_code=str(default_address.zip_code or "") if default_address else "",
-                email=search_text if "@" in search_text else str(default_address.email or "") if default_address else "",
-                limit=10,
-            )
-            search_norm = _crm_normalize_key(sevdesk_q)
-            sevdesk_results = [
-                row
-                for row in sevdesk_results
-                if not search_norm
-                or search_norm
-                in _crm_normalize_key(
-                    " ".join(
-                        [
-                            str(sevdesk_first_value(row, ("name", "displayName")) or ""),
-                            str(sevdesk_first_value(row, ("customerNumber", "customerNo")) or ""),
-                            str(sevdesk_first_value(row, ("email", "emailAddress")) or ""),
-                            str(sevdesk_first_value(row, ("city", "zip")) or ""),
-                        ]
-                    )
-                )
-            ]
-        except Exception as exc:
-            _flash(request, f"sevDesk-Suche fehlgeschlagen: {exc}", "error")
     paperless_settings = _paperless_settings(db, include_secret=False)
-    recent_case_rows = _crm_recent_case_rows(db, int(customer.id))
-    outsmart_workorders_preview = _customer_outsmart_workorder_rows(db, int(customer.id), limit=8)
-    outsmart_stage_workorders_preview = _customer_outsmart_stage_workorder_rows(db, int(customer.id), limit=8)
-    sevdesk_documents_preview = _customer_sevdesk_document_rows(db, int(customer.id), limit=8)
-    sevdesk_stage_documents_preview = _customer_sevdesk_stage_document_rows(db, int(customer.id), limit=8)
+    recent_case_rows = _crm_recent_case_rows(db, int(customer.id), limit=6)
+    customer_objects = _customer_objects_for_customer(db, int(customer.id), limit=12)
+    finance_summary = _customer_finance_summary(db, int(customer.id))
+    invoice_address_rows = _customer_invoice_address_rows(db, customer, party)
+    service_location_cards = _customer_service_location_cards(db, int(customer.id), limit=16)
+    recent_offer_rows = _customer_recent_offer_sidebar_rows(db, int(customer.id), limit=3)
+    recent_invoice_rows = _customer_recent_invoice_sidebar_rows(db, int(customer.id), limit=3)
+    recent_receipt_rows = _customer_recent_receipt_sidebar_rows(db, int(customer.id), limit=3)
+    contract_rows = _customer_contract_rows(db, int(customer.id), limit=24)
+    task_rows = _customer_task_rows(db, int(customer.id), limit=24)
+    activity_rows = _customer_activity_rows(db, int(customer.id), limit=60)
     paperless_candidate_items = _paperless_customer_candidate_items(db, int(customer.id), limit=10)
     paperless_candidate_rows = [
         {
@@ -17824,19 +17859,10 @@ def crm_customer_detail(
         }
         for row in paperless_candidate_items
     ]
-    related_case_ids = [int(item["row"].id) for item in recent_case_rows if int(item["row"].id or 0) > 0]
-    ai_related_logs = (
-        db.query(AiDecisionLog)
-        .filter(
-            or_(
-                and_(AiDecisionLog.related_object_type == "master_customer", AiDecisionLog.related_object_id == int(customer.id)),
-                and_(AiDecisionLog.related_object_type == "crm_case", AiDecisionLog.related_object_id.in_(related_case_ids or [0])),
-            )
-        )
-        .order_by(AiDecisionLog.created_at.desc(), AiDecisionLog.id.desc())
-        .limit(8)
-        .all()
-    )
+    service_location_ids = {int(row.service_location_id or 0) for row in contract_rows + task_rows if int(getattr(row, "service_location_id", 0) or 0) > 0}
+    service_location_map = {int(row.id): row for row in db.query(ServiceLocation).filter(ServiceLocation.id.in_(service_location_ids or [0])).all()} if service_location_ids else {}
+    assigned_user_ids = {int(row.assigned_user_id or 0) for row in task_rows if int(row.assigned_user_id or 0) > 0}
+    assigned_user_map = {int(row.id): row for row in db.query(User).filter(User.id.in_(assigned_user_ids or [0])).all()} if assigned_user_ids else {}
     return templates.TemplateResponse(
         "crm/customer_detail.html",
         _ctx(
@@ -17845,36 +17871,34 @@ def crm_customer_detail(
             customer=customer,
             party=party,
             default_address=default_address,
-            header_summary=_crm_customer_header_summary(customer, party, default_address, contact_rows),
+            header_summary=header_summary,
             addresses=addresses,
             contact_rows=contact_rows,
-            location_rows=location_rows,
             identities=identities,
-            sevdesk_identities=sevdesk_identities,
-            sevdesk_enabled=bool(sevdesk_settings.get("enabled")),
-            sevdesk_api_token_set=bool(sevdesk_settings.get("api_token")),
-            sevdesk_search_query=str(sevdesk_q or "").strip(),
-            sevdesk_search_results=sevdesk_results,
+            finance_summary=finance_summary,
+            invoice_address_rows=invoice_address_rows,
+            service_location_cards=service_location_cards,
             recent_case_rows=recent_case_rows,
-            customer_objects=_customer_objects_for_customer(db, int(customer.id), limit=8),
-            outsmart_workorders_preview=outsmart_workorders_preview,
-            outsmart_workorders_total=outsmart_workorders_total,
-            outsmart_stage_workorders_preview=outsmart_stage_workorders_preview,
-            outsmart_stage_workorders_total=outsmart_stage_workorders_total,
-            sevdesk_documents_preview=sevdesk_documents_preview,
-            sevdesk_documents_total=int(db.query(OfferDraft).filter(OfferDraft.master_customer_id == int(customer.id)).count()) + int(db.query(InvoiceDraft).filter(InvoiceDraft.master_customer_id == int(customer.id)).count()),
-            sevdesk_stage_documents_preview=sevdesk_stage_documents_preview,
+            customer_objects=customer_objects,
+            recent_offer_rows=recent_offer_rows,
+            recent_invoice_rows=recent_invoice_rows,
+            recent_receipt_rows=recent_receipt_rows,
+            contract_rows=contract_rows,
+            task_rows=task_rows,
+            task_user_map=assigned_user_map,
+            service_location_map=service_location_map,
+            activity_rows=activity_rows,
             sevdesk_stage_documents_total=sevdesk_stage_documents_total,
-            timeline_rows=_crm_timeline_rows_for_customer(db, int(customer.id), limit=20, timeline_filter=timeline_filter),
-            timeline_filter=(timeline_filter or "all").strip().lower() or "all",
             outsmart_enabled=bool(outsmart_settings.get("enabled")),
             outsmart_relation_link=outsmart_relation_link,
-            ai_related_logs=ai_related_logs,
             customer_init_summary=customer_init_summary,
             paperless_links=_paperless_links_for_object(db, "customer", int(customer.id)),
             paperless_candidate_rows=paperless_candidate_rows,
             local_attachments=_attachments_for_entity(db, "customer", int(customer.id)),
             paperless_build_url=lambda document_id: paperless_build_document_url(paperless_settings, document_id),
+            outsmart_workorders_total=int(db.query(OutsmartWorkorder).filter(OutsmartWorkorder.master_customer_id == int(customer.id)).count()),
+            outsmart_stage_workorders_total=outsmart_stage_workorders_total,
+            sevdesk_documents_total=finance_summary.get("invoice_count") or 0,
         ),
     )
 
@@ -18009,6 +18033,326 @@ def crm_customer_sevdesk_stage_documents(customer_id: int, request: Request, use
             rows=_customer_sevdesk_stage_document_rows(db, int(customer.id), limit=240),
         ),
     )
+
+
+@app.get("/crm/sevdesk-stage/{kind}/{stage_id}", response_class=HTMLResponse)
+def crm_sevdesk_stage_detail(kind: str, stage_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+    kind_key = _crm_normalize_key(kind)
+    if kind_key == "invoice":
+        row = db.get(SevdeskInvoiceStage, stage_id)
+    elif kind_key == "order":
+        row = db.get(SevdeskOrderStage, stage_id)
+    else:
+        raise HTTPException(status_code=404)
+    if row is None:
+        raise HTTPException(status_code=404)
+    payload = _crm_sevdesk_stage_document_detail_payload(kind_key, row)
+    return templates.TemplateResponse(
+        "crm/sevdesk_stage_detail.html",
+        _ctx(
+            request,
+            user=user,
+            kind=kind_key,
+            row=row,
+            payload=payload,
+            raw_json_pretty=json.dumps(_json_dict(getattr(row, "raw_json", "")), indent=2, ensure_ascii=False),
+            external_url=sevdesk_build_api_url(
+                _sevdesk_settings(db, include_secret=False),
+                f"/{'Invoice' if kind_key == 'invoice' else 'Order'}/{getattr(row, 'sevdesk_invoice_id' if kind_key == 'invoice' else 'sevdesk_order_id', '')}",
+            ),
+        ),
+    )
+
+
+@app.get("/crm/kunden/{customer_id}/vertraege/neu", response_class=HTMLResponse)
+def crm_customer_contract_new_get(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id or 0))
+    if not party:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(
+        "crm/customer_contract_form.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            page_title="Vertrag erfassen",
+            form_action=f"/crm/kunden/{int(customer.id)}/vertraege/neu",
+            contract_type_choices=CRM_CONTRACT_TYPE_CHOICES,
+            contract_status_choices=CRM_CONTRACT_STATUS_CHOICES,
+            location_options=_crm_location_options(db, customer_ids=[int(customer.id)], limit=200),
+            form_data={},
+            form_errors={},
+        ),
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/vertraege/neu")
+async def crm_customer_contract_new_post(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id or 0))
+    if not party:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    contract_type = _crm_normalize_key(form.get("contract_type")) or "other"
+    status = _crm_normalize_key(form.get("status")) or "active"
+    if contract_type not in CRM_CONTRACT_TYPE_CHOICES:
+        form_errors["contract_type"] = "Bitte eine gültige Vertragsart wählen."
+    if status not in CRM_CONTRACT_STATUS_CHOICES:
+        form_errors["status"] = "Bitte einen gültigen Status wählen."
+    service_location_id = _to_int(form.get("service_location_id"), 0)
+    if service_location_id > 0:
+        location = db.get(ServiceLocation, service_location_id)
+        if not location or int(location.master_customer_id or 0) != int(customer.id):
+            form_errors["service_location_id"] = "Der ausgewählte Leistungsort gehört nicht zu diesem Kunden."
+    else:
+        location = None
+    try:
+        starts_at = _parse_date_input(form.get("starts_at"))
+        ends_at = _parse_date_input(form.get("ends_at"))
+    except ValueError as exc:
+        starts_at = None
+        ends_at = None
+        form_errors["starts_at"] = str(exc)
+    if starts_at and ends_at and ends_at < starts_at:
+        form_errors["ends_at"] = "Das Vertragsende muss nach dem Vertragsbeginn liegen."
+    if form_errors:
+        return templates.TemplateResponse(
+            "crm/customer_contract_form.html",
+            _ctx(
+                request,
+                user=user,
+                customer=customer,
+                party=party,
+                page_title="Vertrag erfassen",
+                form_action=f"/crm/kunden/{int(customer.id)}/vertraege/neu",
+                contract_type_choices=CRM_CONTRACT_TYPE_CHOICES,
+                contract_status_choices=CRM_CONTRACT_STATUS_CHOICES,
+                location_options=_crm_location_options(db, customer_ids=[int(customer.id)], limit=200),
+                form_data=form_data,
+                form_errors=form_errors,
+            ),
+        )
+    row = CustomerContract(
+        master_customer_id=int(customer.id),
+        service_location_id=int(location.id) if location else None,
+        contract_type=contract_type,
+        provider_label=_crm_clean_text(form.get("provider_label") or "") or None,
+        contract_no=_crm_clean_text(form.get("contract_no") or "") or None,
+        status=status,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        amount_cents=_crm_money_cents_from_value(form.get("amount_eur")) if _crm_clean_text(form.get("amount_eur") or "") else None,
+        note=_crm_clean_text(form.get("note") or "") or None,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+    )
+    db.add(row)
+    db.flush()
+    _crm_add_timeline_event(
+        db,
+        master_customer_id=int(customer.id),
+        service_location_id=int(location.id) if location else None,
+        source_system="local",
+        event_type="contract_created",
+        title=f"Vertrag erfasst: {_crm_contract_type_label(contract_type)}",
+        body=_crm_clean_text(form.get("provider_label") or "") or _crm_clean_text(form.get("contract_no") or "") or None,
+        event_ts=_utcnow_naive(),
+        external_ref=f"customer_contract:{int(row.id or 0)}" if getattr(row, "id", None) else None,
+    )
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        form_errors["__all__"] = _friendly_db_write_error(exc)
+        return templates.TemplateResponse(
+            "crm/customer_contract_form.html",
+            _ctx(
+                request,
+                user=user,
+                customer=customer,
+                party=party,
+                page_title="Vertrag erfassen",
+                form_action=f"/crm/kunden/{int(customer.id)}/vertraege/neu",
+                contract_type_choices=CRM_CONTRACT_TYPE_CHOICES,
+                contract_status_choices=CRM_CONTRACT_STATUS_CHOICES,
+                location_options=_crm_location_options(db, customer_ids=[int(customer.id)], limit=200),
+                form_data=form_data,
+                form_errors=form_errors,
+            ),
+        )
+    _flash(request, "Vertrag gespeichert.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}#customer-contracts", status_code=302)
+
+
+@app.get("/crm/kunden/{customer_id}/aufgaben/neu", response_class=HTMLResponse)
+def crm_customer_task_new_get(
+    customer_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    entry_type: str = "",
+    db: Session = Depends(db_session),
+):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id or 0))
+    if not party:
+        raise HTTPException(status_code=404)
+    entry_type_key = _crm_normalize_key(entry_type) or "task"
+    if entry_type_key not in CRM_TASK_ENTRY_TYPE_CHOICES:
+        entry_type_key = "task"
+    return templates.TemplateResponse(
+        "crm/customer_task_form.html",
+        _ctx(
+            request,
+            user=user,
+            customer=customer,
+            party=party,
+            page_title="Notiz / Aufgabe erfassen",
+            form_action=f"/crm/kunden/{int(customer.id)}/aufgaben/neu",
+            entry_type_choices=CRM_TASK_ENTRY_TYPE_CHOICES,
+            task_status_choices=CRM_TASK_STATUS_CHOICES,
+            location_options=_crm_location_options(db, customer_ids=[int(customer.id)], limit=200),
+            user_options=db.query(User).order_by(User.email.asc()).limit(200).all(),
+            form_data={"entry_type": entry_type_key},
+            form_errors={},
+        ),
+    )
+
+
+@app.post("/crm/kunden/{customer_id}/aufgaben/neu")
+async def crm_customer_task_new_post(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404)
+    party = db.get(Party, int(customer.party_id or 0))
+    if not party:
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    form_data = _extract_form_data(form)
+    form_errors: dict[str, str] = {}
+    entry_type = _crm_normalize_key(form.get("entry_type")) or "task"
+    status = _crm_normalize_key(form.get("status")) or ("done" if entry_type == "note" else "open")
+    title = _crm_clean_text(form.get("title") or "")
+    if entry_type not in CRM_TASK_ENTRY_TYPE_CHOICES:
+        form_errors["entry_type"] = "Bitte einen gültigen Eintragstyp wählen."
+    if status not in CRM_TASK_STATUS_CHOICES:
+        form_errors["status"] = "Bitte einen gültigen Status wählen."
+    if not title:
+        form_errors["title"] = "Ein Titel ist Pflicht."
+    service_location_id = _to_int(form.get("service_location_id"), 0)
+    assigned_user_id = _to_int(form.get("assigned_user_id"), 0)
+    if service_location_id > 0:
+        location = db.get(ServiceLocation, service_location_id)
+        if not location or int(location.master_customer_id or 0) != int(customer.id):
+            form_errors["service_location_id"] = "Der ausgewählte Leistungsort gehört nicht zu diesem Kunden."
+    else:
+        location = None
+    assignee = db.get(User, assigned_user_id) if assigned_user_id > 0 else None
+    if assigned_user_id > 0 and assignee is None:
+        form_errors["assigned_user_id"] = "Der ausgewählte Nutzer wurde nicht gefunden."
+    try:
+        due_at = _parse_datetime_input(form.get("due_at"))
+    except ValueError as exc:
+        due_at = None
+        form_errors["due_at"] = str(exc)
+    if form_errors:
+        return templates.TemplateResponse(
+            "crm/customer_task_form.html",
+            _ctx(
+                request,
+                user=user,
+                customer=customer,
+                party=party,
+                page_title="Notiz / Aufgabe erfassen",
+                form_action=f"/crm/kunden/{int(customer.id)}/aufgaben/neu",
+                entry_type_choices=CRM_TASK_ENTRY_TYPE_CHOICES,
+                task_status_choices=CRM_TASK_STATUS_CHOICES,
+                location_options=_crm_location_options(db, customer_ids=[int(customer.id)], limit=200),
+                user_options=db.query(User).order_by(User.email.asc()).limit(200).all(),
+                form_data=form_data,
+                form_errors=form_errors,
+            ),
+        )
+    row = CustomerTask(
+        master_customer_id=int(customer.id),
+        service_location_id=int(location.id) if location else None,
+        assigned_user_id=int(assignee.id) if assignee else None,
+        created_by_user_id=int(user.id) if int(getattr(user, "id", 0) or 0) > 0 else None,
+        entry_type=entry_type,
+        title=title,
+        body=_crm_clean_text(form.get("body") or "") or None,
+        status=status,
+        due_at=due_at,
+        created_at=_utcnow_naive(),
+        updated_at=_utcnow_naive(),
+        completed_at=_utcnow_naive() if status == "done" else None,
+    )
+    db.add(row)
+    db.flush()
+    _crm_add_timeline_event(
+        db,
+        master_customer_id=int(customer.id),
+        service_location_id=int(location.id) if location else None,
+        source_system="local",
+        event_type=f"customer_{entry_type}",
+        title=f"{_crm_task_entry_type_label(entry_type)} erfasst: {title}",
+        body=_crm_clean_text(form.get("body") or "") or None,
+        event_ts=_utcnow_naive(),
+        external_ref=f"customer_task:{int(row.id)}",
+    )
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        form_errors["__all__"] = _friendly_db_write_error(exc)
+        return templates.TemplateResponse(
+            "crm/customer_task_form.html",
+            _ctx(
+                request,
+                user=user,
+                customer=customer,
+                party=party,
+                page_title="Notiz / Aufgabe erfassen",
+                form_action=f"/crm/kunden/{int(customer.id)}/aufgaben/neu",
+                entry_type_choices=CRM_TASK_ENTRY_TYPE_CHOICES,
+                task_status_choices=CRM_TASK_STATUS_CHOICES,
+                location_options=_crm_location_options(db, customer_ids=[int(customer.id)], limit=200),
+                user_options=db.query(User).order_by(User.email.asc()).limit(200).all(),
+                form_data=form_data,
+                form_errors=form_errors,
+            ),
+        )
+    _flash(request, f"{_crm_task_entry_type_label(entry_type)} gespeichert.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}#customer-tasks", status_code=302)
+
+
+@app.post("/crm/kunden/{customer_id}/aufgaben/{task_id}/status")
+async def crm_customer_task_status_post(customer_id: int, task_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    customer = db.get(MasterCustomer, customer_id)
+    row = db.get(CustomerTask, task_id)
+    if not customer or not row or int(row.master_customer_id or 0) != int(customer.id):
+        raise HTTPException(status_code=404)
+    form = await request.form()
+    status = _crm_normalize_key(form.get("status")) or row.status
+    if status not in CRM_TASK_STATUS_CHOICES:
+        _flash(request, "Ungültiger Aufgabenstatus.", "error")
+        return RedirectResponse(f"/crm/kunden/{int(customer.id)}#customer-tasks", status_code=302)
+    row.status = status
+    row.updated_at = _utcnow_naive()
+    row.completed_at = _utcnow_naive() if status == "done" else None
+    db.add(row)
+    db.commit()
+    _flash(request, "Status aktualisiert.", "info")
+    return RedirectResponse(f"/crm/kunden/{int(customer.id)}#customer-tasks", status_code=302)
 
 
 @app.get("/crm/kunden/{customer_id}/zusammenfuehren", response_class=HTMLResponse)
@@ -18363,13 +18707,29 @@ async def crm_customer_edit_post(customer_id: int, request: Request, user=Depend
 
 
 @app.get("/crm/kunden/{customer_id}/adressen/neu", response_class=HTMLResponse)
-def crm_customer_address_new_get(customer_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+def crm_customer_address_new_get(
+    customer_id: int,
+    request: Request,
+    user=Depends(require_admin),
+    usage_type: str = "",
+    db: Session = Depends(db_session),
+):
     customer = db.get(MasterCustomer, customer_id)
     if not customer:
         raise HTTPException(status_code=404)
     party = db.get(Party, int(customer.party_id))
     if not party:
         raise HTTPException(status_code=404)
+    usage_type_key = _crm_normalize_key(usage_type) or "other"
+    if usage_type_key not in CRM_ADDRESS_USAGE_CHOICES:
+        usage_type_key = "other"
+    default_label = {
+        "main": "Hauptadresse",
+        "billing": "Rechnungsadresse",
+        "service": "Leistungsort",
+        "postal": "Postadresse",
+        "other": "Adresse",
+    }.get(usage_type_key, "Adresse")
     return _crm_render_address_form(
         request,
         user=user,
@@ -18378,7 +18738,7 @@ def crm_customer_address_new_get(customer_id: int, request: Request, user=Depend
         row=None,
         page_title="Adresse anlegen",
         form_action=f"/crm/kunden/{int(customer.id)}/adressen/neu",
-        form_data={},
+        form_data={"usage_type": usage_type_key, "label": default_label},
         form_errors={},
     )
 
@@ -18604,6 +18964,8 @@ async def crm_location_new_post(customer_id: int, request: Request, user=Depends
     if address_row is None:
         address_row = CrmAddress(party_id=int(party.id), active=True, is_default=False)
         _crm_apply_address_payload(address_row, address_payload)
+        if not _crm_clean_text(address_row.usage_type):
+            address_row.usage_type = "service"
         if not address_row.label:
             address_row.label = location_label
         db.add(address_row)
@@ -18611,6 +18973,8 @@ async def crm_location_new_post(customer_id: int, request: Request, user=Depends
     else:
         if _crm_address_payload_has_content(address_payload):
             _crm_apply_address_payload(address_row, address_payload)
+            if not _crm_clean_text(address_row.usage_type):
+                address_row.usage_type = "service"
             if not address_row.label:
                 address_row.label = location_label
             db.add(address_row)
@@ -18619,6 +18983,9 @@ async def crm_location_new_post(customer_id: int, request: Request, user=Depends
         party_id=int(party.id),
         address_id=int(address_row.id),
         location_label=location_label,
+        contact_name=_crm_clean_text(form.get("contact_name") or "") or None,
+        contact_email=_crm_clean_text(form.get("contact_email") or "") or None,
+        contact_phone=_crm_clean_text(form.get("contact_phone") or "") or None,
         note=_crm_clean_text(form.get("note") or "") or None,
         active=form.get("active") == "on",
     )
@@ -18731,6 +19098,8 @@ async def crm_location_edit_post(customer_id: int, location_id: int, request: Re
     if address_row is None:
         address_row = CrmAddress(party_id=int(party.id), active=True, is_default=False)
         _crm_apply_address_payload(address_row, address_payload)
+        if not _crm_clean_text(address_row.usage_type):
+            address_row.usage_type = "service"
         if not address_row.label:
             address_row.label = location_label
         db.add(address_row)
@@ -18738,11 +19107,16 @@ async def crm_location_edit_post(customer_id: int, location_id: int, request: Re
     else:
         if _crm_address_payload_has_content(address_payload):
             _crm_apply_address_payload(address_row, address_payload)
+            if not _crm_clean_text(address_row.usage_type):
+                address_row.usage_type = "service"
             if not address_row.label:
                 address_row.label = location_label
             db.add(address_row)
     row.address_id = int(address_row.id)
     row.location_label = location_label
+    row.contact_name = _crm_clean_text(form.get("contact_name") or "") or None
+    row.contact_email = _crm_clean_text(form.get("contact_email") or "") or None
+    row.contact_phone = _crm_clean_text(form.get("contact_phone") or "") or None
     row.note = _crm_clean_text(form.get("note") or "") or None
     row.active = form.get("active") == "on"
     db.add(row)
@@ -30402,6 +30776,827 @@ def _crm_backfill_customer_contact_data(db: Session, customer: MasterCustomer | 
         summary["updated"] += 1
         summary["mail"] += 1
     return summary
+
+
+def _crm_service_location_signature(street: str = "", house_no: str = "", zip_code: str = "", city: str = "") -> str:
+    return _crm_normalize_key(" ".join([street, house_no, zip_code, city]))
+
+
+def _outsmart_service_location_payload(payload: dict[str, object]) -> dict[str, str]:
+    street = _crm_clean_text(_outsmart_pick(payload, ("CustomerStreet", "customer_street", "Street", "street")))
+    house_no = _crm_clean_text(_outsmart_pick(payload, ("CustomerStreetNo", "CustomerHouseNo", "customer_house_no", "HouseNo", "house_no")))
+    zip_code = _crm_clean_text(_outsmart_pick(payload, ("CustomerZIP", "CustomerZipCode", "customer_zip", "ZipCode", "zip_code")))
+    city = _crm_clean_text(_outsmart_pick(payload, ("CustomerCity", "customer_city", "City", "city")))
+    location_label = (
+        _crm_clean_text(_outsmart_pick(payload, ("LocationName", "location_name", "ObjectName", "object_name")))
+        or _crm_clean_text(_outsmart_pick(payload, ("ProjectName", "project_name", "CustomerName", "customer_name")))
+        or _crm_clean_text(f"{street} {house_no}")
+        or _crm_clean_text(city)
+        or "Leistungsort"
+    )
+    return {
+        "street": street,
+        "house_no": house_no,
+        "zip_code": zip_code,
+        "city": city,
+        "email": _crm_clean_text(_outsmart_pick(payload, ("CustomerEmail", "CustomerEmailInvoice", "customer_email"))),
+        "phone": _crm_clean_text(_outsmart_pick(payload, ("CustomerPhone", "CustomerPhoneInvoice", "customer_phone"))),
+        "contact_name": _outsmart_contact_person_name(payload),
+        "location_label": location_label,
+    }
+
+
+def _crm_backfill_customer_service_locations(db: Session, customer: MasterCustomer | None) -> dict[str, int]:
+    if not customer:
+        return {"created": 0, "updated": 0}
+    party = db.get(Party, int(customer.party_id or 0))
+    if not party:
+        return {"created": 0, "updated": 0}
+    location_rows = (
+        db.query(ServiceLocation)
+        .filter(ServiceLocation.master_customer_id == int(customer.id))
+        .order_by(ServiceLocation.id.asc())
+        .all()
+    )
+    address_ids = [int(row.address_id) for row in location_rows if int(row.address_id or 0) > 0]
+    address_map = {int(row.id): row for row in db.query(CrmAddress).filter(CrmAddress.id.in_(address_ids or [0])).all()} if address_ids else {}
+    by_signature: dict[str, tuple[ServiceLocation, CrmAddress | None]] = {}
+    for row in location_rows:
+        address = address_map.get(int(row.address_id or 0))
+        signature = _crm_service_location_signature(
+            str(address.street or "") if address else "",
+            str(address.house_no or "") if address else "",
+            str(address.zip_code or "") if address else "",
+            str(address.city or "") if address else "",
+        )
+        if signature:
+            by_signature[signature] = (row, address)
+    changed = {"created": 0, "updated": 0}
+    candidate_payloads: list[dict[str, object]] = []
+    for item in _customer_outsmart_stage_workorder_rows(db, int(customer.id), limit=120):
+        payload = _json_dict(getattr(item.get("row"), "raw_json", ""))
+        if payload:
+            candidate_payloads.append(payload)
+    for row in (
+        db.query(OutsmartWorkorder)
+        .filter(OutsmartWorkorder.master_customer_id == int(customer.id))
+        .order_by(OutsmartWorkorder.updated_at.desc(), OutsmartWorkorder.id.desc())
+        .limit(120)
+        .all()
+    ):
+        payload = _json_dict(row.raw_json)
+        if payload:
+            candidate_payloads.append(payload)
+    for payload in candidate_payloads:
+        parsed = _outsmart_service_location_payload(payload)
+        signature = _crm_service_location_signature(parsed["street"], parsed["house_no"], parsed["zip_code"], parsed["city"])
+        if not signature:
+            continue
+        existing = by_signature.get(signature)
+        if existing is None:
+            address = CrmAddress(
+                party_id=int(party.id),
+                label=parsed["location_label"] or "Leistungsort",
+                usage_type="service",
+                street=parsed["street"] or None,
+                house_no=parsed["house_no"] or None,
+                zip_code=parsed["zip_code"] or None,
+                city=parsed["city"] or None,
+                country_code="DE",
+                email=parsed["email"] or None,
+                phone=parsed["phone"] or None,
+                active=True,
+                is_default=False,
+            )
+            db.add(address)
+            db.flush()
+            row = ServiceLocation(
+                master_customer_id=int(customer.id),
+                party_id=int(party.id),
+                address_id=int(address.id),
+                location_label=parsed["location_label"] or "Leistungsort",
+                contact_name=parsed["contact_name"] or None,
+                contact_email=parsed["email"] or None,
+                contact_phone=parsed["phone"] or None,
+                active=True,
+            )
+            db.add(row)
+            db.flush()
+            by_signature[signature] = (row, address)
+            changed["created"] += 1
+            continue
+        row, address = existing
+        row_changed = False
+        if address is not None:
+            if not _crm_clean_text(address.label) and parsed["location_label"]:
+                address.label = parsed["location_label"]
+                row_changed = True
+            if not _crm_clean_text(address.email) and parsed["email"]:
+                address.email = parsed["email"]
+                row_changed = True
+            if not _crm_clean_text(address.phone) and parsed["phone"]:
+                address.phone = parsed["phone"]
+                row_changed = True
+            if not _crm_clean_text(address.usage_type):
+                address.usage_type = "service"
+                row_changed = True
+            db.add(address)
+        if not _crm_clean_text(row.contact_name) and parsed["contact_name"]:
+            row.contact_name = parsed["contact_name"]
+            row_changed = True
+        if not _crm_clean_text(row.contact_email) and parsed["email"]:
+            row.contact_email = parsed["email"]
+            row_changed = True
+        if not _crm_clean_text(row.contact_phone) and parsed["phone"]:
+            row.contact_phone = parsed["phone"]
+            row_changed = True
+        if not _crm_clean_text(row.location_label) and parsed["location_label"]:
+            row.location_label = parsed["location_label"]
+            row_changed = True
+        if row_changed:
+            db.add(row)
+            changed["updated"] += 1
+    return changed
+
+
+def _crm_coerce_datetime(value) -> dt.datetime | None:
+    if isinstance(value, dt.datetime):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    candidates = [text, text.replace("Z", "+00:00"), text.replace(" ", "T")]
+    for candidate in candidates:
+        try:
+            return dt.datetime.fromisoformat(candidate)
+        except Exception:
+            continue
+    return None
+
+
+def _crm_money_cents_from_value(value) -> int:
+    if value in (None, ""):
+        return 0
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return int(round(float(value) * 100))
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    text = text.replace("EUR", "").replace("€", "").strip()
+    if "," in text and "." in text:
+        text = text.replace(".", "").replace(",", ".")
+    else:
+        text = text.replace(",", ".")
+    try:
+        return int(round(float(text) * 100))
+    except Exception:
+        return 0
+
+
+def _crm_normalize_invoice_no(value: str | None) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+
+
+def _crm_invoice_number_candidates(*values: str | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    patterns = (
+        r"\b(?:RE|RG|INV|INVOICE)[A-Z0-9/_-]{2,}\d+\b",
+        r"\b\d{8,16}\b",
+    )
+    for value in values:
+        text = str(value or "")
+        if not text:
+            continue
+        for pattern in patterns:
+            for match in re.findall(pattern, text.upper()):
+                normalized = _crm_normalize_invoice_no(match)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                out.append(normalized)
+    return out
+
+
+def _crm_sevdesk_status_is_paid(value: str | None) -> bool:
+    key = _crm_normalize_key(value)
+    return key in ("1000", "paid", "bezahlt", "completed")
+
+
+def _crm_sevdesk_due_date_from_payload(payload: dict) -> dt.datetime | None:
+    for key in ("paymentDeadline", "reminderDeadline", "dueDate"):
+        value = _crm_coerce_datetime(payload.get(key))
+        if value is not None:
+            return value
+    invoice_date = _crm_coerce_datetime(payload.get("invoiceDate"))
+    try:
+        days = int(str(payload.get("timeToPay") or "").strip() or 0)
+    except Exception:
+        days = 0
+    if invoice_date and days > 0:
+        return invoice_date + dt.timedelta(days=days)
+    return None
+
+
+def _crm_sevdesk_stage_document_detail_payload(kind: str, row) -> dict[str, object]:
+    payload = _json_dict(getattr(row, "raw_json", ""))
+    title = str(getattr(row, "invoice_number", "") or getattr(row, "order_number", "") or getattr(row, "sevdesk_invoice_id", "") or getattr(row, "sevdesk_order_id", "") or getattr(row, "id", "")).strip()
+    address_lines = [
+        line
+        for line in [
+            _crm_clean_text(sevdesk_first_value(payload, ("addressName", "name", "displayName"))),
+            _crm_clean_text(sevdesk_first_value(payload, ("addressStreet", "street"))),
+            _crm_clean_text(f"{sevdesk_first_value(payload, ('addressZip', 'zip', 'postalCode'))} {sevdesk_first_value(payload, ('addressCity', 'city'))}"),
+            _crm_clean_text(sevdesk_first_value(payload, ("addressCountry", "country"))),
+        ]
+        if line
+    ]
+    amount_cents = int(getattr(row, "amount_cents", 0) or 0)
+    if amount_cents <= 0:
+        amount_cents = _crm_money_cents_from_value(sevdesk_first_value(payload, ("sumGross", "sumNet", "grossTotal", "netTotal")))
+    paid_cents = _crm_money_cents_from_value(sevdesk_first_value(payload, ("paidAmount", "payAmount")))
+    if _crm_sevdesk_status_is_paid(getattr(row, "status", "")):
+        open_amount_cents = 0
+    else:
+        open_amount_cents = max(0, amount_cents - paid_cents) if amount_cents else 0
+    return {
+        "kind": kind,
+        "title": title or f"sevDesk {kind}",
+        "status_label": str(getattr(row, "status", "") or "-"),
+        "event_date": _crm_coerce_datetime(getattr(row, "invoice_date", None) or getattr(row, "order_date", None) or payload.get("invoiceDate") or payload.get("orderDate")),
+        "due_date": _crm_sevdesk_due_date_from_payload(payload),
+        "amount_cents": amount_cents,
+        "paid_cents": paid_cents,
+        "open_amount_cents": open_amount_cents,
+        "address_lines": address_lines,
+        "contact_label": _crm_clean_text(sevdesk_first_value(payload, ("contactPerson", "addressParentName", "addressName2"))),
+        "note": _crm_clean_text(sevdesk_first_value(payload, ("header", "headText", "note", "footText", "customerInternalNote"))),
+        "raw_payload": payload,
+    }
+
+
+def _customer_paperless_document_rows(db: Session, customer_id: int, limit: int = 12) -> list[dict[str, object]]:
+    settings = _paperless_settings(db, include_secret=False)
+    by_doc_id: dict[str, dict[str, object]] = {}
+    for row in _paperless_customer_candidate_items(db, int(customer_id), limit=max(12, int(limit) * 2)):
+        meta = _json_dict(row.metadata_json)
+        invoice_numbers = _crm_invoice_number_candidates(
+            row.title,
+            str(meta.get("original_file_name") or ""),
+            str(meta.get("archived_file_name") or ""),
+            str(meta.get("content") or "")[:4000],
+        )
+        by_doc_id[str(row.paperless_document_id)] = {
+            "paperless_document_id": str(row.paperless_document_id),
+            "title": str(row.title or row.paperless_document_id),
+            "document_type": str(row.document_type or ""),
+            "correspondent": str(row.correspondent or ""),
+            "created_at": row.created_date or row.created_at,
+            "detail_url": f"/crm/dokumente/{int(row.id)}",
+            "external_url": paperless_build_document_url(settings, row.paperless_document_id),
+            "invoice_numbers": invoice_numbers,
+            "source_label": "Paperless-Vorschlag",
+        }
+    for link in _paperless_links_for_object(db, "customer", int(customer_id)):
+        item = _document_inbox_item_from_paperless_id(db, str(link.paperless_document_id or ""))
+        meta = _json_dict(item.metadata_json) if item else {}
+        invoice_numbers = _crm_invoice_number_candidates(
+            getattr(item, "title", None) if item else link.paperless_title,
+            str(meta.get("original_file_name") or ""),
+            str(meta.get("archived_file_name") or ""),
+            str(meta.get("content") or "")[:4000],
+        )
+        by_doc_id.setdefault(
+            str(link.paperless_document_id or ""),
+            {
+                "paperless_document_id": str(link.paperless_document_id or ""),
+                "title": str(link.paperless_title or getattr(item, "title", None) or link.paperless_document_id or ""),
+                "document_type": str(getattr(item, "document_type", "") or ""),
+                "correspondent": str(getattr(item, "correspondent", "") or ""),
+                "created_at": getattr(item, "created_date", None) or getattr(item, "created_at", None) or link.created_at,
+                "detail_url": f"/crm/dokumente/{int(item.id)}" if item else "",
+                "external_url": paperless_build_document_url(settings, str(link.paperless_document_id or "")),
+                "invoice_numbers": invoice_numbers,
+                "source_label": "Paperless",
+            },
+        )
+    rows = list(by_doc_id.values())
+    rows.sort(key=lambda item: (item.get("created_at") or dt.datetime.min, str(item.get("title") or "")), reverse=True)
+    return rows[: max(1, int(limit))]
+
+
+def _customer_finance_summary(db: Session, customer_id: int) -> dict[str, object]:
+    invoice_map: dict[str, dict[str, object]] = {}
+
+    def store_invoice(key: str, payload: dict[str, object]) -> None:
+        normalized = _crm_normalize_invoice_no(key)
+        if not normalized:
+            normalized = f"LOCAL{payload.get('source_key') or payload.get('title') or len(invoice_map) + 1}"
+        current = invoice_map.get(normalized)
+        if current is None:
+            invoice_map[normalized] = payload
+            return
+        current_preferred = 1 if str(current.get("source") or "") == "local" else 0
+        payload_preferred = 1 if str(payload.get("source") or "") == "local" else 0
+        if payload_preferred > current_preferred:
+            invoice_map[normalized] = payload
+
+    local_rows = (
+        db.query(InvoiceDraft)
+        .filter(InvoiceDraft.master_customer_id == int(customer_id))
+        .order_by(InvoiceDraft.updated_at.desc(), InvoiceDraft.id.desc())
+        .all()
+    )
+    for row in local_rows:
+        total_cents = _invoice_draft_total_cents(_invoice_draft_db_rows(db, int(row.id)))
+        open_cents = _invoice_draft_open_amount_cents(db, row)
+        store_invoice(
+            str(row.sevdesk_invoice_number or row.sevdesk_invoice_id or f"LOCAL-{int(row.id)}"),
+            {
+                "source": "local",
+                "source_key": f"invoice-draft-{int(row.id)}",
+                "title": str(row.sevdesk_invoice_number or f"RE-ENTW-{int(row.id):04d}"),
+                "detail_url": f"/crm/rechnungen/{int(row.id)}",
+                "external_url": str(
+                    (
+                        db.query(ExternalLink)
+                        .filter(ExternalLink.system_name == "sevdesk", ExternalLink.object_type == "invoice_draft", ExternalLink.object_id == int(row.id))
+                        .one_or_none()
+                        or ExternalLink(deep_link_url="")
+                    ).deep_link_url
+                    or ""
+                ).strip(),
+                "status_label": _invoice_draft_status_label(row.status),
+                "event_date": row.invoice_date or row.updated_at or row.created_at,
+                "due_date": row.due_date,
+                "amount_cents": total_cents,
+                "open_amount_cents": open_cents,
+                "number_label": str(row.sevdesk_invoice_number or f"RE-ENTW-{int(row.id):04d}"),
+            },
+        )
+
+    for item in _customer_sevdesk_stage_document_rows(db, int(customer_id), limit=400):
+        if str(item.get("kind") or "") != "invoice_stage":
+            continue
+        row = item.get("row")
+        if row is None:
+            continue
+        detail = _crm_sevdesk_stage_document_detail_payload("invoice", row)
+        store_invoice(
+            str(getattr(row, "invoice_number", "") or getattr(row, "sevdesk_invoice_id", "") or f"STAGE-{int(row.id)}"),
+            {
+                "source": "sevdesk_stage",
+                "source_key": f"sevdesk-stage-invoice-{int(row.id)}",
+                "title": str(detail.get("title") or item.get("number_label") or f"Rechnung {int(row.id)}"),
+                "detail_url": f"/crm/sevdesk-stage/invoice/{int(row.id)}",
+                "external_url": sevdesk_build_api_url(_sevdesk_settings(db, include_secret=False), f"/Invoice/{getattr(row, 'sevdesk_invoice_id', '')}") if str(getattr(row, "sevdesk_invoice_id", "")).strip() else "",
+                "status_label": str(detail.get("status_label") or item.get("status_label") or "-"),
+                "event_date": detail.get("event_date") or item.get("event_date") or item.get("updated_at"),
+                "due_date": detail.get("due_date"),
+                "amount_cents": int(detail.get("amount_cents") or 0),
+                "open_amount_cents": int(detail.get("open_amount_cents") or 0),
+                "number_label": str(item.get("number_label") or detail.get("title") or ""),
+            },
+        )
+
+    paperless_rows = _customer_paperless_document_rows(db, int(customer_id), limit=80)
+    paperless_invoice_count = 0
+    matched_paperless_count = 0
+    unmatched_paperless_count = 0
+    for item in paperless_rows:
+        invoice_numbers = list(item.get("invoice_numbers") or [])
+        if invoice_numbers:
+            paperless_invoice_count += 1
+            if any(number in invoice_map for number in invoice_numbers):
+                matched_paperless_count += 1
+            else:
+                unmatched_paperless_count += 1
+
+    invoice_rows = list(invoice_map.values())
+    invoice_rows.sort(key=lambda item: (item.get("event_date") or dt.datetime.min, str(item.get("number_label") or "")), reverse=True)
+    total_revenue_cents = sum(int(item.get("amount_cents") or 0) for item in invoice_rows)
+    open_rows = [item for item in invoice_rows if int(item.get("open_amount_cents") or 0) > 0]
+    return {
+        "invoice_count": len(invoice_rows),
+        "total_revenue_cents": total_revenue_cents,
+        "open_amount_cents": sum(int(item.get("open_amount_cents") or 0) for item in open_rows),
+        "open_invoice_rows": open_rows[:8],
+        "paperless_invoice_count": paperless_invoice_count,
+        "paperless_matched_count": matched_paperless_count,
+        "paperless_unmatched_count": unmatched_paperless_count,
+    }
+
+
+def _customer_invoice_address_rows(db: Session, customer: MasterCustomer, party: Party) -> list[dict[str, object]]:
+    address_rows = (
+        db.query(CrmAddress)
+        .filter(CrmAddress.party_id == int(party.id))
+        .order_by(CrmAddress.is_default.desc(), CrmAddress.id.asc())
+        .all()
+    )
+    rows: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    billing_rows = [row for row in address_rows if _crm_normalize_key(getattr(row, "usage_type", "")) == "billing"]
+    if not billing_rows and address_rows:
+        billing_rows = [address_rows[0]]
+    for row in billing_rows:
+        key = _crm_normalize_key(_crm_address_summary(row))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        rows.append(
+            {
+                "source": "local",
+                "usage_label": _crm_address_usage_label(getattr(row, "usage_type", "billing")),
+                "title": str(row.label or _crm_address_usage_label(getattr(row, "usage_type", "billing"))),
+                "address_lines": [
+                    line
+                    for line in [
+                        _crm_clean_text(f"{row.street or ''} {row.house_no or ''}"),
+                        _crm_clean_text(f"{row.zip_code or ''} {row.city or ''}"),
+                        _crm_clean_text(row.country_code),
+                    ]
+                    if line
+                ],
+                "contact_name": "",
+                "email": str(row.email or ""),
+                "phone": str(row.phone or ""),
+                "edit_url": f"/crm/kunden/{int(customer.id)}/adressen/{int(row.id)}/bearbeiten",
+            }
+        )
+    for item in _customer_sevdesk_stage_document_rows(db, int(customer.id), limit=48):
+        row = item.get("row")
+        if row is None:
+            continue
+        payload = _crm_sevdesk_stage_document_payload(item)
+        key = _crm_normalize_key(
+            " ".join(
+                [
+                    str(payload.get("street") or ""),
+                    str(payload.get("house_no") or ""),
+                    str(payload.get("zip_code") or ""),
+                    str(payload.get("city") or ""),
+                ]
+            )
+        )
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        rows.append(
+            {
+                "source": "sevdesk",
+                "usage_label": "Rechnungsadresse aus sevDesk",
+                "title": str(payload.get("display_name") or payload.get("contact_name") or item.get("number_label") or "sevDesk"),
+                "address_lines": [
+                    line
+                    for line in [
+                        _crm_clean_text(f"{payload.get('street') or ''} {payload.get('house_no') or ''}"),
+                        _crm_clean_text(f"{payload.get('zip_code') or ''} {payload.get('city') or ''}"),
+                    ]
+                    if line
+                ],
+                "contact_name": str(payload.get("contact_name") or ""),
+                "email": "",
+                "phone": "",
+                "edit_url": "",
+            }
+        )
+    return rows[:8]
+
+
+def _customer_service_location_cards(db: Session, customer_id: int, limit: int = 12) -> list[dict[str, object]]:
+    rows = (
+        db.query(ServiceLocation)
+        .filter(ServiceLocation.master_customer_id == int(customer_id))
+        .order_by(ServiceLocation.active.desc(), ServiceLocation.location_label.asc(), ServiceLocation.id.asc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+    address_ids = [int(row.address_id) for row in rows if int(row.address_id or 0) > 0]
+    addresses = {int(row.id): row for row in db.query(CrmAddress).filter(CrmAddress.id.in_(address_ids)).all()} if address_ids else {}
+    object_rows = (
+        db.query(CustomerObject)
+        .filter(CustomerObject.service_location_id.in_([int(row.id) for row in rows] or [0]))
+        .order_by(CustomerObject.updated_at.desc(), CustomerObject.id.desc())
+        .all()
+    )
+    objects_by_location: dict[int, list[CustomerObject]] = {}
+    for row in object_rows:
+        objects_by_location.setdefault(int(row.service_location_id or 0), []).append(row)
+    workorder_rows = (
+        db.query(OutsmartWorkorder)
+        .filter(OutsmartWorkorder.service_location_id.in_([int(row.id) for row in rows] or [0]))
+        .order_by(OutsmartWorkorder.updated_at.desc(), OutsmartWorkorder.id.desc())
+        .all()
+    )
+    latest_workorder_by_location: dict[int, OutsmartWorkorder] = {}
+    for row in workorder_rows:
+        key = int(row.service_location_id or 0)
+        if key > 0 and key not in latest_workorder_by_location:
+            latest_workorder_by_location[key] = row
+    cards: list[dict[str, object]] = []
+    for row in rows:
+        address = addresses.get(int(row.address_id or 0))
+        latest_workorder = latest_workorder_by_location.get(int(row.id))
+        payload = _json_dict(latest_workorder.raw_json) if latest_workorder else {}
+        contact_name = _crm_clean_text(row.contact_name) or _outsmart_contact_person_name(payload)
+        contact_email = _crm_clean_text(row.contact_email) or _crm_clean_text(address.email if address else "") or _crm_clean_text(_outsmart_pick(payload, ("CustomerEmail", "CustomerEmailInvoice")))
+        contact_phone = _crm_clean_text(row.contact_phone) or _crm_clean_text(address.phone if address else "") or _crm_clean_text(_outsmart_pick(payload, ("CustomerPhone", "CustomerPhoneInvoice")))
+        cards.append(
+            {
+                "row": row,
+                "address": address,
+                "contact_name": contact_name,
+                "contact_email": contact_email,
+                "contact_phone": contact_phone,
+                "objects": objects_by_location.get(int(row.id), [])[:4],
+                "object_count": len(objects_by_location.get(int(row.id), [])),
+                "latest_workorder": latest_workorder,
+            }
+        )
+    return cards
+
+
+def _customer_recent_offer_sidebar_rows(db: Session, customer_id: int, limit: int = 3) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in _customer_sevdesk_document_rows(db, int(customer_id), limit=80):
+        if str(item.get("kind") or "") != "offer":
+            continue
+        key = _crm_normalize_invoice_no(str(item.get("number_label") or item.get("detail_url") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        timestamp = item.get("updated_at")
+        rows.append(
+            {
+                "title": str(item.get("number_label") or "Angebot"),
+                "subtitle": f"{item.get('status_label') or '-'} | {(_format_date_local(timestamp) if timestamp else '-')}",
+                "detail_url": str(item.get("detail_url") or ""),
+                "iframe_url": str(item.get("detail_url") or ""),
+                "external_url": str(item.get("external_url") or ""),
+                "amount_cents": None,
+                "timestamp": timestamp,
+            }
+        )
+    for item in _customer_sevdesk_stage_document_rows(db, int(customer_id), limit=80):
+        if str(item.get("kind") or "") != "order_stage":
+            continue
+        key = _crm_normalize_invoice_no(str(item.get("number_label") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        row = item.get("row")
+        if row is None:
+            continue
+        rows.append(
+            {
+                "title": str(item.get("number_label") or "Angebot"),
+                "subtitle": f"{item.get('status_label') or '-'} | {(_format_date_local(item.get('event_date')) if item.get('event_date') else '-')}",
+                "detail_url": f"/crm/sevdesk-stage/order/{int(row.id)}",
+                "iframe_url": f"/crm/sevdesk-stage/order/{int(row.id)}",
+                "external_url": sevdesk_build_api_url(_sevdesk_settings(db, include_secret=False), f"/Order/{getattr(row, 'sevdesk_order_id', '')}") if str(getattr(row, "sevdesk_order_id", "")).strip() else "",
+                "amount_cents": int(item.get("amount_cents") or 0),
+                "timestamp": item.get("event_date") or item.get("updated_at"),
+            }
+        )
+    rows.sort(key=lambda item: (item.get("timestamp") or dt.datetime.min, str(item.get("title") or "")), reverse=True)
+    return rows[: max(1, int(limit))]
+
+
+def _customer_recent_invoice_sidebar_rows(db: Session, customer_id: int, limit: int = 3) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in _customer_sevdesk_document_rows(db, int(customer_id), limit=80):
+        if str(item.get("kind") or "") != "invoice":
+            continue
+        key = _crm_normalize_invoice_no(str(item.get("number_label") or item.get("detail_url") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        row = item.get("row")
+        open_amount = _invoice_draft_open_amount_cents(db, row) if isinstance(row, InvoiceDraft) else 0
+        rows.append(
+            {
+                "title": str(item.get("number_label") or "Rechnung"),
+                "subtitle": f"{item.get('status_label') or '-'} | offen {_format_eur(open_amount)}",
+                "detail_url": str(item.get("detail_url") or ""),
+                "iframe_url": str(item.get("detail_url") or ""),
+                "external_url": str(item.get("external_url") or ""),
+                "amount_cents": _invoice_draft_total_cents(_invoice_draft_db_rows(db, int(row.id))) if isinstance(row, InvoiceDraft) else None,
+                "timestamp": item.get("updated_at"),
+            }
+        )
+    for item in _customer_sevdesk_stage_document_rows(db, int(customer_id), limit=80):
+        if str(item.get("kind") or "") != "invoice_stage":
+            continue
+        key = _crm_normalize_invoice_no(str(item.get("number_label") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        row = item.get("row")
+        if row is None:
+            continue
+        detail = _crm_sevdesk_stage_document_detail_payload("invoice", row)
+        rows.append(
+            {
+                "title": str(item.get("number_label") or "Rechnung"),
+                "subtitle": f"{item.get('status_label') or '-'} | offen {_format_eur(int(detail.get('open_amount_cents') or 0))}",
+                "detail_url": f"/crm/sevdesk-stage/invoice/{int(row.id)}",
+                "iframe_url": f"/crm/sevdesk-stage/invoice/{int(row.id)}",
+                "external_url": sevdesk_build_api_url(_sevdesk_settings(db, include_secret=False), f"/Invoice/{getattr(row, 'sevdesk_invoice_id', '')}") if str(getattr(row, "sevdesk_invoice_id", "")).strip() else "",
+                "amount_cents": int(detail.get("amount_cents") or 0),
+                "timestamp": detail.get("event_date") or item.get("updated_at"),
+            }
+        )
+    rows.sort(key=lambda item: (item.get("timestamp") or dt.datetime.min, str(item.get("title") or "")), reverse=True)
+    return rows[: max(1, int(limit))]
+
+
+def _customer_recent_receipt_sidebar_rows(db: Session, customer_id: int, limit: int = 3) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for item in _customer_paperless_document_rows(db, int(customer_id), limit=max(1, int(limit)) * 3):
+        rows.append(
+            {
+                "title": str(item.get("title") or item.get("paperless_document_id") or "Beleg"),
+                "subtitle": f"{item.get('document_type') or '-'} | {(_format_date_local(item.get('created_at')) if item.get('created_at') else '-')}",
+                "detail_url": str(item.get("detail_url") or ""),
+                "iframe_url": str(item.get("detail_url") or ""),
+                "external_url": str(item.get("external_url") or ""),
+                "amount_cents": None,
+                "timestamp": item.get("created_at"),
+            }
+        )
+    if rows:
+        return rows[: max(1, int(limit))]
+    attachments = _attachments_for_entity(db, "customer", int(customer_id))
+    for row in attachments[: max(1, int(limit))]:
+        rows.append(
+            {
+                "title": str(row.original_name or row.filename or f"Datei {int(row.id)}"),
+                "subtitle": "Lokaler Upload",
+                "detail_url": f"/dokumente/lokal/{int(row.id)}",
+                "iframe_url": f"/dokumente/lokal/{int(row.id)}",
+                "external_url": "",
+                "amount_cents": None,
+                "timestamp": row.created_at,
+            }
+        )
+    return rows
+
+
+def _customer_contract_rows(db: Session, customer_id: int, limit: int = 20) -> list[CustomerContract]:
+    return (
+        db.query(CustomerContract)
+        .filter(CustomerContract.master_customer_id == int(customer_id))
+        .order_by(CustomerContract.updated_at.desc(), CustomerContract.id.desc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+
+
+def _customer_task_rows(db: Session, customer_id: int, limit: int = 20) -> list[CustomerTask]:
+    return (
+        db.query(CustomerTask)
+        .filter(CustomerTask.master_customer_id == int(customer_id))
+        .order_by(CustomerTask.status.asc(), CustomerTask.due_at.asc(), CustomerTask.updated_at.desc(), CustomerTask.id.desc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+
+
+def _customer_activity_rows(db: Session, customer_id: int, limit: int = 40) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for row in (
+        db.query(EmailMessage)
+        .filter(EmailMessage.master_customer_id == int(customer_id))
+        .order_by(func.coalesce(EmailMessage.received_at, EmailMessage.sent_at, EmailMessage.fetched_at).desc(), EmailMessage.id.desc())
+        .limit(18)
+        .all()
+    ):
+        items.append(
+            {
+                "timestamp": row.received_at or row.sent_at or row.fetched_at or _utcnow_naive(),
+                "type_label": "E-Mail",
+                "title": _crm_clean_text(row.subject) or _crm_clean_text(row.snippet) or "E-Mail",
+                "subtitle": _crm_clean_text(row.from_text or row.from_email or row.to_emails),
+                "detail_url": f"/mail/threads/{int(row.thread_id)}#mail-message-{int(row.id)}" if int(row.thread_id or 0) > 0 else "",
+            }
+        )
+    for item in _crm_recent_case_rows(db, int(customer_id), limit=12):
+        row = item.get("row")
+        if not row:
+            continue
+        items.append(
+            {
+                "timestamp": row.updated_at or row.created_at or _utcnow_naive(),
+                "type_label": "Serviceauftrag",
+                "title": f"{row.case_no} | {row.title}",
+                "subtitle": f"{item.get('role_label') or ''} | {_crm_case_status_label(row.status)}",
+                "detail_url": f"/serviceauftraege/{int(row.id)}",
+            }
+        )
+    for item in _customer_recent_offer_sidebar_rows(db, int(customer_id), limit=8):
+        items.append(
+            {
+                "timestamp": item.get("timestamp") or _utcnow_naive(),
+                "type_label": "Angebot",
+                "title": str(item.get("title") or "Angebot"),
+                "subtitle": str(item.get("subtitle") or ""),
+                "detail_url": str(item.get("detail_url") or ""),
+            }
+        )
+    for item in _customer_recent_invoice_sidebar_rows(db, int(customer_id), limit=8):
+        items.append(
+            {
+                "timestamp": item.get("timestamp") or _utcnow_naive(),
+                "type_label": "Rechnung",
+                "title": str(item.get("title") or "Rechnung"),
+                "subtitle": str(item.get("subtitle") or ""),
+                "detail_url": str(item.get("detail_url") or ""),
+            }
+        )
+    for item in _customer_outsmart_workorder_rows(db, int(customer_id), limit=12):
+        row = item.get("row")
+        if not row:
+            continue
+        items.append(
+            {
+                "timestamp": row.updated_at or row.created_at or _utcnow_naive(),
+                "type_label": "Arbeitsauftrag",
+                "title": str(row.workorder_no or "Arbeitsauftrag"),
+                "subtitle": str(item.get("display", {}).get("status_label") or row.status or "-"),
+                "detail_url": f"/outsmart/arbeitsauftraege/{int(row.id)}",
+            }
+        )
+    for row in _customer_task_rows(db, int(customer_id), limit=12):
+        items.append(
+            {
+                "timestamp": row.updated_at or row.created_at or _utcnow_naive(),
+                "type_label": _crm_task_entry_type_label(row.entry_type),
+                "title": str(row.title or _crm_task_entry_type_label(row.entry_type)),
+                "subtitle": _crm_task_status_label(row.status),
+                "detail_url": f"/crm/kunden/{int(customer_id)}#customer-task-{int(row.id)}",
+            }
+        )
+    for row in _customer_paperless_document_rows(db, int(customer_id), limit=12):
+        items.append(
+            {
+                "timestamp": row.get("created_at") or _utcnow_naive(),
+                "type_label": "Beleg",
+                "title": str(row.get("title") or "Dokument"),
+                "subtitle": str(row.get("document_type") or row.get("correspondent") or ""),
+                "detail_url": str(row.get("detail_url") or ""),
+            }
+        )
+    for payload in _crm_timeline_rows_for_customer(db, int(customer_id), limit=24, timeline_filter="all"):
+        if str(payload.get("group_key") or "") != "event":
+            continue
+        row = payload.get("row")
+        if row is None:
+            continue
+        items.append(
+            {
+                "timestamp": row.event_ts or _utcnow_naive(),
+                "type_label": str(payload.get("type_label") or "Eintrag"),
+                "title": str(row.title or "Eintrag"),
+                "subtitle": _crm_clean_text(row.body)[:200],
+                "detail_url": str(payload.get("detail_url") or ""),
+            }
+        )
+    items.sort(key=lambda item: (item.get("timestamp") or dt.datetime.min, str(item.get("title") or "")), reverse=True)
+    return items[: max(1, int(limit))]
+
+
+def _customer_first_contact_at(db: Session, customer_id: int) -> dt.datetime | None:
+    candidates: list[dt.datetime] = []
+    customer = db.get(MasterCustomer, int(customer_id or 0))
+    if customer and customer.created_at:
+        candidates.append(customer.created_at)
+    email_first = (
+        db.query(func.min(func.coalesce(EmailMessage.received_at, EmailMessage.sent_at, EmailMessage.fetched_at)))
+        .filter(EmailMessage.master_customer_id == int(customer_id))
+        .scalar()
+    )
+    if isinstance(email_first, dt.datetime):
+        candidates.append(email_first)
+    case_first = db.query(func.min(CrmCase.created_at)).join(RoleAssignment, RoleAssignment.case_id == CrmCase.id).filter(RoleAssignment.master_customer_id == int(customer_id)).scalar()
+    if isinstance(case_first, dt.datetime):
+        candidates.append(case_first)
+    workorder_first = (
+        db.query(func.min(func.coalesce(OutsmartWorkorder.scheduled_start, OutsmartWorkorder.created_at, OutsmartWorkorder.updated_at)))
+        .filter(OutsmartWorkorder.master_customer_id == int(customer_id))
+        .scalar()
+    )
+    if isinstance(workorder_first, dt.datetime):
+        candidates.append(workorder_first)
+    for item in _customer_sevdesk_stage_document_rows(db, int(customer_id), limit=160):
+        event_date = item.get("event_date") or item.get("updated_at")
+        if isinstance(event_date, dt.datetime):
+            candidates.append(event_date)
+    return min(candidates) if candidates else None
 
 
 def _crm_add_timeline_event(

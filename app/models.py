@@ -1376,6 +1376,7 @@ class Address(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     party_id: Mapped[int] = mapped_column(ForeignKey("parties.id"), nullable=False)
     label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    usage_type: Mapped[str] = mapped_column(String(20), nullable=False, default="other")
     street: Mapped[str | None] = mapped_column(String(240), nullable=True)
     house_no: Mapped[str | None] = mapped_column(String(40), nullable=True)
     zip_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -1391,6 +1392,7 @@ class Address(Base):
     __table_args__ = (
         Index("ix_addresses_party", "party_id"),
         Index("ix_addresses_default", "party_id", "is_default"),
+        Index("ix_addresses_usage_type", "party_id", "usage_type"),
     )
 
 
@@ -1420,6 +1422,9 @@ class ServiceLocation(Base):
     party_id: Mapped[int | None] = mapped_column(ForeignKey("parties.id"), nullable=True)
     address_id: Mapped[int] = mapped_column(ForeignKey("addresses.id"), nullable=False)
     location_label: Mapped[str] = mapped_column(String(240), nullable=False)
+    contact_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    contact_phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
@@ -1431,6 +1436,66 @@ class ServiceLocation(Base):
         Index("ix_service_locations_customer", "master_customer_id"),
         Index("ix_service_locations_address", "address_id"),
         Index("ix_service_locations_active", "active"),
+    )
+
+
+class CustomerContract(Base):
+    __tablename__ = "customer_contracts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    master_customer_id: Mapped[int] = mapped_column(ForeignKey("master_customers.id"), nullable=False)
+    service_location_id: Mapped[int | None] = mapped_column(ForeignKey("service_locations.id"), nullable=True)
+    contract_type: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
+    provider_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    contract_no: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    starts_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ends_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    master_customer = relationship("MasterCustomer")
+    service_location = relationship("ServiceLocation")
+
+    __table_args__ = (
+        Index("ix_customer_contracts_customer", "master_customer_id"),
+        Index("ix_customer_contracts_location", "service_location_id"),
+        Index("ix_customer_contracts_status", "status"),
+        Index("ix_customer_contracts_type", "contract_type"),
+    )
+
+
+class CustomerTask(Base):
+    __tablename__ = "customer_tasks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    master_customer_id: Mapped[int] = mapped_column(ForeignKey("master_customers.id"), nullable=False)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("crm_cases.id"), nullable=True)
+    service_location_id: Mapped[int | None] = mapped_column(ForeignKey("service_locations.id"), nullable=True)
+    assigned_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(String(20), nullable=False, default="task")
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    master_customer = relationship("MasterCustomer")
+    crm_case = relationship("Case")
+    service_location = relationship("ServiceLocation")
+    assigned_user = relationship("User", foreign_keys=[assigned_user_id])
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        Index("ix_customer_tasks_customer", "master_customer_id"),
+        Index("ix_customer_tasks_case", "case_id"),
+        Index("ix_customer_tasks_location", "service_location_id"),
+        Index("ix_customer_tasks_status", "status"),
+        Index("ix_customer_tasks_assigned_user", "assigned_user_id"),
+        Index("ix_customer_tasks_due_at", "due_at"),
     )
 
 

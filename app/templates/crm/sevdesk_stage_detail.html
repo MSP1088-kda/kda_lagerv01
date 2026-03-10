@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <div class="customer-section-head hero">
+    <div>
+      <h1>{{ 'sevDesk-Rechnung' if kind == 'invoice' else 'sevDesk-Angebot / Order' }}</h1>
+      <div class="hint">{{ payload.title }}</div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      {% if external_url %}<a class="btn" href="{{ external_url }}" target="_blank" rel="noopener">API-Quelle</a>{% endif %}
+      <a class="btn" href="javascript:history.back()">Zurueck</a>
+    </div>
+  </div>
+
+  <div class="customer-kpi-grid" style="margin-top:10px;">
+    <div class="customer-kpi"><span class="label">Status</span><strong>{{ payload.status_label }}</strong></div>
+    <div class="customer-kpi"><span class="label">Datum</span><strong>{{ format_date(payload.event_date) if payload.event_date else '-' }}</strong></div>
+    <div class="customer-kpi"><span class="label">Faellig</span><strong>{{ format_date(payload.due_date) if payload.due_date else '-' }}</strong></div>
+    <div class="customer-kpi"><span class="label">Betrag</span><strong>{{ payload.amount_cents|eur_cents }}</strong></div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">Adresse</div>
+      <div class="box-body">
+        {% for line in payload.address_lines %}<div>{{ line }}</div>{% endfor %}
+        {% if payload.contact_label %}<div style="margin-top:8px;">Kontakt: {{ payload.contact_label }}</div>{% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Hinweis</div>
+      <div class="box-body">{{ payload.note or '-' }}</div>
+    </div>
+  </div>
+
+  <details class="collapse-box" style="margin-top:10px;">
+    <summary class="box-title">Rohdaten</summary>
+    <div class="box-body"><pre style="white-space:pre-wrap;">{{ raw_json_pretty }}</pre></div>
+  </details>
+</div>
+{% endblock %}

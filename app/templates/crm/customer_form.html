@@ -23,6 +23,14 @@
           {{ f.field_error(fe, 'label') }}
         </div>
         <div>
+          <label for="crm_address_usage_type">Adressart</label>
+          <select id="crm_address_usage_type" name="usage_type">
+            {% for item in address_usage_choices %}
+              <option value="{{ item }}" {% if f.old(fd, 'usage_type', row.usage_type if row else 'other') == item %}selected{% endif %}>{{ crm_address_usage_label(item) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
           <label for="crm_address_street">Straße</label>
           <input id="crm_address_street" type="text" name="street" value="{{ f.old(fd, 'street', row.street if row else '') }}" class="{% if fe.get('street') %}is-error{% endif %}">
           {{ f.field_error(fe, 'street') }}
@@ -99,6 +107,7 @@
       <textarea id="crm_customer_note" name="note" rows="3">{{ f.old(fd, 'note', customer.note if customer else (party.note if party else '')) }}</textarea>
 
       <h2>Standardadresse</h2>
+      <input type="hidden" name="address_usage_type" value="main">
       <div class="grid3">
         <div>
           <label for="crm_default_address_label">Bezeichnung</label>

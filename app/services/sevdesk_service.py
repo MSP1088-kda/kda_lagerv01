@@ -386,22 +386,125 @@ def list_contacts(settings: dict[str, str | bool], *, limit: int = 1000, offset:
     return _extract_rows(payload)
 
 
-def list_orders(settings: dict[str, str | bool], *, limit: int = 1000, offset: int = 0) -> list[dict]:
+def get_contact(settings: dict[str, str | bool], contact_id: str | int, *, embed: str = "") -> dict:
     payload = _request_candidates(
         settings,
         method="GET",
-        paths=("/Order", "/Order/Factory/getList"),
-        query={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
+        paths=(f"/Contact/{contact_id}",),
+        query={"embed": embed} if str(embed or "").strip() else None,
+    )
+    return _first_row(payload)
+
+
+def list_contact_addresses(
+    settings: dict[str, str | bool],
+    *,
+    contact_id: str | int = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    query: dict[str, str | int] = {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
+    if str(contact_id or "").strip():
+        query["contact[id]"] = str(contact_id).strip()
+        query["contact[objectName]"] = "Contact"
+    payload = _request_candidates(
+        settings,
+        method="GET",
+        paths=("/ContactAddress", "/ContactAddress/Factory/getList"),
+        query=query,
     )
     return _extract_rows(payload)
 
 
-def list_invoices(settings: dict[str, str | bool], *, limit: int = 1000, offset: int = 0) -> list[dict]:
+def list_orders(
+    settings: dict[str, str | bool],
+    *,
+    limit: int = 1000,
+    offset: int = 0,
+    contact_id: str | int = "",
+    embed: str = "",
+    status: str = "",
+    count_all: bool = False,
+) -> list[dict]:
+    query: dict[str, str | int] = {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
+    if str(contact_id or "").strip():
+        query["contact[id]"] = str(contact_id).strip()
+        query["contact[objectName]"] = "Contact"
+    if str(embed or "").strip():
+        query["embed"] = str(embed).strip()
+    if str(status or "").strip():
+        query["status"] = str(status).strip()
+    if count_all:
+        query["countAll"] = "true"
+    payload = _request_candidates(
+        settings,
+        method="GET",
+        paths=("/Order", "/Order/Factory/getList"),
+        query=query,
+    )
+    return _extract_rows(payload)
+
+
+def list_invoices(
+    settings: dict[str, str | bool],
+    *,
+    limit: int = 1000,
+    offset: int = 0,
+    contact_id: str | int = "",
+    embed: str = "",
+    status: str = "",
+    count_all: bool = False,
+    delinquent: bool = False,
+) -> list[dict]:
+    query: dict[str, str | int] = {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
+    if str(contact_id or "").strip():
+        query["contact[id]"] = str(contact_id).strip()
+        query["contact[objectName]"] = "Contact"
+    if str(embed or "").strip():
+        query["embed"] = str(embed).strip()
+    if str(status or "").strip():
+        query["status"] = str(status).strip()
+    if count_all:
+        query["countAll"] = "true"
+    if delinquent:
+        query["delinquent"] = "true"
     payload = _request_candidates(
         settings,
         method="GET",
         paths=("/Invoice", "/Invoice/Factory/getList"),
-        query={"limit": max(1, int(limit)), "offset": max(0, int(offset))},
+        query=query,
+    )
+    return _extract_rows(payload)
+
+
+def list_vouchers(
+    settings: dict[str, str | bool],
+    *,
+    limit: int = 1000,
+    offset: int = 0,
+    contact_id: str | int = "",
+    embed: str = "",
+    status: str = "",
+    credit_debit: str = "",
+    count_all: bool = False,
+) -> list[dict]:
+    query: dict[str, str | int] = {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
+    if str(contact_id or "").strip():
+        query["contact[id]"] = str(contact_id).strip()
+        query["contact[objectName]"] = "Contact"
+    if str(embed or "").strip():
+        query["embed"] = str(embed).strip()
+    if str(status or "").strip():
+        query["status"] = str(status).strip()
+    if str(credit_debit or "").strip():
+        query["creditDebit"] = str(credit_debit).strip()
+    if count_all:
+        query["countAll"] = "true"
+    payload = _request_candidates(
+        settings,
+        method="GET",
+        paths=("/Voucher", "/Voucher/Factory/getList"),
+        query=query,
     )
     return _extract_rows(payload)
 
