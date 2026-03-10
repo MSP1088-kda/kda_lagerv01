@@ -32823,7 +32823,7 @@ def crm_document_fetch(request: Request, user=Depends(require_user), db: Session
 
 
 @app.get("/crm/dokumente/{item_id:int}", response_class=HTMLResponse)
-def crm_document_detail(item_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+def crm_document_detail(item_id: int, request: Request, user=Depends(require_user), next: str = "", db: Session = Depends(db_session)):
     item = db.get(DocumentInboxItem, item_id)
     if not item:
         raise HTTPException(status_code=404)
@@ -32845,6 +32845,7 @@ def crm_document_detail(item_id: int, request: Request, user=Depends(require_use
             paperless_url=paperless_build_document_url(settings, item.paperless_document_id),
             current_target_label=current_target_label,
             current_target_url=current_target_url,
+            next_url=_safe_return_to_path(next, fallback="/crm/dokumente"),
         ),
     )
 
@@ -32855,13 +32856,14 @@ async def crm_document_assign(item_id: int, request: Request, user=Depends(requi
     if not item:
         raise HTTPException(status_code=404)
     form = await request.form()
+    next_url = _safe_return_to_path(str(form.get("next") or ""), fallback="/crm/dokumente")
     object_type = str(form.get("object_type") or "").strip()
     if object_type == "ignored":
         item.status = "ignored"
         db.add(item)
         db.commit()
         _flash(request, "Dokument ignoriert.", "info")
-        return RedirectResponse("/crm/dokumente", status_code=302)
+        return RedirectResponse(next_url, status_code=302)
     field_map = {
         "customer": "customer_id",
         "case": "case_id",
@@ -32876,7 +32878,7 @@ async def crm_document_assign(item_id: int, request: Request, user=Depends(requi
         object_id = _to_int(form.get("manual_object_id"), 0)
     if object_id <= 0:
         _flash(request, "Bitte ein Zielobjekt auswählen.", "error")
-        return RedirectResponse(f"/crm/dokumente/{item_id}", status_code=302)
+        return RedirectResponse(f"/crm/dokumente/{item_id}?next={quote(next_url)}", status_code=302)
     try:
         _document_link_item_to_target(db, item=item, object_type=object_type, object_id=object_id)
         db.commit()
@@ -32884,8 +32886,8 @@ async def crm_document_assign(item_id: int, request: Request, user=Depends(requi
     except Exception as exc:
         db.rollback()
         _flash(request, f"Zuordnung fehlgeschlagen: {exc}", "error")
-        return RedirectResponse(f"/crm/dokumente/{item_id}", status_code=302)
-    return RedirectResponse("/crm/dokumente", status_code=302)
+        return RedirectResponse(f"/crm/dokumente/{item_id}?next={quote(next_url)}", status_code=302)
+    return RedirectResponse(next_url, status_code=302)
 
 
 @app.get("/crm/dokumente/upload", response_class=HTMLResponse)

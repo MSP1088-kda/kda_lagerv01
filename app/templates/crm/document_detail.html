@@ -39,6 +39,7 @@
   </div>
 
   <form method="post" action="/crm/dokumente/{{ item.id }}/zuweisen" class="form" style="margin-top:10px;">
+    <input type="hidden" name="next" value="{{ next_url }}">
     <label>Zieltyp</label>
     <select name="object_type">
       <option value="customer">Kunde</option>

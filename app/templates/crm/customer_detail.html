@@ -475,9 +475,10 @@
                   <div class="muted">{{ item.row.correspondent or '-' }} | {{ item.row.document_type or '-' }}{% if item.row.created_date %} | {{ format_date(item.row.created_date) }}{% endif %}</div>
                   {% if item.scan.get('reasons') %}<div class="hint">Treffer: {{ item.scan.get('reasons')|join(', ') }}</div>{% endif %}
                   <div class="row" style="margin-top:6px; gap:8px; flex-wrap:wrap;">
-                    <a class="btn small" href="/crm/dokumente/{{ item.row.id }}">Dokument prüfen</a>
+                    <a class="btn small" href="/crm/dokumente/{{ item.row.id }}?next={{ ('/crm/kunden/' ~ customer.id)|urlencode }}">Dokument prüfen</a>
                     {% if item.paperless_url %}<a class="btn small" href="{{ item.paperless_url }}" target="_blank" rel="noopener">In Paperless öffnen</a>{% endif %}
                     <form method="post" action="/crm/dokumente/{{ item.row.id }}/zuweisen" class="inline">
+                      <input type="hidden" name="next" value="/crm/kunden/{{ customer.id }}">
                       <input type="hidden" name="object_type" value="customer">
                       <input type="hidden" name="customer_id" value="{{ customer.id }}">
                       <button class="btn small" type="submit">Dem Kunden zuordnen</button>
