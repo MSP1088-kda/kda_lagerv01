@@ -256,7 +256,7 @@ from .services.paperless_service import (
     upload_document as paperless_upload_document,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 from .services.sevdesk_service import (
     book_invoice as sevdesk_book_invoice,
     book_voucher as sevdesk_book_voucher,
