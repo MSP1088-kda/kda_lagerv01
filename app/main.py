@@ -16610,6 +16610,179 @@ def _crm_save_merge_rejections(db: Session, values: set[str]) -> None:
     db.add(row)
 
 
+def _crm_canonical_identifier(value) -> str:
+    raw = re.sub(r"\s+", "", _crm_clean_text(value).lower())
+    if not raw:
+        return ""
+    match = re.match(r"^([a-z]+)(\d+)$", raw)
+    if match:
+        prefix, digits = match.groups()
+        return f"{prefix}{int(digits)}"
+    if raw.isdigit():
+        return str(int(raw))
+    return raw
+
+
+def _crm_customer_stage_profile(party: Party | None, default_address: CrmAddress | None) -> dict[str, str]:
+    return {
+        "display_name": _crm_clean_text(getattr(party, "display_name", "") if party else ""),
+        "name_key": _crm_normalize_key(getattr(party, "display_name", "") if party else ""),
+        "street": _crm_clean_text(getattr(default_address, "street", "") if default_address else ""),
+        "street_key": _crm_normalize_key(getattr(default_address, "street", "") if default_address else ""),
+        "zip_code": _crm_clean_text(getattr(default_address, "zip_code", "") if default_address else ""),
+        "zip_key": _crm_normalize_key(getattr(default_address, "zip_code", "") if default_address else ""),
+        "city": _crm_clean_text(getattr(default_address, "city", "") if default_address else ""),
+        "city_key": _crm_normalize_key(getattr(default_address, "city", "") if default_address else ""),
+        "email_key": _crm_normalize_email(getattr(default_address, "email", "") if default_address else ""),
+        "phone_key": _crm_normalize_phone(getattr(default_address, "phone", "") if default_address else ""),
+    }
+
+
+def _crm_select_unique_outsmart_relation_rows(
+    rows: list[OutsmartRelationStage],
+    *,
+    street_key: str = "",
+    city_key: str = "",
+) -> list[OutsmartRelationStage]:
+    if not rows:
+        return []
+    selected = list(rows)
+    if street_key:
+        exact_street = [row for row in selected if _crm_normalize_key(row.street_norm or row.street or "") == street_key]
+        if exact_street:
+            selected = exact_street
+    if city_key:
+        exact_city = [row for row in selected if _crm_normalize_key(row.city_norm or row.city or "") == city_key]
+        if exact_city:
+            selected = exact_city
+    canonical_keys = {
+        _crm_canonical_identifier(row.debtor_no or row.relation_no)
+        for row in selected
+        if _crm_canonical_identifier(row.debtor_no or row.relation_no)
+    }
+    if len(canonical_keys) == 1:
+        return selected
+    if len(selected) == 1:
+        return selected
+    return []
+
+
+def _crm_match_outsmart_relation_stage(
+    db: Session,
+    *,
+    profile: dict[str, str],
+    explicit_keys: set[str] | None = None,
+    limit: int = 24,
+) -> list[OutsmartRelationStage]:
+    cleaned_keys = {str(value or "").strip() for value in explicit_keys or set() if str(value or "").strip()}
+    if cleaned_keys:
+        rows = (
+            db.query(OutsmartRelationStage)
+            .filter(or_(OutsmartRelationStage.relation_no.in_(list(cleaned_keys)), OutsmartRelationStage.debtor_no.in_(list(cleaned_keys))))
+            .all()
+        )
+        if rows:
+            return rows
+    name_key = str(profile.get("name_key") or "")
+    if not name_key:
+        return []
+    query = db.query(OutsmartRelationStage).filter(OutsmartRelationStage.name_norm == name_key)
+    zip_key = str(profile.get("zip_key") or "")
+    if zip_key:
+        query = query.filter(OutsmartRelationStage.zip_norm == zip_key)
+    rows = query.order_by(OutsmartRelationStage.updated_at.desc(), OutsmartRelationStage.id.desc()).limit(max(4, int(limit))).all()
+    return _crm_select_unique_outsmart_relation_rows(
+        rows,
+        street_key=str(profile.get("street_key") or ""),
+        city_key=str(profile.get("city_key") or ""),
+    )
+
+
+def _crm_outsmart_keys_from_relation_rows(rows: list[OutsmartRelationStage]) -> set[str]:
+    out: set[str] = set()
+    for row in rows:
+        for value in (row.debtor_no, row.relation_no):
+            key = _crm_normalize_key(value)
+            if key:
+                out.add(key)
+    return out
+
+
+def _crm_infer_outsmart_keys_from_profile_maps(
+    profile: dict[str, str],
+    *,
+    exact_profile_map: dict[tuple[str, str, str, str], set[str]],
+    name_zip_map: dict[tuple[str, str], set[str]],
+) -> set[str]:
+    name_key = str(profile.get("name_key") or "")
+    zip_key = str(profile.get("zip_key") or "")
+    street_key = str(profile.get("street_key") or "")
+    city_key = str(profile.get("city_key") or "")
+    if not name_key:
+        return set()
+    exact_key = (name_key, zip_key, street_key, city_key)
+    exact_matches = exact_profile_map.get(exact_key, set()) if any(exact_key) else set()
+    if len(exact_matches) == 1:
+        return set(exact_matches)
+    if street_key:
+        return set()
+    name_zip_matches = name_zip_map.get((name_key, zip_key), set()) if zip_key else set()
+    if len(name_zip_matches) == 1:
+        return set(name_zip_matches)
+    return set()
+
+
+def _crm_match_sevdesk_contact_stage(
+    db: Session,
+    *,
+    profile: dict[str, str],
+    explicit_keys: set[str] | None = None,
+    customer_numbers: set[str] | None = None,
+    limit: int = 20,
+) -> list[SevdeskContactStage]:
+    contact_rows: dict[int, SevdeskContactStage] = {}
+    cleaned_keys = {str(value or "").strip() for value in explicit_keys or set() if str(value or "").strip()}
+    if cleaned_keys:
+        for row in (
+            db.query(SevdeskContactStage)
+            .filter(or_(SevdeskContactStage.sevdesk_contact_id.in_(list(cleaned_keys)), SevdeskContactStage.customer_number.in_(list(cleaned_keys))))
+            .all()
+        ):
+            contact_rows[int(row.id)] = row
+    cleaned_numbers = {str(value or "").strip() for value in customer_numbers or set() if str(value or "").strip()}
+    if cleaned_numbers:
+        for row in (
+            db.query(SevdeskContactStage)
+            .filter(SevdeskContactStage.customer_number.in_(list(cleaned_numbers)))
+            .all()
+        ):
+            contact_rows[int(row.id)] = row
+    if contact_rows:
+        return list(contact_rows.values())
+    name_key = str(profile.get("name_key") or "")
+    if not name_key:
+        return []
+    rows = (
+        db.query(SevdeskContactStage)
+        .filter(SevdeskContactStage.name_norm == name_key)
+        .order_by(SevdeskContactStage.updated_at.desc(), SevdeskContactStage.id.desc())
+        .limit(max(4, int(limit)))
+        .all()
+    )
+    if not rows:
+        return []
+    zip_key = str(profile.get("zip_key") or "")
+    if zip_key:
+        exact_zip = [row for row in rows if _crm_normalize_key(row.zip_norm or row.zip_code or "") == zip_key]
+        if exact_zip:
+            rows = exact_zip
+    if cleaned_numbers:
+        exact_numbers = [row for row in rows if _crm_clean_text(row.customer_number) in cleaned_numbers]
+        if exact_numbers:
+            rows = exact_numbers
+    return rows
+
+
 def _crm_merge_signal_rows(db: Session) -> list[dict[str, object]]:
     customers = db.query(MasterCustomer).order_by(MasterCustomer.id.asc()).all()
     if not customers:
@@ -16626,11 +16799,27 @@ def _crm_merge_signal_rows(db: Session) -> list[dict[str, object]]:
     identities_by_customer: dict[int, list[ExternalIdentity]] = {}
     for row in identity_rows:
         identities_by_customer.setdefault(int(row.master_customer_id), []).append(row)
+    relation_rows = db.query(OutsmartRelationStage).all()
+    exact_profile_map: dict[tuple[str, str, str, str], set[str]] = {}
+    name_zip_map: dict[tuple[str, str], set[str]] = {}
+    for row in relation_rows:
+        canonical_key = _crm_canonical_identifier(row.debtor_no or row.relation_no)
+        if not canonical_key:
+            continue
+        name_key = _crm_normalize_key(row.name_norm or row.name or "")
+        zip_key = _crm_normalize_key(row.zip_norm or row.zip_code or "")
+        street_key = _crm_normalize_key(row.street_norm or row.street or "")
+        city_key = _crm_normalize_key(row.city_norm or row.city or "")
+        exact_key = (name_key, zip_key, street_key, city_key)
+        exact_profile_map.setdefault(exact_key, set()).add(canonical_key)
+        if name_key and zip_key:
+            name_zip_map.setdefault((name_key, zip_key), set()).add(canonical_key)
     out: list[dict[str, object]] = []
     for customer in customers:
         party = parties.get(int(customer.party_id))
         addresses = address_map.get(int(customer.party_id), [])
         default_address = default_address_map.get(int(customer.party_id))
+        profile = _crm_customer_stage_profile(party, default_address)
         emails: set[str] = set()
         phones: set[str] = set()
         for address in addresses:
@@ -16655,21 +16844,30 @@ def _crm_merge_signal_rows(db: Session) -> list[dict[str, object]]:
             if system_name == "sevdesk":
                 sevdesk_identities.append(identity)
             if system_name == "outsmart":
-                key_norm = _crm_normalize_key(identity.external_key or identity.external_id)
+                key_norm = _crm_canonical_identifier(identity.external_key or identity.external_id) or _crm_normalize_key(identity.external_key or identity.external_id)
                 if key_norm:
                     outsmart_keys.add(key_norm)
                 if bool(identity.is_primary):
                     outsmart_primary = True
+        inferred_outsmart_keys: set[str] = set()
+        if not outsmart_keys:
+            inferred_outsmart_keys = _crm_infer_outsmart_keys_from_profile_maps(
+                profile,
+                exact_profile_map=exact_profile_map,
+                name_zip_map=name_zip_map,
+            )
+            outsmart_keys.update(inferred_outsmart_keys)
         out.append(
             {
                 "customer": customer,
                 "party": party,
                 "default_address": default_address,
-                "name_key": _crm_normalize_key(party.display_name if party else ""),
-                "zip_code": _crm_normalize_key(default_address.zip_code if default_address else ""),
+                "name_key": str(profile.get("name_key") or ""),
+                "zip_code": str(profile.get("zip_key") or ""),
                 "emails": emails,
                 "phones": phones,
                 "outsmart_keys": outsmart_keys,
+                "inferred_outsmart_keys": inferred_outsmart_keys,
                 "outsmart_primary": outsmart_primary,
                 "sevdesk_identities": sevdesk_identities,
             }
@@ -16818,6 +17016,59 @@ def _crm_merge_candidate_is_auto_safe(item: dict[str, object], preview: dict[str
     return False
 
 
+def _crm_merge_ai_input_payload(item: dict[str, object]) -> dict[str, object]:
+    master_address = item.get("master_address")
+    candidate_address = item.get("candidate_address")
+    master_outsmart_keys = list(item.get("master_outsmart_keys") or [])
+    candidate_outsmart_keys = list(item.get("candidate_outsmart_keys") or [])
+    return {
+        "master_id": int(item["master_customer"].id),
+        "candidate_id": int(item["candidate_customer"].id),
+        "master_name": str(item["master_party"].display_name or ""),
+        "candidate_name": str(item["candidate_party"].display_name or ""),
+        "master_email": str(getattr(master_address, "email", "") or ""),
+        "candidate_email": str(getattr(candidate_address, "email", "") or ""),
+        "master_phone": str(getattr(master_address, "phone", "") or ""),
+        "candidate_phone": str(getattr(candidate_address, "phone", "") or ""),
+        "master_zip": str(getattr(master_address, "zip_code", "") or ""),
+        "candidate_zip": str(getattr(candidate_address, "zip_code", "") or ""),
+        "master_outsmart_key": str(master_outsmart_keys[0] if master_outsmart_keys else ""),
+        "candidate_outsmart_key": str(candidate_outsmart_keys[0] if candidate_outsmart_keys else ""),
+    }
+
+
+def _crm_merge_ai_result(item: dict[str, object], db: Session, *, force_refresh: bool = False) -> dict[str, object]:
+    payload = _crm_merge_ai_input_payload(item)
+    preview = build_customer_merge_preview(
+        db,
+        source_customer=db.get(MasterCustomer, int(item["candidate_customer"].id)),
+        target_customer=db.get(MasterCustomer, int(item["master_customer"].id)),
+    )
+    result = ai_evaluate_merge_candidate(
+        db,
+        settings=_openai_settings(db, include_secret=True),
+        input_payload=payload,
+        related_object_id=int(item["master_customer"].id),
+        force_refresh=force_refresh,
+    )
+    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    score = float(output.get("score") or 0.0)
+    flags = _crm_merge_reason_flags(item.get("reasons") or [])
+    can_merge = False
+    if not list(preview.get("warnings") or []):
+        if flags["same_outsmart"] and score >= 0.7:
+            can_merge = True
+        elif flags["same_email"] and flags["same_name_zip"] and score >= 0.7:
+            can_merge = True
+        elif flags["same_phone"] and flags["same_name_zip"] and score >= 0.75:
+            can_merge = True
+        elif flags["same_email"] and flags["same_phone"] and score >= 0.75:
+            can_merge = True
+    result["can_merge"] = can_merge
+    result["preview"] = preview
+    return result
+
+
 def _crm_auto_merge_candidates(db: Session, *, q: str = "", limit: int = 0) -> dict[str, int]:
     rows = _crm_build_merge_candidates(db, q=q)
     if int(limit or 0) > 0:
@@ -16838,6 +17089,34 @@ def _crm_auto_merge_candidates(db: Session, *, q: str = "", limit: int = 0) -> d
             continue
         try:
             merge_master_customers(db, target_customer=target, source_customer=source, actor_label="Auto-Merge")
+            summary["merged"] += 1
+        except CustomerMergeConflict:
+            summary["manual"] += 1
+        except Exception:
+            summary["errors"] += 1
+    return summary
+
+
+def _crm_ai_merge_candidates(db: Session, *, q: str = "", limit: int = 0, force_refresh: bool = False) -> dict[str, int]:
+    rows = _crm_build_merge_candidates(db, q=q)
+    if int(limit or 0) > 0:
+        rows = rows[: int(limit)]
+    summary = {"merged": 0, "manual": 0, "skipped": 0, "errors": 0}
+    for item in rows:
+        target = db.get(MasterCustomer, int(item["master_customer"].id))
+        source = db.get(MasterCustomer, int(item["candidate_customer"].id))
+        if not target or not source:
+            summary["skipped"] += 1
+            continue
+        if _crm_normalize_key(target.status) == "inactive" or _crm_normalize_key(source.status) == "inactive":
+            summary["skipped"] += 1
+            continue
+        try:
+            ai_result = _crm_merge_ai_result(item, db, force_refresh=force_refresh)
+            if not bool(ai_result.get("can_merge")):
+                summary["manual"] += 1
+                continue
+            merge_master_customers(db, target_customer=target, source_customer=source, actor_label="KI-Merge")
             summary["merged"] += 1
         except CustomerMergeConflict:
             summary["manual"] += 1
@@ -19191,28 +19470,7 @@ def crm_merge_candidates(request: Request, user=Depends(require_admin), q: str =
     ai_results: dict[str, dict[str, object]] = {}
     if bool(ai):
         for item in rows[:20]:
-            master_address = item.get("master_address")
-            candidate_address = item.get("candidate_address")
-            sevdesk_identities = item.get("sevdesk_identities") or []
-            ai_result = ai_evaluate_merge_candidate(
-                db,
-                settings=_openai_settings(db, include_secret=True),
-                input_payload={
-                    "master_id": int(item["master_customer"].id),
-                    "candidate_id": int(item["candidate_customer"].id),
-                    "master_name": str(item["master_party"].display_name or ""),
-                    "candidate_name": str(item["candidate_party"].display_name or ""),
-                    "master_email": str(getattr(master_address, "email", "") or ""),
-                    "candidate_email": str(getattr(candidate_address, "email", "") or ""),
-                    "master_phone": str(getattr(master_address, "phone", "") or ""),
-                    "candidate_phone": str(getattr(candidate_address, "phone", "") or ""),
-                    "master_zip": str(getattr(master_address, "zip_code", "") or ""),
-                    "candidate_zip": str(getattr(candidate_address, "zip_code", "") or ""),
-                    "master_outsmart_key": "",
-                    "candidate_outsmart_key": str(sevdesk_identities[0].external_key if sevdesk_identities else ""),
-                },
-                related_object_id=int(item["master_customer"].id),
-            )
+            ai_result = _crm_merge_ai_result(item, db)
             ai_results[_crm_merge_pair_key(int(item["master_customer"].id), int(item["candidate_customer"].id))] = ai_result
     return templates.TemplateResponse(
         "crm/customer_merge_candidates.html",
@@ -19237,6 +19495,25 @@ async def crm_merge_candidates_auto(request: Request, user=Depends(require_admin
         "info",
     )
     return RedirectResponse("/crm/merge-kandidaten", status_code=302)
+
+
+@app.post("/crm/merge-kandidaten/ki-auto")
+async def crm_merge_candidates_ai_auto(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    q = _crm_clean_text(form.get("q"))
+    try:
+        summary = _crm_ai_merge_candidates(db, q=q, force_refresh=True)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"KI-Merge fehlgeschlagen: {exc}", "error")
+        return RedirectResponse("/crm/merge-kandidaten?ai=1", status_code=302)
+    _flash(
+        request,
+        f"KI-Merge abgeschlossen: {summary.get('merged', 0)} zusammengeführt | {summary.get('manual', 0)} bleiben zur Prüfung | {summary.get('errors', 0)} Fehler.",
+        "info",
+    )
+    return RedirectResponse("/crm/merge-kandidaten?ai=1", status_code=302)
 
 
 @app.post("/crm/merge-kandidaten/{master_id}/zuordnen")
@@ -21167,6 +21444,10 @@ def _customer_init_review_rows(db: Session, status: str = "", focus_cluster_id: 
 
 
 def _customer_init_stage_refs(db: Session, customer_id: int) -> dict[str, object]:
+    customer = db.get(MasterCustomer, int(customer_id or 0))
+    party = db.get(Party, int(customer.party_id or 0)) if customer and int(customer.party_id or 0) > 0 else None
+    default_address = _outsmart_customer_default_address(db, customer) if customer else None
+    profile = _crm_customer_stage_profile(party, default_address)
     identities = db.query(ExternalIdentity).filter(ExternalIdentity.master_customer_id == int(customer_id)).all()
     outsmart_keys = {str(row.external_key or row.external_id or "").strip() for row in identities if _crm_normalize_key(row.system_name) == "outsmart" and str(row.external_key or row.external_id or "").strip()}
     sevdesk_keys = {str(row.external_key or row.external_id or "").strip() for row in identities if _crm_normalize_key(row.system_name) == "sevdesk" and str(row.external_key or row.external_id or "").strip()}
@@ -21175,20 +21456,37 @@ def _customer_init_stage_refs(db: Session, customer_id: int) -> dict[str, object
         .filter(or_(OutsmartRelationStage.relation_no.in_(list(outsmart_keys) or [""]), OutsmartRelationStage.debtor_no.in_(list(outsmart_keys) or [""])))
         .all()
     ) if outsmart_keys else []
+    if not outsmart_relations and profile.get("name_key"):
+        outsmart_relations = _crm_match_outsmart_relation_stage(
+            db,
+            profile=profile,
+            explicit_keys=outsmart_keys,
+        )
     debtor_values = [
         str(row.debtor_no or row.relation_no or "").strip()
         for row in outsmart_relations
         if str(row.debtor_no or row.relation_no or "").strip()
     ]
+    debtor_keys = {str(value or "").strip() for value in debtor_values if str(value or "").strip()}
     sevdesk_contacts = (
         db.query(SevdeskContactStage)
         .filter(or_(SevdeskContactStage.sevdesk_contact_id.in_(list(sevdesk_keys) or [""]), SevdeskContactStage.customer_number.in_(list(sevdesk_keys) or [""])))
         .all()
     ) if sevdesk_keys else []
+    inferred_contacts = _crm_match_sevdesk_contact_stage(
+        db,
+        profile=profile,
+        explicit_keys=sevdesk_keys,
+        customer_numbers=debtor_keys,
+    )
+    if inferred_contacts:
+        seen_ids = {int(row.id) for row in sevdesk_contacts}
+        sevdesk_contacts.extend([row for row in inferred_contacts if int(row.id) not in seen_ids])
     contact_ids = [str(row.sevdesk_contact_id or "").strip() for row in sevdesk_contacts if str(row.sevdesk_contact_id or "").strip()]
     return {
         "outsmart_relations": outsmart_relations,
         "outsmart_debtor_values": debtor_values,
+        "outsmart_inferred_keys": _crm_outsmart_keys_from_relation_rows(outsmart_relations),
         "sevdesk_contacts": sevdesk_contacts,
         "sevdesk_contact_ids": contact_ids,
     }
@@ -21279,6 +21577,31 @@ def _customer_sevdesk_stage_document_rows(db: Session, customer_id: int, limit: 
         reverse=True,
     )
     return items[:limit]
+
+
+def _crm_backfill_link_outsmart_workorders(db: Session, customer: MasterCustomer | None) -> int:
+    if not customer:
+        return 0
+    stage_rows = _customer_outsmart_stage_workorder_rows(db, int(customer.id), limit=500)
+    workorder_numbers = {
+        str(getattr(item.get("row"), "workorder_no", "") or "").strip()
+        for item in stage_rows
+        if item.get("row") is not None and str(getattr(item.get("row"), "workorder_no", "") or "").strip()
+    }
+    if not workorder_numbers:
+        return 0
+    changed = 0
+    local_rows = db.query(OutsmartWorkorder).filter(OutsmartWorkorder.workorder_no.in_(list(workorder_numbers))).all()
+    for row in local_rows:
+        if int(row.master_customer_id or 0) == int(customer.id):
+            continue
+        if int(row.master_customer_id or 0) > 0:
+            continue
+        row.master_customer_id = int(customer.id)
+        row.updated_at = _utcnow_naive()
+        db.add(row)
+        changed += 1
+    return changed
 
 
 def _customer_init_customer_summary(db: Session, customer_id: int) -> dict[str, object]:
@@ -29346,8 +29669,8 @@ def _crm_sevdesk_stage_document_payload(item: dict[str, object]) -> dict[str, st
 
 def _crm_backfill_customer_contact_data(db: Session, customer: MasterCustomer | None) -> dict[str, int]:
     if not customer:
-        return {"updated": 0, "outsmart_relations": 0, "outsmart_workorders": 0, "sevdesk_contacts": 0, "sevdesk_docs": 0, "mail": 0}
-    summary = {"updated": 0, "outsmart_relations": 0, "outsmart_workorders": 0, "sevdesk_contacts": 0, "sevdesk_docs": 0, "mail": 0}
+        return {"updated": 0, "outsmart_relations": 0, "outsmart_workorders": 0, "linked_workorders": 0, "sevdesk_contacts": 0, "sevdesk_docs": 0, "mail": 0}
+    summary = {"updated": 0, "outsmart_relations": 0, "outsmart_workorders": 0, "linked_workorders": 0, "sevdesk_contacts": 0, "sevdesk_docs": 0, "mail": 0}
     refs = _customer_init_stage_refs(db, int(customer.id))
     for row in list(refs.get("outsmart_relations") or [])[:8]:
         if _crm_apply_customer_contact_fallback(
@@ -29411,6 +29734,7 @@ def _crm_backfill_customer_contact_data(db: Session, customer: MasterCustomer | 
         ):
             summary["updated"] += 1
             summary["sevdesk_docs"] += 1
+    summary["linked_workorders"] = _crm_backfill_link_outsmart_workorders(db, customer)
     mail_payload = _crm_mail_contact_backfill_payload(db, int(customer.id))
     if mail_payload and _crm_apply_customer_contact_fallback(
         db,

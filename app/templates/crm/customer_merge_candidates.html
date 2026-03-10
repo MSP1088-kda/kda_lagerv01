@@ -8,6 +8,9 @@
       <button class="btn primary" type="submit">Klare Dubletten automatisch zusammenführen</button>
     </form>
     {% if ai_enabled %}
+      <form method="post" action="/crm/merge-kandidaten/ki-auto" class="inline">
+        <button class="btn" type="submit">KI-Empfehlungen anwenden</button>
+      </form>
       <a class="btn" href="/crm/merge-kandidaten">KI-Bewertung ausblenden</a>
     {% else %}
       <a class="btn" href="/crm/merge-kandidaten?ai=1">KI nur für Restfälle laden</a>
@@ -26,9 +29,13 @@
           {% set ai_output = ai_item.output %}
           <div><b>KI-Score:</b> {{ '%.2f'|format(ai_output.score or 0) }} | {{ ai_risk_label(ai_output.risk_level) }}</div>
           {% if ai_output.reasons %}<div><b>KI-Gründe:</b> {{ ai_output.reasons|join(', ') }}</div>{% endif %}
+          <div><b>KI-Empfehlung:</b> {% if ai_item.can_merge %}Zusammenführen{% else %}Manuell prüfen{% endif %}</div>
         {% endif %}
         <div><b>Master-Ort:</b> {{ item.master_address.zip_code if item.master_address else '' }} {{ item.master_address.city if item.master_address else '-' }}</div>
         <div><b>Kandidat-Ort:</b> {{ item.candidate_address.zip_code if item.candidate_address else '' }} {{ item.candidate_address.city if item.candidate_address else '-' }}</div>
+        {% if item.master_outsmart_keys or item.candidate_outsmart_keys %}
+          <div><b>OutSmart:</b> Master {{ item.master_outsmart_keys|join(', ') if item.master_outsmart_keys else '-' }} | Kandidat {{ item.candidate_outsmart_keys|join(', ') if item.candidate_outsmart_keys else '-' }}</div>
+        {% endif %}
         {% if item.sevdesk_identities %}
           <div style="margin-top:8px;"><b>sevDesk-Kontakte des Kandidaten</b></div>
           {% for identity in item.sevdesk_identities %}
