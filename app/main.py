@@ -1106,7 +1106,7 @@ def startup():
     db = SessionLocal()
     try:
         _seed_defaults(db)
-        _reindex_search_blobs(db)
+        _reindex_missing_search_blobs(db)
     finally:
         db.close()
 
@@ -12374,6 +12374,24 @@ def _refresh_product_search_blob(db: Session, product: Product) -> None:
 
 def _reindex_search_blobs(db: Session) -> None:
     products = db.query(Product).all()
+    if not products:
+        return
+    for product in products:
+        _refresh_product_search_blob(db, product)
+    db.commit()
+
+
+def _reindex_missing_search_blobs(db: Session) -> None:
+    products = (
+        db.query(Product)
+        .filter(
+            or_(
+                Product.search_blob.is_(None),
+                func.trim(func.coalesce(Product.search_blob, "")) == "",
+            )
+        )
+        .all()
+    )
     if not products:
         return
     for product in products:
