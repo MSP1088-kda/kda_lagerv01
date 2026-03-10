@@ -11,7 +11,7 @@
       </div>
     </div>
     <div class="row" style="gap:8px; flex-wrap:wrap;">
-      {% if crm_case %}<a class="btn" href="/crm/vorgaenge/{{ crm_case.id }}">Zum Vorgang</a>{% endif %}
+      {% if crm_case %}<a class="btn" href="/serviceauftraege/{{ crm_case.id }}">Zum Serviceauftrag</a>{% endif %}
       {% if customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}">Zum Kunden</a>{% endif %}
       {% if customer_object and customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ customer_object.id }}">Zum Objekt</a>{% endif %}
       {% if row.deep_link_url %}<a class="btn" href="{{ row.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}
@@ -33,13 +33,13 @@
       </div>
     </div>
     <div class="outsmart-kv-card">
-      <div class="outsmart-kv-label">Vorgang</div>
+      <div class="outsmart-kv-label">Serviceauftrag</div>
       <div class="outsmart-kv-value">
         {% if crm_case %}
-          <a href="/crm/vorgaenge/{{ crm_case.id }}">{{ crm_case.case_no }}</a>
+          <a href="/serviceauftraege/{{ crm_case.id }}">{{ crm_case.case_no }}</a>
           <div class="muted">{{ crm_case.title }}</div>
         {% else %}
-          <div>Kein lokaler Vorgang verknüpft</div>
+          <div>Kein interner Serviceauftrag verknüpft</div>
           {% if display.job_no or display.reference %}
             <div class="muted">
               {% if display.job_no %}Job {{ display.job_no }}{% endif %}
@@ -86,14 +86,14 @@
 
   {% if not crm_case and role_flags.is_admin %}
     <div class="box" style="margin-top:10px;">
-      <div class="box-title">Vorgang verknüpfen</div>
+      <div class="box-title">Serviceauftrag verknüpfen</div>
       <div class="box-body">
         <div class="muted" style="margin-bottom:10px;">
-          Für diesen OutSmart-Arbeitsauftrag ist noch kein lokaler Vorgang verknüpft. Du kannst einen vorhandenen Vorgang auswählen oder direkt einen neuen lokalen Vorgang aus diesem Arbeitsauftrag anlegen.
+          Für diesen OutSmart-Arbeitsauftrag ist noch kein interner Serviceauftrag verknüpft. Lege nur dann einen internen Serviceauftrag an, wenn du zusätzlich E-Mail, Dokumente, Paperless und interne Steuerung in diesem System brauchst.
         </div>
         {% if candidate_cases %}
           <form method="post" action="/outsmart/arbeitsauftraege/{{ row.id }}/vorgang-zuordnen" class="form compact">
-            <label for="outsmart_case_id">Vorhandenen Vorgang auswählen</label>
+            <label for="outsmart_case_id">Vorhandenen Serviceauftrag auswählen</label>
             <select id="outsmart_case_id" name="case_id">
               {% for item in candidate_cases %}
                 <option value="{{ item.row.id }}">
@@ -103,15 +103,15 @@
               {% endfor %}
             </select>
             <div class="row" style="margin-top:10px;">
-              <button class="btn" type="submit">Mit vorhandenem Vorgang verknüpfen</button>
+              <button class="btn" type="submit">Mit Serviceauftrag verknüpfen</button>
             </div>
           </form>
         {% else %}
-          <div class="muted">Es wurden noch keine passenden lokalen Vorgänge für diesen Kunden oder Leistungsort gefunden.</div>
+          <div class="muted">Es wurden noch keine passenden internen Serviceaufträge für diesen Kunden oder Leistungsort gefunden.</div>
         {% endif %}
         <form method="post" action="/outsmart/arbeitsauftraege/{{ row.id }}/vorgang-anlegen" class="inline">
           <div class="row" style="margin-top:10px;">
-            <button class="btn primary" type="submit">Neuen lokalen Vorgang aus Arbeitsauftrag anlegen</button>
+            <button class="btn primary" type="submit">Neuen internen Serviceauftrag aus Arbeitsauftrag anlegen</button>
           </div>
         </form>
       </div>

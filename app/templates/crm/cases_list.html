@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>CRM: Vorgänge</h1>
+  <h1>Serviceaufträge</h1>
 
-  <form method="get" action="/crm/vorgaenge" class="form compact">
+  <form method="get" action="/serviceauftraege" class="form compact">
     <div class="grid4">
       <div>
         <label for="crm_case_q">Suche</label>
-        <input id="crm_case_q" type="text" name="q" value="{{ q or '' }}" placeholder="Nummer, Titel, Notiz">
+        <input id="crm_case_q" type="text" name="q" value="{{ q or '' }}" placeholder="Nummer, Kunde, Gerät, Fehlerbild, Kontakt">
       </div>
       <div>
         <label for="crm_case_status">Status</label>
@@ -29,26 +29,27 @@
       </div>
       <div class="row" style="align-items:end;">
         <button class="btn primary" type="submit">Filtern</button>
-        {% if role_flags.is_admin %}<a class="btn" href="/crm/vorgaenge/neu">Vorgang anlegen</a>{% endif %}
+        {% if role_flags.is_admin %}<a class="btn" href="/serviceauftraege/neu">Serviceauftrag anlegen</a>{% endif %}
       </div>
     </div>
   </form>
 
   <div class="table">
-    <div class="tr th" style="grid-template-columns: 150px 1.4fr 1.2fr 1.2fr 150px 120px;">
-      <div>Vorgangsnummer</div>
-      <div>Titel</div>
+    <div class="tr th" style="grid-template-columns: 150px 1.5fr 1.1fr 1.1fr 160px 120px;">
+      <div>Nummer</div>
+      <div>Auftrag</div>
       <div>Auftraggeber</div>
       <div>Leistungsort</div>
       <div>Status</div>
       <div>Aktion</div>
     </div>
     {% for item in rows %}
-      <div class="tr" style="grid-template-columns: 150px 1.4fr 1.2fr 1.2fr 150px 120px; align-items:start;">
+      <div class="tr" style="grid-template-columns: 150px 1.5fr 1.1fr 1.1fr 160px 120px; align-items:start;">
         <div>{{ item.row.case_no }}</div>
         <div>
           <div><b>{{ item.row.title }}</b></div>
-          <div class="muted">{{ crm_case_priority_label(item.row.priority) }}</div>
+          {% if item.row.device_label %}<div class="muted">{{ item.row.device_label }}</div>{% endif %}
+          {% if item.row.customer_issue %}<div class="muted">{{ item.row.customer_issue[:120] }}{% if item.row.customer_issue|length > 120 %}...{% endif %}</div>{% endif %}
         </div>
         <div>{{ item.ordering_party.party.display_name if item.ordering_party and item.ordering_party.party else '-' }}</div>
         <div>
@@ -59,18 +60,21 @@
             -
           {% endif %}
         </div>
-        <div>{{ crm_case_status_label(item.row.status) }}</div>
-        <div><a class="btn small" href="/crm/vorgaenge/{{ item.row.id }}">Details</a></div>
+        <div>
+          <div>{{ crm_case_status_label(item.row.status) }}</div>
+          <div class="muted">{{ crm_case_priority_label(item.row.priority) }}</div>
+        </div>
+        <div><a class="btn small" href="/serviceauftraege/{{ item.row.id }}">Details</a></div>
       </div>
     {% endfor %}
-    {% if not rows %}<div class="muted">Keine Vorgänge gefunden.</div>{% endif %}
+    {% if not rows %}<div class="muted">Keine Serviceaufträge gefunden.</div>{% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Jeder Vorgang zeigt Auftraggeber, Leistungsort und Rechnungsempfänger getrennt.</li>
-  <li>Suche und Filter helfen beim schnellen Wiederfinden offener Fälle.</li>
+  <li>Serviceaufträge sind die internen Einsatzdatensätze vor der Einplanung in OutSmart.</li>
+  <li>Die Suche berücksichtigt auch Gerät, Fehlerbild, Ansprechpartner und Kontaktdaten.</li>
 </ul>
 {% endblock %}

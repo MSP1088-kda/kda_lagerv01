@@ -4,69 +4,64 @@
   <h1>{{ row.case_no }}: {{ row.title }}</h1>
 
   <div class="row" style="margin-bottom:10px; flex-wrap:wrap;">
-    {% if role_flags.is_admin %}<a class="btn" href="/crm/vorgaenge/{{ row.id }}/bearbeiten">Bearbeiten</a>{% endif %}
-    {% if role_flags.is_admin and outsmart_enabled %}<a class="btn" href="/crm/vorgaenge/{{ row.id }}/outsmart/vorbereiten">An OutSmart senden</a>{% endif %}
-    <a class="btn" href="/mail/verfassen?case_id={{ row.id }}">Mail verfassen</a>
+    {% if role_flags.is_admin %}<a class="btn" href="/serviceauftraege/{{ row.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+    {% if role_flags.is_admin and outsmart_enabled %}<a class="btn" href="/serviceauftraege/{{ row.id }}/outsmart/vorbereiten">Zur Einplanung nach OutSmart senden</a>{% endif %}
+    <a class="btn" href="/mail/verfassen?case_id={{ row.id }}">Mail schreiben</a>
     <a class="btn" href="/crm/dokumente/upload?object_type=case&object_id={{ row.id }}">Dokument hochladen</a>
-    <a class="btn" href="/crm/dokumente">Dokumenten-Inbox</a>
-    {% if outsmart_workorder %}<a class="btn" href="/outsmart/arbeitsauftraege/{{ outsmart_workorder.id }}">Lokalen Arbeitsauftrag öffnen</a>{% endif %}
-    {% if outsmart_case_workorder_link and outsmart_case_workorder_link.deep_link_url %}<a class="btn" href="{{ outsmart_case_workorder_link.deep_link_url }}" target="_blank" rel="noopener">Arbeitsauftrag in OutSmart öffnen</a>{% endif %}
-    {% if outsmart_project_link and outsmart_project_link.deep_link_url %}<a class="btn" href="{{ outsmart_project_link.deep_link_url }}" target="_blank" rel="noopener">Projekt in OutSmart öffnen</a>{% endif %}
-    <a class="btn" href="/crm/vorgaenge">Zurück zur Liste</a>
+    {% if outsmart_workorder %}<a class="btn" href="/outsmart/arbeitsauftraege/{{ outsmart_workorder.id }}">OutSmart-Arbeitsauftrag öffnen</a>{% endif %}
+    {% if outsmart_case_workorder_link and outsmart_case_workorder_link.deep_link_url %}<a class="btn" href="{{ outsmart_case_workorder_link.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}
+    <a class="btn" href="/serviceauftraege">Zurück zur Liste</a>
   </div>
 
-  <div class="grid2">
+  <div class="grid3">
     <div class="box">
-      <div class="box-title">Vorgang</div>
+      <div class="box-title">Serviceauftrag</div>
       <div class="box-body">
         <div><b>Status:</b> {{ crm_case_status_label(row.status) }}</div>
         <div><b>Priorität:</b> {{ crm_case_priority_label(row.priority) }}</div>
         <div><b>Quelle:</b> {{ row.source_system|replace('_', ' ')|title }}</div>
-        <div><b>Notiz:</b> {{ row.note or '-' }}</div>
+        <div><b>Wunschtermin:</b>
+          {% if row.requested_start_at or row.requested_end_at %}
+            {% if row.requested_start_at %}{{ format_datetime(row.requested_start_at) }}{% else %}-{% endif %}
+            {% if row.requested_end_at %} bis {{ format_datetime(row.requested_end_at) }}{% endif %}
+          {% else %}
+            -
+          {% endif %}
+        </div>
       </div>
     </div>
     <div class="box">
-      <div class="box-title">Leistungsdreieck</div>
+      <div class="box-title">Ansprechpartner</div>
       <div class="box-body">
-        <div><b>Auftraggeber:</b> {% if ordering_party %}<a href="/crm/kunden/{{ ordering_party.id }}">{{ ordering_party.party.display_name }}</a>{% else %}-{% endif %}</div>
-        <div><b>Leistungsort:</b> {% if service_location %}{{ service_location.location_label }}{% else %}-{% endif %}</div>
-        <div><b>Rechnungsempfänger:</b> {% if invoice_recipient %}<a href="/crm/kunden/{{ invoice_recipient.id }}">{{ invoice_recipient.party.display_name }}</a>{% else %}-{% endif %}</div>
+        <div><b>Name:</b> {{ row.service_contact_name or '-' }}</div>
+        <div><b>Telefon:</b> {{ row.service_contact_phone or '-' }}</div>
+        <div><b>E-Mail:</b>
+          {% if row.service_contact_email %}
+            <a href="/mail/verfassen?case_id={{ row.id }}&to_email={{ row.service_contact_email }}">{{ row.service_contact_email }}</a>
+          {% else %}
+            -
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">OutSmart</div>
+      <div class="box-body">
+        <div><b>Aktiv:</b> {{ 'Ja' if outsmart_enabled else 'Nein' }}</div>
+        <div><b>Projekt:</b> {% if outsmart_project_link %}{{ outsmart_project_link.external_key }}{% else %}-{% endif %}</div>
+        <div><b>Arbeitsauftrag:</b> {% if outsmart_workorder %}{{ outsmart_workorder.workorder_no }}{% else %}-{% endif %}</div>
+        <div><b>Status:</b> {{ outsmart_workorder.status if outsmart_workorder else '-' }}</div>
+        <div><b>Geplanter Termin:</b> {% if outsmart_workorder and outsmart_workorder.scheduled_start %}{{ format_datetime(outsmart_workorder.scheduled_start) }}{% else %}-{% endif %}</div>
       </div>
     </div>
   </div>
-
-  {% if ai_role_result %}
-    {% set ai_role = ai_role_result.output %}
-    <details class="box" style="margin-top:10px;" open>
-      <summary class="box-title">KI-Rollenprüfung</summary>
-      <div class="box-body">
-        <div><b>Status:</b> {{ ai_status_label(ai_role_result.log.status) }} | {{ ai_risk_label(ai_role_result.risk_class) }}</div>
-        <div><b>Auftraggeber:</b> {{ ai_role.probable_ordering_party or '-' }}</div>
-        <div><b>Leistungsort:</b> {{ ai_role.probable_service_location or '-' }}</div>
-        <div><b>Rechnungsempfänger:</b> {{ ai_role.probable_invoice_recipient or '-' }}</div>
-        {% if ai_role.notes %}<div style="margin-top:8px;"><b>Hinweise:</b> {{ ai_role.notes|join(', ') }}</div>{% endif %}
-        {% if ai_role_review and ai_role_review.status == 'open' %}
-          <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
-            <form method="post" action="/system/ki-freigaben/{{ ai_role_result.log.id }}" class="inline">
-              <input type="hidden" name="action" value="approve">
-              <button class="btn small" type="submit">Freigeben</button>
-            </form>
-            <form method="post" action="/system/ki-freigaben/{{ ai_role_result.log.id }}" class="inline">
-              <input type="hidden" name="action" value="reject">
-              <button class="btn small" type="submit">Ablehnen</button>
-            </form>
-          </div>
-        {% endif %}
-      </div>
-    </details>
-  {% endif %}
 
   <div class="grid3" style="margin-top:10px;">
     <div class="box">
       <div class="box-title">Auftraggeber</div>
       <div class="box-body">
         {% if ordering_party %}
-          <div>{{ ordering_party.party.display_name }}</div>
+          <div><a href="/crm/kunden/{{ ordering_party.id }}">{{ ordering_party.party.display_name }}</a></div>
           <div class="muted">{{ ordering_party.customer_no_internal }}</div>
           {% if ordering_party_address %}
             <div>{{ ordering_party_address.street or '' }} {{ ordering_party_address.house_no or '' }}</div>
@@ -95,7 +90,7 @@
       <div class="box-title">Rechnungsempfänger</div>
       <div class="box-body">
         {% if invoice_recipient %}
-          <div>{{ invoice_recipient.party.display_name }}</div>
+          <div><a href="/crm/kunden/{{ invoice_recipient.id }}">{{ invoice_recipient.party.display_name }}</a></div>
           <div class="muted">{{ invoice_recipient.customer_no_internal }}</div>
           {% if invoice_address %}
             <div>{{ invoice_address.street or '' }} {{ invoice_address.house_no or '' }}</div>
@@ -108,82 +103,121 @@
     </div>
   </div>
 
-  <div class="grid3" style="margin-top:10px; align-items:start;">
+  <div class="grid2" style="margin-top:10px;">
     <div class="box">
-      <div class="box-title">Kommunikation & Dokumente</div>
+      <div class="box-title">Gerät / Objekt</div>
       <div class="box-body">
-        <div class="row" style="margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-          <a class="btn small{% if timeline_filter == 'all' %} active{% endif %}" href="/crm/vorgaenge/{{ row.id }}?timeline_filter=all">Alles</a>
-          <a class="btn small{% if timeline_filter == 'mail' %} active{% endif %}" href="/crm/vorgaenge/{{ row.id }}?timeline_filter=mail">Nur Mails</a>
-          <a class="btn small{% if timeline_filter == 'document' %} active{% endif %}" href="/crm/vorgaenge/{{ row.id }}?timeline_filter=document">Nur Dokumente</a>
-        </div>
-        {% if timeline_rows %}
-          {% for item in timeline_rows %}
-          <div style="margin-bottom:10px;">
-            <div><b>{{ item.row.title }}</b></div>
-            <div class="muted">{{ format_date(item.row.event_ts) }} | {{ item.type_label }}</div>
-            {% if item.detail_url %}<div><a href="{{ item.detail_url }}">{{ item.detail_label or 'Details öffnen' }}</a></div>{% endif %}
-            {% if item.paperless_url %}<div><a href="{{ item.paperless_url }}" target="_blank" rel="noopener">In Paperless öffnen</a></div>{% endif %}
-            {% if item.row.body %}<div>{{ item.row.body|e|replace('\n', '<br>')|safe }}</div>{% endif %}
-          </div>
-          {% endfor %}
+        {% if selected_customer_object %}
+          <div><b>Lokales Objekt:</b> {{ selected_customer_object.brand_label or '' }} {{ selected_customer_object.model_label or selected_customer_object.type_label or selected_customer_object.external_object_code }}</div>
+          <div class="muted">Objektcode: {{ selected_customer_object.external_object_code or '-' }}</div>
+          <div class="muted">Seriennummer: {{ selected_customer_object.serial_no or '-' }}</div>
         {% else %}
-        <div class="muted">Noch keine Kommunikations- oder Dokumenteinträge vorhanden.</div>
+          <div><b>Gerätebezeichnung:</b> {{ row.device_label or '-' }}</div>
         {% endif %}
       </div>
     </div>
     <div class="box">
-      <div class="box-title">Objekte / Geräte</div>
+      <div class="box-title">Fehlerbild</div>
       <div class="box-body">
-        {% if customer_objects %}
-          {% for item in customer_objects %}
-          <div style="margin-bottom:10px;">
-            <div><b>{{ item.brand_label or item.supplier_label or 'Objekt' }}</b> {{ item.model_label or item.type_label or item.external_object_code }}</div>
-            <div class="muted">Seriennummer: {{ item.serial_no or '-' }}</div>
-            {% if ordering_party %}<div><a href="/crm/kunden/{{ ordering_party.id }}/objekte?object_id={{ item.id }}">Objektdetail öffnen</a></div>{% endif %}
-          </div>
-          {% endfor %}
-        {% else %}
-        <div class="muted">Noch keine verknüpften Kundenobjekte gefunden.</div>
-        {% endif %}
-      </div>
-    </div>
-    <div class="box">
-      <div class="box-title">OutSmart</div>
-      <div class="box-body">
-        <div><b>Aktiv:</b> {{ 'Ja' if outsmart_enabled else 'Nein' }}</div>
-        <div><b>Projekt:</b> {% if outsmart_project_link %}{{ outsmart_project_link.external_key }}{% else %}-{% endif %}</div>
-        <div><b>Arbeitsauftrag:</b> {% if outsmart_workorder %}{{ outsmart_workorder.workorder_no }}{% else %}-{% endif %}</div>
-        <div><b>Status:</b> {{ outsmart_workorder.status if outsmart_workorder else '-' }}</div>
-        <div><b>Termin:</b> {{ format_date(outsmart_workorder.scheduled_start) if outsmart_workorder else '-' }}</div>
-        <div><b>Mitarbeiter:</b> {{ outsmart_workorder.employee_name if outsmart_workorder else '-' }}</div>
+        <div>{{ row.customer_issue or 'Keine Fehlerangabe erfasst.' }}</div>
       </div>
     </div>
   </div>
 
-  <div class="grid2" style="margin-top:10px; align-items:start;">
+  <div class="grid2" style="margin-top:10px;">
     <div class="box">
-      <div class="box-title">Paperless-Dokumente</div>
+      <div class="box-title">Arbeitsauftrag intern</div>
       <div class="box-body">
-        {% for link in paperless_links %}
-          <div style="margin-bottom:8px;">
-            {% if paperless_build_url(link.paperless_document_id) %}
-              <a href="{{ paperless_build_url(link.paperless_document_id) }}" target="_blank" rel="noopener">{{ link.paperless_title or link.paperless_document_id }}</a>
-            {% else %}
-              {{ link.paperless_title or link.paperless_document_id }}
-            {% endif %}
-          </div>
-        {% endfor %}
-        {% if not paperless_links %}<div class="muted">Noch keine Paperless-Dokumente verknüpft.</div>{% endif %}
+        <div>{{ row.work_instructions or 'Keine internen Arbeitsanweisungen erfasst.' }}</div>
       </div>
     </div>
     <div class="box">
-      <div class="box-title">Lokale Uploads</div>
+      <div class="box-title">Interne Hinweise</div>
       <div class="box-body">
-        {% for item in local_attachments %}
-          <div style="margin-bottom:8px;"><a href="/dokumente/lokal/{{ item.id }}">{{ item.original_name or item.filename }}</a></div>
-        {% endfor %}
-        {% if not local_attachments %}<div class="muted">Noch keine lokalen Uploads vorhanden.</div>{% endif %}
+        <div>{{ row.note or 'Keine internen Hinweise erfasst.' }}</div>
+      </div>
+    </div>
+  </div>
+
+  {% if ai_role_result %}
+    {% set ai_role = ai_role_result.output %}
+    <details class="box" style="margin-top:10px;">
+      <summary class="box-title">KI-Prüfung Leistungsdreieck</summary>
+      <div class="box-body">
+        <div><b>Status:</b> {{ ai_status_label(ai_role_result.log.status) }} | {{ ai_risk_label(ai_role_result.risk_class) }}</div>
+        <div><b>Auftraggeber:</b> {{ ai_role.probable_ordering_party or '-' }}</div>
+        <div><b>Leistungsort:</b> {{ ai_role.probable_service_location or '-' }}</div>
+        <div><b>Rechnungsempfänger:</b> {{ ai_role.probable_invoice_recipient or '-' }}</div>
+        {% if ai_role.notes %}<div style="margin-top:8px;"><b>Hinweise:</b> {{ ai_role.notes|join(', ') }}</div>{% endif %}
+        {% if ai_role_review and ai_role_review.status == 'open' %}
+          <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+            <form method="post" action="/system/ki-freigaben/{{ ai_role_result.log.id }}" class="inline">
+              <input type="hidden" name="action" value="approve">
+              <button class="btn small" type="submit">Freigeben</button>
+            </form>
+            <form method="post" action="/system/ki-freigaben/{{ ai_role_result.log.id }}" class="inline">
+              <input type="hidden" name="action" value="reject">
+              <button class="btn small" type="submit">Ablehnen</button>
+            </form>
+          </div>
+        {% endif %}
+      </div>
+    </details>
+  {% endif %}
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box">
+      <div class="box-title">Kommunikation und Dokumente</div>
+      <div class="box-body">
+        <div class="row" style="margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+          <a class="btn small{% if timeline_filter == 'all' %} active{% endif %}" href="/serviceauftraege/{{ row.id }}?timeline_filter=all">Alles</a>
+          <a class="btn small{% if timeline_filter == 'mail' %} active{% endif %}" href="/serviceauftraege/{{ row.id }}?timeline_filter=mail">Nur Mails</a>
+          <a class="btn small{% if timeline_filter == 'document' %} active{% endif %}" href="/serviceauftraege/{{ row.id }}?timeline_filter=document">Nur Dokumente</a>
+        </div>
+        {% if timeline_rows %}
+          {% for item in timeline_rows %}
+            <div style="margin-bottom:10px;">
+              <div><b>{{ item.row.title }}</b></div>
+              <div class="muted">{{ format_date(item.row.event_ts) }} | {{ item.type_label }}</div>
+              {% if item.detail_url %}<div><a href="{{ item.detail_url }}">{{ item.detail_label or 'Details öffnen' }}</a></div>{% endif %}
+              {% if item.paperless_url %}<div><a href="{{ item.paperless_url }}" target="_blank" rel="noopener">In Paperless öffnen</a></div>{% endif %}
+              {% if item.row.body %}<div>{{ item.row.body|e|replace('\n', '<br>')|safe }}</div>{% endif %}
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="muted">Noch keine Kommunikations- oder Dokumenteinträge vorhanden.</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Anhänge</div>
+      <div class="box-body">
+        <div style="margin-bottom:10px;">
+          <b>Paperless</b>
+          {% if paperless_links %}
+            {% for link in paperless_links %}
+              <div style="margin-top:6px;">
+                {% if paperless_build_url(link.paperless_document_id) %}
+                  <a href="{{ paperless_build_url(link.paperless_document_id) }}" target="_blank" rel="noopener">{{ link.paperless_title or link.paperless_document_id }}</a>
+                {% else %}
+                  {{ link.paperless_title or link.paperless_document_id }}
+                {% endif %}
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="muted">Keine Paperless-Dokumente verknüpft.</div>
+          {% endif %}
+        </div>
+        <div>
+          <b>Lokale Uploads</b>
+          {% if local_attachments %}
+            {% for item in local_attachments %}
+              <div style="margin-top:6px;"><a href="/dokumente/lokal/{{ item.id }}">{{ item.original_name or item.filename }}</a></div>
+            {% endfor %}
+          {% else %}
+            <div class="muted">Keine lokalen Uploads vorhanden.</div>
+          {% endif %}
+        </div>
       </div>
     </div>
   </div>
@@ -192,8 +226,8 @@
 
 {% block help %}
 <ul>
-  <li>Die Vorgangsansicht trennt Auftraggeber, Leistungsort und Rechnungsempfänger sauber.</li>
-  <li>Kommunikation und Dokumente laufen im gleichen Block zusammen und lassen sich filtern.</li>
-  <li>OutSmart-Aktionen laufen weiter über die Vorschauseite, damit das Mapping vor dem Senden sichtbar bleibt.</li>
+  <li>Der Serviceauftrag ist der interne Steuerdatensatz für E-Mail, Dokumente, Paperless, Kundenbezug und Nachverfolgung.</li>
+  <li>OutSmart bleibt das führende System für Terminierung, Plantafel und Außendienstausführung.</li>
+  <li>Über die OutSmart-Vorschau siehst du vor dem Export, welche Daten an den Arbeitsauftrag übergeben werden.</li>
 </ul>
 {% endblock %}

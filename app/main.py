@@ -3471,6 +3471,23 @@ def _parse_date_input(raw: str | None) -> dt.datetime | None:
     raise ValueError("Ungültiges Datum.")
 
 
+def _parse_datetime_input(raw: str | None) -> dt.datetime | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    for candidate in (text, text.replace("T", " ")):
+        try:
+            return dt.datetime.fromisoformat(candidate)
+        except Exception:
+            continue
+    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y %H.%M"):
+        try:
+            return dt.datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    raise ValueError("Ungültiges Datum/Uhrzeit.")
+
+
 def _format_date_local(value: dt.datetime | None) -> str:
     if not value:
         return "-"
@@ -3718,8 +3735,8 @@ def _mail_auto_target_flash_entry(db: Session, payload: dict[str, object]) -> di
         if row:
             return {
                 "message": f"Mail automatisch zugeordnet: {row.case_no} | {row.title}",
-                "link_url": f"/crm/vorgaenge/{int(row.id)}",
-                "link_label": "Zum Vorgang",
+                "link_url": f"/serviceauftraege/{int(row.id)}",
+                "link_label": "Zum Serviceauftrag",
             }
     if customer_id > 0:
         row = db.get(MasterCustomer, customer_id)
@@ -4514,7 +4531,7 @@ def _json_dict(raw: str | None) -> dict[str, object]:
 def _document_object_url(object_type: str, object_id: int) -> str:
     mapping = {
         "customer": f"/crm/kunden/{int(object_id)}",
-        "case": f"/crm/vorgaenge/{int(object_id)}",
+        "case": f"/serviceauftraege/{int(object_id)}",
         "purchase_order": f"/einkauf/bestellungen/{int(object_id)}",
         "goods_receipt": f"/einkauf/wareneingaenge/{int(object_id)}",
         "purchase_invoice": f"/einkauf/rechnungen/{int(object_id)}",
@@ -16541,6 +16558,33 @@ def _crm_location_options(db: Session) -> list[dict[str, object]]:
     return options
 
 
+def _crm_case_customer_object_options(db: Session, ordering_party_id: int, service_location_id: int) -> list[dict[str, object]]:
+    query = db.query(CustomerObject)
+    if int(service_location_id or 0) > 0:
+        query = query.filter(
+            or_(
+                CustomerObject.service_location_id == int(service_location_id),
+                CustomerObject.master_customer_id == int(ordering_party_id or 0),
+            )
+        )
+    elif int(ordering_party_id or 0) > 0:
+        query = query.filter(CustomerObject.master_customer_id == int(ordering_party_id))
+    else:
+        return []
+    rows = query.order_by(CustomerObject.updated_at.desc(), CustomerObject.id.desc()).limit(150).all()
+    options: list[dict[str, object]] = []
+    for row in rows:
+        label_parts = [
+            str(row.brand_label or "").strip(),
+            str(row.model_label or row.type_label or "").strip(),
+        ]
+        label = _crm_clean_text(" ".join([part for part in label_parts if part])) or _crm_clean_text(row.external_object_code) or f"Objekt {row.id}"
+        meta_parts = [str(row.external_object_code or "").strip(), str(row.serial_no or "").strip()]
+        meta = " | ".join([part for part in meta_parts if part])
+        options.append({"id": int(row.id), "label": f"{label}{f' | {meta}' if meta else ''}"})
+    return options
+
+
 def _crm_case_role_map(db: Session, case_ids: list[int]) -> dict[int, dict[str, RoleAssignment]]:
     out: dict[int, dict[str, RoleAssignment]] = {}
     if not case_ids:
@@ -17324,6 +17368,7 @@ def _crm_render_case_form(
     selected_ordering_party_id: int,
     selected_service_location_id: int,
     selected_invoice_recipient_id: int,
+    selected_customer_object_id: int,
     db: Session,
 ):
     first_error_field_id = _first_error_field_id(
@@ -17333,6 +17378,7 @@ def _crm_render_case_form(
             "ordering_party_id": "crm_case_ordering_party_id",
             "service_location_id": "crm_case_service_location_id",
             "invoice_recipient_id": "crm_case_invoice_recipient_id",
+            "requested_start_at": "crm_case_requested_start_at",
         },
     )
     return templates.TemplateResponse(
@@ -17353,6 +17399,12 @@ def _crm_render_case_form(
             selected_ordering_party_id=int(selected_ordering_party_id or 0),
             selected_service_location_id=int(selected_service_location_id or 0),
             selected_invoice_recipient_id=int(selected_invoice_recipient_id or 0),
+            selected_customer_object_id=int(selected_customer_object_id or 0),
+            customer_object_options=_crm_case_customer_object_options(
+                db,
+                int(selected_ordering_party_id or 0),
+                int(selected_service_location_id or 0),
+            ),
         ),
     )
 
@@ -18773,6 +18825,7 @@ async def crm_contact_edit_post(customer_id: int, contact_id: int, request: Requ
     return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
 
 
+@app.get("/serviceauftraege", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge", response_class=HTMLResponse)
 def crm_cases_list(
     request: Request,
@@ -18791,7 +18844,19 @@ def crm_cases_list(
         query = query.filter(CrmCase.priority == priority_norm)
     if _crm_clean_text(q):
         like = f"%{_crm_clean_text(q)}%"
-        query = query.filter(or_(CrmCase.case_no.ilike(like), CrmCase.title.ilike(like), CrmCase.note.ilike(like)))
+        query = query.filter(
+            or_(
+                CrmCase.case_no.ilike(like),
+                CrmCase.title.ilike(like),
+                CrmCase.note.ilike(like),
+                CrmCase.device_label.ilike(like),
+                CrmCase.customer_issue.ilike(like),
+                CrmCase.work_instructions.ilike(like),
+                CrmCase.service_contact_name.ilike(like),
+                CrmCase.service_contact_phone.ilike(like),
+                CrmCase.service_contact_email.ilike(like),
+            )
+        )
     rows = query.order_by(CrmCase.updated_at.desc(), CrmCase.id.desc()).limit(250).all()
     role_map = _crm_case_role_map(db, [int(row.id) for row in rows])
     customer_ids = []
@@ -18833,23 +18898,34 @@ def crm_cases_list(
     )
 
 
+@app.get("/serviceauftraege/neu", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge/neu", response_class=HTMLResponse)
-def crm_case_new_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+def crm_case_new_get(
+    request: Request,
+    user=Depends(require_admin),
+    customer_id: int = 0,
+    location_id: int = 0,
+    invoice_customer_id: int = 0,
+    customer_object_id: int = 0,
+    db: Session = Depends(db_session),
+):
     return _crm_render_case_form(
         request,
         user=user,
         row=None,
-        page_title="Vorgang anlegen",
-        form_action="/crm/vorgaenge/neu",
+        page_title="Serviceauftrag anlegen",
+        form_action="/serviceauftraege/neu",
         form_data={},
         form_errors={},
-        selected_ordering_party_id=0,
-        selected_service_location_id=0,
-        selected_invoice_recipient_id=0,
+        selected_ordering_party_id=int(customer_id or 0),
+        selected_service_location_id=int(location_id or 0),
+        selected_invoice_recipient_id=int(invoice_customer_id or customer_id or 0),
+        selected_customer_object_id=int(customer_object_id or 0),
         db=db,
     )
 
 
+@app.post("/serviceauftraege/neu")
 @app.post("/crm/vorgaenge/neu")
 async def crm_case_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     form = await request.form()
@@ -18861,6 +18937,15 @@ async def crm_case_new_post(request: Request, user=Depends(require_admin), db: S
     ordering_party_id = _to_int(form.get("ordering_party_id"), 0)
     service_location_id = _to_int(form.get("service_location_id"), 0)
     invoice_recipient_id = _to_int(form.get("invoice_recipient_id"), 0) or ordering_party_id
+    customer_object_id = _to_int(form.get("customer_object_id"), 0)
+    requested_start_at_raw = str(form.get("requested_start_at") or "").strip()
+    requested_end_at_raw = str(form.get("requested_end_at") or "").strip()
+    service_contact_name = _crm_clean_text(form.get("service_contact_name") or "") or None
+    service_contact_phone = _crm_clean_text(form.get("service_contact_phone") or "") or None
+    service_contact_email = _crm_clean_text(form.get("service_contact_email") or "") or None
+    device_label = _crm_clean_text(form.get("device_label") or "") or None
+    customer_issue = _crm_clean_text(form.get("customer_issue") or "") or None
+    work_instructions = _crm_clean_text(form.get("work_instructions") or "") or None
     if not title:
         form_errors["title"] = "Ein Titel ist Pflicht."
     if status not in CRM_CASE_STATUS_CHOICES:
@@ -18870,12 +18955,31 @@ async def crm_case_new_post(request: Request, user=Depends(require_admin), db: S
     ordering_party = db.get(MasterCustomer, ordering_party_id) if ordering_party_id > 0 else None
     service_location = db.get(ServiceLocation, service_location_id) if service_location_id > 0 else None
     invoice_recipient = db.get(MasterCustomer, invoice_recipient_id) if invoice_recipient_id > 0 else None
+    customer_object = db.get(CustomerObject, customer_object_id) if customer_object_id > 0 else None
     if ordering_party is None:
         form_errors["ordering_party_id"] = "Bitte einen Auftraggeber wählen."
     if service_location is None:
         form_errors["service_location_id"] = "Bitte einen Leistungsort wählen."
     if invoice_recipient is None:
         form_errors["invoice_recipient_id"] = "Bitte einen Rechnungsempfänger wählen."
+    if customer_object_id > 0 and customer_object is None:
+        form_errors["customer_object_id"] = "Bitte ein gültiges Objekt wählen."
+    if customer_object and int(service_location_id or 0) > 0 and int(customer_object.service_location_id or 0) not in (0, int(service_location_id)):
+        form_errors["customer_object_id"] = "Das Objekt gehört nicht zum gewählten Leistungsort."
+    elif customer_object and int(ordering_party_id or 0) > 0 and int(customer_object.master_customer_id or 0) not in (0, int(ordering_party_id)):
+        form_errors["customer_object_id"] = "Das Objekt gehört nicht zum gewählten Auftraggeber."
+    try:
+        requested_start_at = _parse_datetime_input(requested_start_at_raw)
+    except ValueError as exc:
+        requested_start_at = None
+        form_errors["requested_start_at"] = str(exc)
+    try:
+        requested_end_at = _parse_datetime_input(requested_end_at_raw)
+    except ValueError as exc:
+        requested_end_at = None
+        form_errors["requested_end_at"] = str(exc)
+    if requested_start_at and requested_end_at and requested_end_at < requested_start_at:
+        form_errors["requested_end_at"] = "Das gewünschte Ende muss nach dem Beginn liegen."
     if form_errors:
         for message in form_errors.values():
             _flash(request, message, "error")
@@ -18883,13 +18987,14 @@ async def crm_case_new_post(request: Request, user=Depends(require_admin), db: S
             request,
             user=user,
             row=None,
-            page_title="Vorgang anlegen",
-            form_action="/crm/vorgaenge/neu",
+            page_title="Serviceauftrag anlegen",
+            form_action="/serviceauftraege/neu",
             form_data=form_data,
             form_errors=form_errors,
             selected_ordering_party_id=ordering_party_id,
             selected_service_location_id=service_location_id,
             selected_invoice_recipient_id=invoice_recipient_id,
+            selected_customer_object_id=customer_object_id,
             db=db,
         )
     row = CrmCase(
@@ -18897,6 +19002,15 @@ async def crm_case_new_post(request: Request, user=Depends(require_admin), db: S
         title=title,
         status=status,
         priority=priority,
+        service_contact_name=service_contact_name,
+        service_contact_phone=service_contact_phone,
+        service_contact_email=service_contact_email,
+        requested_start_at=requested_start_at,
+        requested_end_at=requested_end_at,
+        customer_object_id=int(customer_object.id) if customer_object else None,
+        device_label=device_label,
+        customer_issue=customer_issue,
+        work_instructions=work_instructions,
         source_system="local",
         note=_crm_clean_text(form.get("note") or "") or None,
         created_at=_utcnow_naive(),
@@ -18936,19 +19050,21 @@ async def crm_case_new_post(request: Request, user=Depends(require_admin), db: S
             request,
             user=user,
             row=None,
-            page_title="Vorgang anlegen",
-            form_action="/crm/vorgaenge/neu",
+            page_title="Serviceauftrag anlegen",
+            form_action="/serviceauftraege/neu",
             form_data=form_data,
             form_errors={"__all__": _friendly_db_write_error(exc)},
             selected_ordering_party_id=ordering_party_id,
             selected_service_location_id=service_location_id,
             selected_invoice_recipient_id=invoice_recipient_id,
+            selected_customer_object_id=customer_object_id,
             db=db,
         )
-    _flash(request, "Vorgang angelegt.", "info")
-    return RedirectResponse(f"/crm/vorgaenge/{int(row.id)}", status_code=302)
+    _flash(request, "Serviceauftrag angelegt.", "info")
+    return RedirectResponse(f"/serviceauftraege/{int(row.id)}", status_code=302)
 
 
+@app.get("/serviceauftraege/{case_id}", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge/{case_id}", response_class=HTMLResponse)
 def crm_case_detail(
     case_id: int,
@@ -18967,6 +19083,7 @@ def crm_case_detail(
     customer_ids = [int(value.master_customer_id) for value in (ordering_role, invoice_role) if value and int(value.master_customer_id or 0) > 0]
     customers = {int(item.id): item for item in db.query(MasterCustomer).filter(MasterCustomer.id.in_(customer_ids)).all()} if customer_ids else {}
     location = db.get(ServiceLocation, int(service_role.service_location_id or 0)) if service_role and int(service_role.service_location_id or 0) > 0 else None
+    selected_customer_object = db.get(CustomerObject, int(row.customer_object_id or 0)) if int(row.customer_object_id or 0) > 0 else None
     address_ids = []
     for role in (ordering_role, service_role, invoice_role):
         if role and int(role.address_id or 0) > 0:
@@ -19019,6 +19136,7 @@ def crm_case_detail(
             request,
             user=user,
             row=row,
+            selected_customer_object=selected_customer_object,
             ordering_party=customers.get(int(ordering_role.master_customer_id or 0)) if ordering_role else None,
             ordering_party_address=addresses.get(int(ordering_role.address_id or 0)) if ordering_role else None,
             service_location=location,
@@ -19041,6 +19159,7 @@ def crm_case_detail(
     )
 
 
+@app.get("/serviceauftraege/{case_id}/outsmart/vorbereiten", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge/{case_id}/outsmart/vorbereiten", response_class=HTMLResponse)
 def crm_case_outsmart_prepare(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     row = db.get(CrmCase, case_id)
@@ -19050,6 +19169,7 @@ def crm_case_outsmart_prepare(case_id: int, request: Request, user=Depends(requi
     ordering = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
     service_location = db.get(ServiceLocation, int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0)) if role_map.get(CRM_ROLE_SERVICE_LOCATION) else None
     invoice = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0)) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else None
+    selected_customer_object = db.get(CustomerObject, int(row.customer_object_id or 0)) if int(row.customer_object_id or 0) > 0 else None
     relation_payload = None
     if ordering and ordering.party:
         _, default_map = _crm_party_address_maps(db, [int(ordering.party_id)])
@@ -19062,6 +19182,7 @@ def crm_case_outsmart_prepare(case_id: int, request: Request, user=Depends(requi
             request,
             user=user,
             row=row,
+            selected_customer_object=selected_customer_object,
             ordering_party=ordering,
             service_location=service_location,
             invoice_recipient=invoice,
@@ -19088,6 +19209,7 @@ def crm_case_outsmart_prepare(case_id: int, request: Request, user=Depends(requi
     )
 
 
+@app.post("/serviceauftraege/{case_id}/outsmart/senden")
 @app.post("/crm/vorgaenge/{case_id}/outsmart/senden")
 def crm_case_outsmart_send(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     row = db.get(CrmCase, case_id)
@@ -19096,10 +19218,10 @@ def crm_case_outsmart_send(case_id: int, request: Request, user=Depends(require_
     settings = _outsmart_settings(db, include_secret=True)
     if not bool(settings.get("enabled")):
         _flash(request, "OutSmart ist deaktiviert.", "error")
-        return RedirectResponse(f"/crm/vorgaenge/{case_id}", status_code=302)
+        return RedirectResponse(f"/serviceauftraege/{case_id}", status_code=302)
     if not bool(settings.get("token")) or not bool(settings.get("software_token")):
         _flash(request, "Bitte zuerst die OutSmart-Zugangsdaten vervollständigen.", "error")
-        return RedirectResponse(f"/crm/vorgaenge/{case_id}", status_code=302)
+        return RedirectResponse(f"/serviceauftraege/{case_id}", status_code=302)
     role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
     ordering = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
     relation_payload = None
@@ -19108,7 +19230,7 @@ def crm_case_outsmart_send(case_id: int, request: Request, user=Depends(require_
         relation_payload = _outsmart_relation_payload_for_customer(db, ordering, ordering.party, default_map.get(int(ordering.party_id)))
     project_payload = _outsmart_project_payload_for_case(db, row)
     workorder_payload = _outsmart_workorder_payload_for_case(db, row)
-    job = _start_sync_job(db, system_name="outsmart", direction="push", entity_type="workorder", log_text=f"Vorgang {row.case_no}")
+    job = _start_sync_job(db, system_name="outsmart", direction="push", entity_type="workorder", log_text=f"Serviceauftrag {row.case_no}")
     try:
         if ordering and relation_payload:
             relation_result = outsmart_push_relation(settings, relation_payload)
@@ -19182,13 +19304,13 @@ def crm_case_outsmart_send(case_id: int, request: Request, user=Depends(require_
             )
         _finish_sync_job(db, job, status="done", log_text=f"Arbeitsauftrag exportiert: {row.case_no} ({row_id or '-'})")
         db.commit()
-        _flash(request, "Vorgang an OutSmart gesendet.", "info")
+        _flash(request, "Serviceauftrag an OutSmart zur Einplanung gesendet.", "info")
         if workorder_row:
             return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(workorder_row.id)}", status_code=302)
     except Exception as exc:
         db.rollback()
         _flash(request, f"OutSmart-Senden fehlgeschlagen: {exc}", "error")
-    return RedirectResponse(f"/crm/vorgaenge/{case_id}", status_code=302)
+    return RedirectResponse(f"/serviceauftraege/{case_id}", status_code=302)
 
 
 @app.get("/outsmart/arbeitsauftraege/{workorder_id}", response_class=HTMLResponse)
@@ -19237,21 +19359,21 @@ async def outsmart_workorder_assign_case(workorder_id: int, request: Request, us
     case_id = _to_int(form.get("case_id"), 0)
     crm_case = db.get(CrmCase, int(case_id)) if case_id > 0 else None
     if crm_case is None:
-        _flash(request, "Bitte einen vorhandenen Vorgang auswählen.", "error")
+        _flash(request, "Bitte einen vorhandenen Serviceauftrag auswählen.", "error")
         return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
     try:
         _outsmart_link_workorder_to_case(
             db,
             row=row,
             crm_case=crm_case,
-            source_label="Lokaler Vorgang manuell am OutSmart-Arbeitsauftrag verknüpft.",
+            source_label="Lokaler Serviceauftrag manuell am OutSmart-Arbeitsauftrag verknüpft.",
         )
         db.commit()
     except Exception as exc:
         db.rollback()
         _flash(request, _friendly_db_write_error(exc), "error")
         return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
-    _flash(request, f"Arbeitsauftrag wurde mit Vorgang {crm_case.case_no} verknüpft.", "info")
+    _flash(request, f"Arbeitsauftrag wurde mit Serviceauftrag {crm_case.case_no} verknüpft.", "info")
     return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
 
 
@@ -19272,10 +19394,11 @@ async def outsmart_workorder_create_case(workorder_id: int, request: Request, us
         db.rollback()
         _flash(request, _friendly_db_write_error(exc), "error")
         return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
-    _flash(request, f"Lokaler Vorgang {crm_case.case_no} wurde aus dem Arbeitsauftrag angelegt.", "info")
+    _flash(request, f"Lokaler Serviceauftrag {crm_case.case_no} wurde aus dem Arbeitsauftrag angelegt.", "info")
     return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
 
 
+@app.get("/serviceauftraege/{case_id}/bearbeiten", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge/{case_id}/bearbeiten", response_class=HTMLResponse)
 def crm_case_edit_get(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     row = db.get(CrmCase, case_id)
@@ -19285,21 +19408,24 @@ def crm_case_edit_get(case_id: int, request: Request, user=Depends(require_admin
     ordering_id = int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0) if role_map.get(CRM_ROLE_ORDERING_PARTY) else 0
     service_location_id = int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0) if role_map.get(CRM_ROLE_SERVICE_LOCATION) else 0
     invoice_id = int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else 0
+    customer_object_id = int(row.customer_object_id or 0)
     return _crm_render_case_form(
         request,
         user=user,
         row=row,
-        page_title=f"Vorgang bearbeiten: {row.case_no}",
-        form_action=f"/crm/vorgaenge/{int(row.id)}/bearbeiten",
+        page_title=f"Serviceauftrag bearbeiten: {row.case_no}",
+        form_action=f"/serviceauftraege/{int(row.id)}/bearbeiten",
         form_data={},
         form_errors={},
         selected_ordering_party_id=ordering_id,
         selected_service_location_id=service_location_id,
         selected_invoice_recipient_id=invoice_id,
+        selected_customer_object_id=customer_object_id,
         db=db,
     )
 
 
+@app.post("/serviceauftraege/{case_id}/bearbeiten")
 @app.post("/crm/vorgaenge/{case_id}/bearbeiten")
 async def crm_case_edit_post(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     row = db.get(CrmCase, case_id)
@@ -19314,6 +19440,15 @@ async def crm_case_edit_post(case_id: int, request: Request, user=Depends(requir
     ordering_party_id = _to_int(form.get("ordering_party_id"), 0)
     service_location_id = _to_int(form.get("service_location_id"), 0)
     invoice_recipient_id = _to_int(form.get("invoice_recipient_id"), 0) or ordering_party_id
+    customer_object_id = _to_int(form.get("customer_object_id"), 0)
+    requested_start_at_raw = str(form.get("requested_start_at") or "").strip()
+    requested_end_at_raw = str(form.get("requested_end_at") or "").strip()
+    service_contact_name = _crm_clean_text(form.get("service_contact_name") or "") or None
+    service_contact_phone = _crm_clean_text(form.get("service_contact_phone") or "") or None
+    service_contact_email = _crm_clean_text(form.get("service_contact_email") or "") or None
+    device_label = _crm_clean_text(form.get("device_label") or "") or None
+    customer_issue = _crm_clean_text(form.get("customer_issue") or "") or None
+    work_instructions = _crm_clean_text(form.get("work_instructions") or "") or None
     if not title:
         form_errors["title"] = "Ein Titel ist Pflicht."
     if status not in CRM_CASE_STATUS_CHOICES:
@@ -19323,12 +19458,31 @@ async def crm_case_edit_post(case_id: int, request: Request, user=Depends(requir
     ordering_party = db.get(MasterCustomer, ordering_party_id) if ordering_party_id > 0 else None
     service_location = db.get(ServiceLocation, service_location_id) if service_location_id > 0 else None
     invoice_recipient = db.get(MasterCustomer, invoice_recipient_id) if invoice_recipient_id > 0 else None
+    customer_object = db.get(CustomerObject, customer_object_id) if customer_object_id > 0 else None
     if ordering_party is None:
         form_errors["ordering_party_id"] = "Bitte einen Auftraggeber wählen."
     if service_location is None:
         form_errors["service_location_id"] = "Bitte einen Leistungsort wählen."
     if invoice_recipient is None:
         form_errors["invoice_recipient_id"] = "Bitte einen Rechnungsempfänger wählen."
+    if customer_object_id > 0 and customer_object is None:
+        form_errors["customer_object_id"] = "Bitte ein gültiges Objekt wählen."
+    if customer_object and int(service_location_id or 0) > 0 and int(customer_object.service_location_id or 0) not in (0, int(service_location_id)):
+        form_errors["customer_object_id"] = "Das Objekt gehört nicht zum gewählten Leistungsort."
+    elif customer_object and int(ordering_party_id or 0) > 0 and int(customer_object.master_customer_id or 0) not in (0, int(ordering_party_id)):
+        form_errors["customer_object_id"] = "Das Objekt gehört nicht zum gewählten Auftraggeber."
+    try:
+        requested_start_at = _parse_datetime_input(requested_start_at_raw)
+    except ValueError as exc:
+        requested_start_at = None
+        form_errors["requested_start_at"] = str(exc)
+    try:
+        requested_end_at = _parse_datetime_input(requested_end_at_raw)
+    except ValueError as exc:
+        requested_end_at = None
+        form_errors["requested_end_at"] = str(exc)
+    if requested_start_at and requested_end_at and requested_end_at < requested_start_at:
+        form_errors["requested_end_at"] = "Das gewünschte Ende muss nach dem Beginn liegen."
     if form_errors:
         for message in form_errors.values():
             _flash(request, message, "error")
@@ -19336,18 +19490,28 @@ async def crm_case_edit_post(case_id: int, request: Request, user=Depends(requir
             request,
             user=user,
             row=row,
-            page_title=f"Vorgang bearbeiten: {row.case_no}",
-            form_action=f"/crm/vorgaenge/{int(row.id)}/bearbeiten",
+            page_title=f"Serviceauftrag bearbeiten: {row.case_no}",
+            form_action=f"/serviceauftraege/{int(row.id)}/bearbeiten",
             form_data=form_data,
             form_errors=form_errors,
             selected_ordering_party_id=ordering_party_id,
             selected_service_location_id=service_location_id,
             selected_invoice_recipient_id=invoice_recipient_id,
+            selected_customer_object_id=customer_object_id,
             db=db,
         )
     row.title = title
     row.status = status
     row.priority = priority
+    row.service_contact_name = service_contact_name
+    row.service_contact_phone = service_contact_phone
+    row.service_contact_email = service_contact_email
+    row.requested_start_at = requested_start_at
+    row.requested_end_at = requested_end_at
+    row.customer_object_id = int(customer_object.id) if customer_object else None
+    row.device_label = device_label
+    row.customer_issue = customer_issue
+    row.work_instructions = work_instructions
     row.note = _crm_clean_text(form.get("note") or "") or None
     row.updated_at = _utcnow_naive()
     db.add(row)
@@ -19383,17 +19547,18 @@ async def crm_case_edit_post(case_id: int, request: Request, user=Depends(requir
             request,
             user=user,
             row=row,
-            page_title=f"Vorgang bearbeiten: {row.case_no}",
-            form_action=f"/crm/vorgaenge/{int(row.id)}/bearbeiten",
+            page_title=f"Serviceauftrag bearbeiten: {row.case_no}",
+            form_action=f"/serviceauftraege/{int(row.id)}/bearbeiten",
             form_data=form_data,
             form_errors={"__all__": _friendly_db_write_error(exc)},
             selected_ordering_party_id=ordering_party_id,
             selected_service_location_id=service_location_id,
             selected_invoice_recipient_id=invoice_recipient_id,
+            selected_customer_object_id=customer_object_id,
             db=db,
         )
-    _flash(request, "Vorgang gespeichert.", "info")
-    return RedirectResponse(f"/crm/vorgaenge/{int(row.id)}", status_code=302)
+    _flash(request, "Serviceauftrag gespeichert.", "info")
+    return RedirectResponse(f"/serviceauftraege/{int(row.id)}", status_code=302)
 
 
 @app.get("/crm/identitaeten", response_class=HTMLResponse)
@@ -28157,7 +28322,7 @@ def _ai_object_url(object_type: str | None, object_id: int | None) -> str:
         "invoice_draft": f"/crm/rechnungen/{obj_id}",
         "master_customer": f"/crm/kunden/{obj_id}",
         "customer_init_cluster": f"/system/kunden-initialisierung/review?focus_cluster_id={obj_id}",
-        "crm_case": f"/crm/vorgaenge/{obj_id}",
+        "crm_case": f"/serviceauftraege/{obj_id}",
         "goods_receipt": f"/einkauf/wareneingaenge/{obj_id}",
         "outsmart_workorder": f"/outsmart/arbeitsauftraege/{obj_id}",
         "dunning_case": f"/crm/mahnfaelle/{obj_id}",
@@ -30581,9 +30746,68 @@ def _outsmart_relation_payload_for_customer(db: Session, customer: MasterCustome
     }
 
 
+def _crm_case_requested_window_label(row: CrmCase) -> str:
+    if row.requested_start_at and row.requested_end_at:
+        return f"{_format_datetime_local(row.requested_start_at)} bis {_format_datetime_local(row.requested_end_at)}"
+    if row.requested_start_at:
+        return _format_datetime_local(row.requested_start_at)
+    if row.requested_end_at:
+        return _format_datetime_local(row.requested_end_at)
+    return ""
+
+
+def _crm_case_selected_customer_object(db: Session, row: CrmCase) -> CustomerObject | None:
+    return db.get(CustomerObject, int(row.customer_object_id or 0)) if int(row.customer_object_id or 0) > 0 else None
+
+
+def _crm_case_outsmart_description_lines(
+    row: CrmCase,
+    *,
+    ordering: MasterCustomer | None,
+    service_location: ServiceLocation | None,
+    invoice: MasterCustomer | None,
+    customer_object: CustomerObject | None,
+) -> list[str]:
+    lines = [
+        f"Serviceauftrag: {row.case_no}",
+        f"Auftraggeber: {ordering.party.display_name if ordering and ordering.party else '-'}",
+        f"Leistungsort: {service_location.location_label if service_location else '-'}",
+        f"Rechnungsempfänger: {invoice.party.display_name if invoice and invoice.party else '-'}",
+    ]
+    requested_window = _crm_case_requested_window_label(row)
+    if requested_window:
+        lines.append(f"Wunschtermin: {requested_window}")
+    if row.service_contact_name:
+        lines.append(f"Ansprechpartner: {row.service_contact_name}")
+    contact_parts = [part for part in (row.service_contact_phone, row.service_contact_email) if _crm_clean_text(part)]
+    if contact_parts:
+        lines.append(f"Kontakt: {' | '.join(contact_parts)}")
+    if customer_object:
+        object_parts = [
+            _crm_clean_text(customer_object.brand_label),
+            _crm_clean_text(customer_object.model_label or customer_object.type_label),
+        ]
+        object_label = _crm_clean_text(" ".join([part for part in object_parts if part])) or _crm_clean_text(customer_object.external_object_code) or f"Objekt {customer_object.id}"
+        if customer_object.serial_no:
+            object_label = f"{object_label} | Seriennummer {customer_object.serial_no}"
+        lines.append(f"Objekt/Gerät: {object_label}")
+    elif row.device_label:
+        lines.append(f"Objekt/Gerät: {row.device_label}")
+    if row.customer_issue:
+        lines.extend(["", "Fehlerbild:", row.customer_issue])
+    if row.work_instructions:
+        lines.extend(["", "Arbeitsauftrag intern:", row.work_instructions])
+    if row.note:
+        lines.extend(["", "Interne Hinweise:", row.note])
+    return lines
+
+
 def _outsmart_project_payload_for_case(db: Session, row: CrmCase) -> dict[str, object]:
     role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
     ordering = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
+    service_location = db.get(ServiceLocation, int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0)) if role_map.get(CRM_ROLE_SERVICE_LOCATION) else None
+    invoice = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0)) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else None
+    customer_object = _crm_case_selected_customer_object(db, row)
     relation_link = None
     if ordering:
         relation_link = (
@@ -30595,7 +30819,7 @@ def _outsmart_project_payload_for_case(db: Session, row: CrmCase) -> dict[str, o
         "ProjectNo": row.case_no,
         "ProjectName": row.title,
         "ExternProjectNr": str(row.id),
-        "Description": str(row.note or "").strip(),
+        "Description": "\n".join(_crm_case_outsmart_description_lines(row, ordering=ordering, service_location=service_location, invoice=invoice, customer_object=customer_object)).strip(),
         "RelationNo": str(relation_link.external_key if relation_link else (ordering.customer_no_internal if ordering else "")).strip(),
         "Status": str(row.status or "").strip(),
     }
@@ -30606,6 +30830,7 @@ def _outsmart_workorder_payload_for_case(db: Session, row: CrmCase) -> dict[str,
     ordering = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_ORDERING_PARTY).master_customer_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
     invoice = db.get(MasterCustomer, int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).master_customer_id or 0)) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else None
     service_location = db.get(ServiceLocation, int(role_map.get(CRM_ROLE_SERVICE_LOCATION).service_location_id or 0)) if role_map.get(CRM_ROLE_SERVICE_LOCATION) else None
+    customer_object = _crm_case_selected_customer_object(db, row)
     ordering_address = db.get(CrmAddress, int(role_map.get(CRM_ROLE_ORDERING_PARTY).address_id or 0)) if role_map.get(CRM_ROLE_ORDERING_PARTY) else None
     invoice_address = db.get(CrmAddress, int(role_map.get(CRM_ROLE_INVOICE_RECIPIENT).address_id or 0)) if role_map.get(CRM_ROLE_INVOICE_RECIPIENT) else None
     service_address = db.get(CrmAddress, int(service_location.address_id or 0)) if service_location and int(service_location.address_id or 0) > 0 else None
@@ -30621,13 +30846,7 @@ def _outsmart_workorder_payload_for_case(db: Session, row: CrmCase) -> dict[str,
         .filter(ExternalLink.system_name == "outsmart", ExternalLink.object_type == "crm_case_project", ExternalLink.object_id == int(row.id))
         .one_or_none()
     )
-    lines = [
-        f"Vorgang: {row.case_no}",
-        f"Auftraggeber: {ordering.party.display_name if ordering and ordering.party else '-'}",
-        f"Leistungsort: {service_location.location_label if service_location else '-'}",
-        f"Rechnungsempfänger: {invoice.party.display_name if invoice and invoice.party else '-'}",
-        f"Notiz: {row.note or '-'}",
-    ]
+    lines = _crm_case_outsmart_description_lines(row, ordering=ordering, service_location=service_location, invoice=invoice, customer_object=customer_object)
     payload = {
         "WorkorderNo": row.case_no,
         "ProjectNr": str(project_link.external_key if project_link and project_link.external_key else row.case_no),
@@ -30635,7 +30854,7 @@ def _outsmart_workorder_payload_for_case(db: Session, row: CrmCase) -> dict[str,
         "TypeOfWork": "Service",
         "ShortWorkDescription": row.title,
         "WorkDescription": "\n".join(lines),
-        "InternalWorkDescription": str(row.note or "").strip(),
+        "InternalWorkDescription": "\n".join([part for part in [row.work_instructions or "", row.note or ""] if _crm_clean_text(part)]).strip(),
         "RelationNo": str(customer_link.external_key if customer_link else (ordering.customer_no_internal if ordering else "")).strip(),
         "CustomerName": str(service_location.location_label if service_location else (ordering.party.display_name if ordering and ordering.party else row.title)).strip(),
         "CustomerStreet": str(service_address.street if service_address else ordering_address.street if ordering_address else "").strip(),
@@ -30647,7 +30866,15 @@ def _outsmart_workorder_payload_for_case(db: Session, row: CrmCase) -> dict[str,
         "CustomerInvoiceHouseNo": str(invoice_address.house_no if invoice_address else "").strip(),
         "CustomerInvoiceZipCode": str(invoice_address.zip_code if invoice_address else "").strip(),
         "CustomerInvoiceCity": str(invoice_address.city if invoice_address else "").strip(),
+        "CustomerContactPerson": str(row.service_contact_name or "").strip(),
+        "CustomerPhone": str(row.service_contact_phone or "").strip(),
+        "CustomerEmail": str(row.service_contact_email or "").strip(),
     }
+    if customer_object:
+        payload["ObjectCode"] = str(customer_object.external_object_code or "").strip()
+        payload["SerialNo"] = str(customer_object.serial_no or "").strip()
+    if row.device_label:
+        payload["DeviceLabel"] = str(row.device_label).strip()
     return payload
 
 
@@ -30672,6 +30899,7 @@ def _customer_objects_for_customer(db: Session, customer_id: int, limit: int = 8
 
 
 def _customer_objects_for_case(db: Session, row: CrmCase, limit: int = 20) -> list[CustomerObject]:
+    selected_object = db.get(CustomerObject, int(row.customer_object_id or 0)) if int(row.customer_object_id or 0) > 0 else None
     role_map = _crm_case_role_map(db, [int(row.id)]).get(int(row.id), {})
     customer_ids = []
     service_location_id = 0
@@ -30688,7 +30916,11 @@ def _customer_objects_for_case(db: Session, row: CrmCase, limit: int = 20) -> li
         query = query.filter(CustomerObject.master_customer_id.in_(customer_ids))
     else:
         return []
-    return query.order_by(CustomerObject.updated_at.desc(), CustomerObject.id.desc()).limit(limit).all()
+    rows = query.order_by(CustomerObject.updated_at.desc(), CustomerObject.id.desc()).limit(limit).all()
+    if selected_object:
+        filtered = [item for item in rows if int(item.id) != int(selected_object.id)]
+        rows = [selected_object] + filtered
+    return rows[:limit]
 
 
 def _customer_outsmart_workorder_rows(db: Session, customer_id: int, limit: int = 80) -> list[dict[str, object]]:
@@ -30844,11 +31076,31 @@ def _outsmart_create_local_case_from_workorder(db: Session, row: OutsmartWorkord
         raise ValueError("Zum Arbeitsauftrag ist kein lokaler Kunde verknüpft.")
     if service_location is None:
         service_location = _crm_default_location_for_customer(db, int(customer.id))
+    payload = _json_dict(row.raw_json)
     row_case = CrmCase(
         case_no=_crm_next_case_no(db),
         title=_outsmart_workorder_case_title(row, display),
         status=_outsmart_status_to_case_status(row.status),
         priority="normal",
+        service_contact_name=_crm_clean_text(
+            _outsmart_pick(
+                payload,
+                (
+                    "CustomerContactPerson",
+                    "customer_contactperson",
+                    "CustomerContactperson",
+                    "customer_contact_person",
+                ),
+            )
+        ) or None,
+        service_contact_phone=_crm_clean_text(_outsmart_pick(payload, ("CustomerPhone", "customer_phone", "Phone", "phone"))) or None,
+        service_contact_email=_crm_clean_text(_outsmart_pick(payload, ("CustomerEmail", "customer_email", "Email", "email"))) or None,
+        requested_start_at=row.scheduled_start,
+        requested_end_at=row.scheduled_end,
+        customer_object_id=int(row.customer_object_id or 0) or None,
+        device_label=_crm_clean_text(str(display.get("device_label") or "")) or None,
+        customer_issue=_crm_clean_text(str(display.get("customer_issue") or "")) or None,
+        work_instructions=_crm_clean_text(str(display.get("work_steps") or display.get("other_notes") or "")) or None,
         source_system="outsmart",
         note=_crm_clean_text(
             "\n".join(
@@ -30897,7 +31149,7 @@ def _outsmart_create_local_case_from_workorder(db: Session, row: OutsmartWorkord
         db,
         row=row,
         crm_case=row_case,
-        source_label="Lokaler Vorgang aus OutSmart-Arbeitsauftrag angelegt.",
+        source_label="Lokaler Serviceauftrag aus OutSmart-Arbeitsauftrag angelegt.",
     )
     return row_case
 
@@ -32717,7 +32969,7 @@ async def mail_thread_assign_post(thread_id: int, request: Request, user=Depends
     customer_id = _to_int(form.get("customer_id"), 0)
     case_id = _to_int(form.get("case_id"), 0)
     if case_id > 0 and not db.get(CrmCase, case_id):
-        _flash(request, "Vorgang wurde nicht gefunden.", "error")
+        _flash(request, "Serviceauftrag wurde nicht gefunden.", "error")
         return RedirectResponse(f"/mail/threads/{thread_id}", status_code=302)
     if customer_id > 0 and not db.get(MasterCustomer, customer_id):
         _flash(request, "Kunde wurde nicht gefunden.", "error")
@@ -32753,7 +33005,7 @@ async def mail_thread_assign_post(thread_id: int, request: Request, user=Depends
         )
     db.commit()
     if case_id > 0:
-        _flash(request, "Mail-Thread gespeichert.", "info", link_url=f"/crm/vorgaenge/{int(case_id)}", link_label="Zum Vorgang")
+        _flash(request, "Mail-Thread gespeichert.", "info", link_url=f"/serviceauftraege/{int(case_id)}", link_label="Zum Serviceauftrag")
     elif customer_id > 0:
         _flash(request, "Mail-Thread gespeichert.", "info", link_url=f"/crm/kunden/{int(customer_id)}", link_label="Zum Kunden")
     else:
@@ -32802,7 +33054,7 @@ async def mail_message_assign_post(message_id: int, request: Request, user=Depen
     case_id = _to_int(form.get("case_id"), 0)
     apply_to_thread = form.get("apply_to_thread") == "1"
     if case_id > 0 and not db.get(CrmCase, case_id):
-        _flash(request, "Vorgang wurde nicht gefunden.", "error")
+        _flash(request, "Serviceauftrag wurde nicht gefunden.", "error")
         return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else 0}#mail-message-{message_id}", status_code=302)
     if customer_id > 0 and not db.get(MasterCustomer, customer_id):
         _flash(request, "Kunde wurde nicht gefunden.", "error")
@@ -32838,7 +33090,7 @@ async def mail_message_assign_post(message_id: int, request: Request, user=Depen
         )
     db.commit()
     if case_id > 0:
-        _flash(request, "Nachricht zugeordnet.", "info", link_url=f"/crm/vorgaenge/{int(case_id)}", link_label="Zum Vorgang")
+        _flash(request, "Nachricht zugeordnet.", "info", link_url=f"/serviceauftraege/{int(case_id)}", link_label="Zum Serviceauftrag")
     elif customer_id > 0:
         _flash(request, "Nachricht zugeordnet.", "info", link_url=f"/crm/kunden/{int(customer_id)}", link_label="Zum Kunden")
     else:
@@ -32856,7 +33108,7 @@ async def mail_message_new_case_post(message_id: int, request: Request, user=Dep
     form = await request.form()
     default_customer_id = int(message.master_customer_id or 0) or (int(thread.master_customer_id or 0) if thread else 0)
     customer_id = _to_int(form.get("customer_id"), default_customer_id)
-    title = (form.get("title") or message.subject or "Vorgang aus E-Mail").strip()
+    title = (form.get("title") or message.subject or "Serviceauftrag aus E-Mail").strip()
     customer = db.get(MasterCustomer, customer_id) if customer_id > 0 else None
     if customer_id > 0 and customer is None:
         _flash(request, "Kunde wurde nicht gefunden.", "error")
@@ -32920,14 +33172,14 @@ async def mail_message_new_case_post(message_id: int, request: Request, user=Dep
         master_customer_id=int(customer.id) if customer else None,
         source_system="mail",
         event_type="mail_case_create",
-        title="Vorgang aus E-Mail angelegt",
+        title="Serviceauftrag aus E-Mail angelegt",
         body=f"Aus Nachricht #{int(message.id)} wurde {row.case_no} erstellt.",
         event_ts=_utcnow_naive(),
         external_ref=f"mail:{int(message.id)}:case:{int(row.id)}",
         meta={"thread_id": int(thread.id) if thread else 0, "message_id": int(message.id)},
     )
     db.commit()
-    _flash(request, f"Vorgang {row.case_no} angelegt.", "info")
+    _flash(request, f"Serviceauftrag {row.case_no} angelegt.", "info")
     return RedirectResponse(f"/mail/threads/{int(thread.id) if thread else int(message.thread_id or 0)}#mail-message-{message_id}", status_code=302)
 
 
@@ -33029,7 +33281,7 @@ async def mail_compose_post(request: Request, user=Depends(require_user), db: Se
     if case_id <= 0 and invoice_draft and int(invoice_draft.case_id or 0) > 0:
         case_id = int(invoice_draft.case_id)
     if case_id > 0 and not db.get(CrmCase, case_id):
-        _flash(request, "Vorgang wurde nicht gefunden.", "error")
+        _flash(request, "Serviceauftrag wurde nicht gefunden.", "error")
         return RedirectResponse("/mail/verfassen", status_code=302)
     if customer_id > 0 and not db.get(MasterCustomer, customer_id):
         _flash(request, "Kunde wurde nicht gefunden.", "error")
@@ -34960,7 +35212,7 @@ async def crm_offer_new_post(request: Request, user=Depends(require_admin), db: 
     selected_customer_id = _to_int(form.get("master_customer_id"), 0)
     case_context = _crm_case_context(db, selected_case_id) if selected_case_id > 0 else {}
     if selected_case_id > 0 and not db.get(CrmCase, selected_case_id):
-        form_errors["case_id"] = "Vorgang wurde nicht gefunden."
+        form_errors["case_id"] = "Serviceauftrag wurde nicht gefunden."
     if selected_customer_id <= 0 and case_context:
         context_customer = case_context.get("invoice_customer") or case_context.get("ordering_customer")
         if context_customer:
@@ -35241,7 +35493,7 @@ async def crm_invoice_new_post(request: Request, user=Depends(require_admin), db
     if selected_customer_id <= 0 or not db.get(MasterCustomer, selected_customer_id):
         form_errors["master_customer_id"] = "Kunde ist erforderlich."
     if selected_case_id > 0 and not db.get(CrmCase, selected_case_id):
-        form_errors["case_id"] = "Vorgang wurde nicht gefunden."
+        form_errors["case_id"] = "Serviceauftrag wurde nicht gefunden."
     if selected_offer_id > 0 and not db.get(OfferDraft, selected_offer_id):
         form_errors["offer_draft_id"] = "Ausgewähltes Angebot wurde nicht gefunden."
     try:

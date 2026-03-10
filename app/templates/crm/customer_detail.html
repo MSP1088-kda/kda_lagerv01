@@ -107,15 +107,15 @@
 
   <div class="grid2" style="margin-top:10px; align-items:start;">
     <div class="box">
-      <div class="box-title">Vorgänge</div>
+      <div class="box-title">Serviceaufträge</div>
       <div class="box-body">
         {% for item in recent_case_rows %}
           <div style="margin-bottom:8px;">
-            <a href="/crm/vorgaenge/{{ item.row.id }}">{{ item.row.case_no }} | {{ item.row.title }}</a>
+            <a href="/serviceauftraege/{{ item.row.id }}">{{ item.row.case_no }} | {{ item.row.title }}</a>
             <div class="muted">{{ item.role_label }} | {{ crm_case_status_label(item.row.status) }}</div>
           </div>
         {% endfor %}
-        {% if not recent_case_rows %}<div class="muted">Noch keine lokalen Vorgänge verknüpft.</div>{% endif %}
+        {% if not recent_case_rows %}<div class="muted">Noch keine internen Serviceaufträge verknüpft.</div>{% endif %}
       </div>
     </div>
     <div class="box">
@@ -268,7 +268,7 @@
               <div style="margin-bottom:10px;">
                 <div><a href="/outsmart/arbeitsauftraege/{{ item.row.id }}"><b>{{ item.row.workorder_no }}</b></a></div>
                 <div class="muted">{{ item.display.status_label }}{% if item.display.scheduled_start %} | {{ format_datetime(item.display.scheduled_start) }}{% endif %}</div>
-                {% if item.crm_case %}<div><a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a></div>{% endif %}
+                {% if item.crm_case %}<div><a href="/serviceauftraege/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a></div>{% endif %}
                 {% if item.case_hint and not item.crm_case %}<div class="hint">{{ item.case_hint }}</div>{% endif %}
                 <div class="muted">{{ item.object_label }}</div>
                 {% if item.row.deep_link_url %}<div><a href="{{ item.row.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a></div>{% endif %}
@@ -304,7 +304,7 @@
               <div style="margin-bottom:10px;">
                 <div><a href="{{ item.detail_url }}"><b>{{ item.type_label }}</b> {{ item.number_label }}</a></div>
                 <div class="muted">{{ item.status_label }}{% if item.updated_at %} | {{ format_date(item.updated_at) }}{% endif %}</div>
-                {% if item.crm_case %}<div><a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a></div>{% endif %}
+                {% if item.crm_case %}<div><a href="/serviceauftraege/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a></div>{% endif %}
                 <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:4px;">
                   {% if item.pdf_url %}<a class="btn small" href="{{ item.pdf_url }}" target="_blank" rel="noopener">PDF</a>{% endif %}
                   {% if item.external_url %}<a class="btn small" href="{{ item.external_url }}" target="_blank" rel="noopener">sevDesk</a>{% endif %}

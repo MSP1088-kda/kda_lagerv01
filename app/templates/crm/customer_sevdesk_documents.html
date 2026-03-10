@@ -18,7 +18,7 @@
       <div>Typ</div>
       <div>Nummer</div>
       <div>Status</div>
-      <div>Vorgang</div>
+      <div>Serviceauftrag</div>
       <div>Aktualisiert</div>
       <div>Aktionen</div>
     </div>
@@ -29,7 +29,7 @@
         <div>{{ item.status_label }}</div>
         <div>
           {% if item.crm_case %}
-            <a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
+            <a href="/serviceauftraege/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
           {% else %}
             -
           {% endif %}

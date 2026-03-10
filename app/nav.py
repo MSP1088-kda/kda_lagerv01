@@ -312,9 +312,9 @@ NAV_ITEMS: list[dict] = [
                 "show_in_mobile": False,
             },
             {
-                "label_de": "Vorgänge",
-                "path": "/crm/vorgaenge",
-                "aliases": "crm vorgaenge faelle service",
+                "label_de": "Serviceaufträge",
+                "path": "/serviceauftraege",
+                "aliases": "crm vorgaenge faelle service serviceauftrag",
                 "show_in_topnav": False,
                 "show_in_mobile": False,
             },

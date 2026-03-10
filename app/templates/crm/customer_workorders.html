@@ -47,13 +47,13 @@
             </div>
 
             <div class="outsmart-kv-card">
-              <div class="outsmart-kv-label">Vorgang</div>
+              <div class="outsmart-kv-label">Serviceauftrag</div>
               <div class="outsmart-kv-value">
                 {% if item.crm_case %}
-                  <a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
+                  <a href="/serviceauftraege/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
                   <div class="muted">{{ item.crm_case.title }}</div>
                 {% else %}
-                  <div>Kein lokaler Vorgang verknüpft</div>
+                  <div>Kein interner Serviceauftrag verknüpft</div>
                   {% if item.case_hint %}<div class="muted">{{ item.case_hint }}</div>{% endif %}
                 {% endif %}
               </div>

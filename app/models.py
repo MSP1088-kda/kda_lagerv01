@@ -1418,15 +1418,27 @@ class Case(Base):
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     priority: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    service_contact_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    service_contact_phone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    service_contact_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    requested_start_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_end_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    customer_object_id: Mapped[int | None] = mapped_column(ForeignKey("customer_objects.id"), nullable=True)
+    device_label: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    customer_issue: Mapped[str | None] = mapped_column(Text, nullable=True)
+    work_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_system: Mapped[str] = mapped_column(String(20), nullable=False, default="local")
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
+    customer_object = relationship("CustomerObject")
+
     __table_args__ = (
         UniqueConstraint("case_no", name="uq_crm_cases_case_no"),
         Index("ix_crm_cases_status", "status"),
         Index("ix_crm_cases_source_system", "source_system"),
+        Index("ix_crm_cases_customer_object", "customer_object_id"),
     )
 
 
