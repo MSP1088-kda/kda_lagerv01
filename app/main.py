@@ -28958,6 +28958,10 @@ def _procedure_guideline_runtime_sections(db: Session) -> list[dict[str, str]]:
     finance_count = int(db.query(func.count(FinanceAuditLog.id)).scalar() or 0)
     finance_last = db.query(FinanceAuditLog.created_at).order_by(FinanceAuditLog.id.desc()).limit(1).scalar()
     external_tasks = [_ai_task_label(task) for task in ai_settings.get("external_allowed_tasks") or []]
+    engine = get_engine()
+    with engine.begin() as conn:
+        tables = {row[0] for row in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    finance_audit_exists = "finance_audit_logs" in tables
     return [
         {
             "title": "Anhang: KI-Datenschutz und Betriebsmodus",
@@ -28974,7 +28978,7 @@ def _procedure_guideline_runtime_sections(db: Session) -> list[dict[str, str]]:
             "title": "Anhang: GoBD-nahe Finanzkontrollen",
             "content_markdown": "\n".join(
                 [
-                    f"- Finanzjournal aktiv: {'Ja' if _table_exists('finance_audit_logs') else 'Nein'}",
+                    f"- Finanzjournal aktiv: {'Ja' if finance_audit_exists else 'Nein'}",
                     f"- Journal-Eintraege: {finance_count}",
                     f"- Letzter Eintrag: {format_date(finance_last) if finance_last else '-'}",
                     "- Einkaufsobjekte schreiben Vorher-/Nachher-Staende mit Hash-Kette in das Finanzjournal.",
