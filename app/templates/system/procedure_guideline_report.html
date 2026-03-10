@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prüfbericht Verfahrensrichtlinie</title>
+  <style>
+    :root {
+      --fg: #111;
+      --muted: #555;
+      --line: #c9c9c9;
+      --bg: #fff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.45 "IBM Plex Sans", "Segoe UI", sans-serif;
+    }
+    .report {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    .report-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      border-bottom: 2px solid var(--fg);
+      padding-bottom: 16px;
+      margin-bottom: 20px;
+    }
+    .report-title {
+      font: 700 28px/1.1 "IBM Plex Sans", "Segoe UI", sans-serif;
+      margin: 0 0 6px;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: pre-line;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-block;
+      padding: 8px 12px;
+      border: 1px solid var(--fg);
+      color: var(--fg);
+      text-decoration: none;
+      background: #f4f4f4;
+      cursor: pointer;
+      font: inherit;
+    }
+    .section {
+      border: 1px solid var(--line);
+      margin-top: 14px;
+      break-inside: avoid;
+    }
+    .section-head {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #f6f6f6;
+      font-weight: 700;
+    }
+    .section-body {
+      padding: 12px;
+      white-space: pre-wrap;
+    }
+    .footer-note {
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    @media print {
+      body { padding: 0; }
+      .actions { display: none; }
+      .report { max-width: none; }
+      .section { break-inside: avoid; }
+      @page { size: A4; margin: 16mm; }
+    }
+  </style>
+</head>
+<body>
+  <div class="report">
+    <div class="report-head">
+      <div>
+        <h1 class="report-title">Prüfbericht Verfahrensrichtlinie</h1>
+        <div class="meta">Erzeugt am: {{ format_date(generated_at) }}
+Quelle: {{ guideline_source.path }}
+{% if guideline_source.exists and guideline_source.mtime %}Dateistand: {{ format_date(guideline_source.mtime) }}{% endif %}</div>
+      </div>
+      <div class="actions">
+        <button class="btn" type="button" onclick="window.print()">Als PDF drucken</button>
+        <a class="btn" href="/system/verfahrensrichtlinie/export.md">Markdown-Export</a>
+        <a class="btn" href="/system/verfahrensrichtlinie">Zur Richtlinie</a>
+      </div>
+    </div>
+
+    {% for row in rows %}
+      <section class="section">
+        <div class="section-head">{{ row.title }} | Version {{ row.version }}</div>
+        <div class="section-body">{{ row.content_markdown }}</div>
+      </section>
+    {% endfor %}
+
+    {% for row in runtime_rows %}
+      <section class="section">
+        <div class="section-head">{{ row.title }}</div>
+        <div class="section-body">{{ row.content_markdown }}</div>
+      </section>
+    {% endfor %}
+
+    <div class="footer-note">
+      Dieser Prüfbericht ist eine technische Systemausgabe. Rechtliche Vollständigkeit hängt zusätzlich von organisatorischer Verfahrensdokumentation, Rollen, Aufbewahrung und Betriebsprozessen ab.
+    </div>
+  </div>
+</body>
+</html>

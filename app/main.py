@@ -11,6 +11,7 @@ import html
 import io
 import imaplib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -254,6 +255,8 @@ from .services.paperless_service import (
     update_document_metadata as paperless_update_document_metadata,
     upload_document as paperless_upload_document,
 )
+
+logger = logging.getLogger(__name__)
 from .services.sevdesk_service import (
     book_invoice as sevdesk_book_invoice,
     book_voucher as sevdesk_book_voucher,
@@ -1081,41 +1084,57 @@ def _mail_compose_url(*, customer_id: int | None = None, case_id: int | None = N
 
 @app.on_event("startup")
 def startup():
-    ensure_dirs()
-    SPARE_PART_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    REPAIR_EVENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    engine = get_engine()
+    timings: list[tuple[str, float]] = []
+
+    def _run_step(label: str, fn):
+        start = dt.datetime.now()
+        result = fn()
+        duration = (dt.datetime.now() - start).total_seconds()
+        timings.append((label, duration))
+        return result
+
+    _run_step("ensure_dirs", ensure_dirs)
+    _run_step("mkdir_spare_parts", lambda: SPARE_PART_UPLOAD_DIR.mkdir(parents=True, exist_ok=True))
+    _run_step("mkdir_repair_events", lambda: REPAIR_EVENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True))
+    engine = _run_step("get_engine", get_engine)
     if os.environ.get("DEV_CREATE_ALL", "0").strip() == "1":
         Base.metadata.create_all(bind=engine)
-    _ensure_products_ean_column()
-    _ensure_products_extra_columns()
-    _cleanup_products_ern_legacy()
-    _ensure_attribute_defs_columns()
-    _ensure_inventory_bin_schema()
-    _ensure_extended_tables()
-    _ensure_product_sets_schema()
-    _ensure_prompt_pack5_schema()
-    _ensure_prompt_pack9_schema()
-    _ensure_prompt_pack10_schema()
-    _ensure_catalog_v2_schema()
-    _ensure_ui_preferences_schema()
-    _ensure_system_settings_schema()
-    _ensure_item_type_field_rules_schema()
-    _ensure_spare_part_capture_schema()
-    _migrate_item_type_rules_for_device_kind_only()
-    _migrate_legacy_condition_codes()
+    for label, fn in [
+        ("_ensure_products_ean_column", _ensure_products_ean_column),
+        ("_ensure_products_extra_columns", _ensure_products_extra_columns),
+        ("_cleanup_products_ern_legacy", _cleanup_products_ern_legacy),
+        ("_ensure_attribute_defs_columns", _ensure_attribute_defs_columns),
+        ("_ensure_inventory_bin_schema", _ensure_inventory_bin_schema),
+        ("_ensure_extended_tables", _ensure_extended_tables),
+        ("_ensure_product_sets_schema", _ensure_product_sets_schema),
+        ("_ensure_prompt_pack5_schema", _ensure_prompt_pack5_schema),
+        ("_ensure_prompt_pack9_schema", _ensure_prompt_pack9_schema),
+        ("_ensure_prompt_pack10_schema", _ensure_prompt_pack10_schema),
+        ("_ensure_catalog_v2_schema", _ensure_catalog_v2_schema),
+        ("_ensure_ui_preferences_schema", _ensure_ui_preferences_schema),
+        ("_ensure_system_settings_schema", _ensure_system_settings_schema),
+        ("_ensure_item_type_field_rules_schema", _ensure_item_type_field_rules_schema),
+        ("_ensure_spare_part_capture_schema", _ensure_spare_part_capture_schema),
+        ("_migrate_item_type_rules_for_device_kind_only", _migrate_item_type_rules_for_device_kind_only),
+        ("_migrate_legacy_condition_codes", _migrate_legacy_condition_codes),
+    ]:
+        _run_step(label, fn)
     # seed defaults
     SessionLocal = get_sessionmaker()
     db = SessionLocal()
     try:
-        _seed_defaults(db)
-        _reindex_missing_search_blobs(db)
+        _run_step("_seed_defaults", lambda: _seed_defaults(db))
+        _run_step("_reindex_missing_search_blobs", lambda: _reindex_missing_search_blobs(db))
     finally:
         db.close()
+    total = sum(duration for _, duration in timings)
+    slow_parts = ", ".join(f"{label}={duration:.3f}s" for label, duration in sorted(timings, key=lambda item: item[1], reverse=True)[:6])
+    logger.info("startup_sync_complete total=%.3fs top=%s", total, slow_parts)
 
 
 @app.on_event("startup")
 async def startup_background_jobs():
+    start = dt.datetime.now()
     if EMAIL_SENDER_ENABLED:
         task = getattr(app.state, "email_sender_task", None)
         if task is None or task.done():
@@ -1130,6 +1149,8 @@ async def startup_background_jobs():
     task = getattr(app.state, "background_job_task", None)
     if task is None or task.done():
         app.state.background_job_task = asyncio.create_task(_background_job_loop())
+    duration = (dt.datetime.now() - start).total_seconds()
+    logger.info("startup_background_jobs_complete total=%.3fs", duration)
 
 
 @app.on_event("shutdown")
@@ -35489,6 +35510,25 @@ def system_procedure_guideline_export(user=Depends(require_admin), db: Session =
         _procedure_guideline_export_markdown(db),
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="verfahrensrichtlinie.md"'},
+    )
+
+
+@app.get("/system/verfahrensrichtlinie/pruefbericht", response_class=HTMLResponse)
+def system_procedure_guideline_report(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    rows = _active_procedure_guideline_sections(db)
+    runtime_rows = _procedure_guideline_runtime_sections(db)
+    generated_at = _utcnow_naive()
+    db.commit()
+    return templates.TemplateResponse(
+        "system/procedure_guideline_report.html",
+        _ctx(
+            request,
+            user=user,
+            rows=rows,
+            runtime_rows=runtime_rows,
+            guideline_source=_procedure_guideline_source_info(),
+            generated_at=generated_at,
+        ),
     )
 
 
