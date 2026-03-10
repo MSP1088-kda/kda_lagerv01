@@ -17,6 +17,7 @@
         <option value="assigned"{% if assignment == 'assigned' %} selected{% endif %}>Zugeordnet</option>
         <option value="unassigned"{% if assignment == 'unassigned' %} selected{% endif %}>Nicht zugeordnet</option>
       </select>
+      <label><input type="checkbox" name="show_spam" value="1"{% if show_spam %} checked{% endif %}> Spam anzeigen</label>
       <button class="btn" type="submit">Filtern</button>
     </form>
     <form method="post" action="/mail/abrufen" class="inline">
@@ -44,6 +45,7 @@
           <div><b>{{ latest.subject or item.thread.subject_normalized or '(ohne Betreff)' }}</b></div>
           <div class="muted">{{ format_date(item.thread.last_message_at) }}</div>
           <div class="hint">{{ latest.from_email or latest.from_text or '-' }}</div>
+          {% if item.spam_reason %}<div class="hint">Spam-Hinweis: {{ item.spam_reason }}</div>{% endif %}
         </div>
         <div>
           {% if item.customer %}

@@ -5,6 +5,7 @@ import csv
 import datetime as dt
 import email
 from email.header import decode_header
+from email.utils import getaddresses, parseaddr
 import html
 import io
 import imaplib
@@ -207,6 +208,7 @@ from .services.condition_service import calculate_condition_progress, get_suppli
 from .services.email_service import (
     decrypt_password,
     friendly_mail_error,
+    probable_spam_reason,
     send_test_smtp,
     test_imap,
     send_outbox_once,
@@ -542,9 +544,23 @@ app.state.version_meta = {
 app.include_router(api_v1_router)
 
 
-def _flash(request: Request, message: str, level: str = "info") -> None:
+def _flash(
+    request: Request,
+    message: str,
+    level: str = "info",
+    *,
+    link_url: str | None = None,
+    link_label: str | None = None,
+) -> None:
     fl = request.session.get("flash", [])
-    fl.append({"level": level, "message": message})
+    fl.append(
+        {
+            "level": level,
+            "message": message,
+            "link_url": str(link_url or "").strip() or None,
+            "link_label": str(link_label or "").strip() or None,
+        }
+    )
     request.session["flash"] = fl
 
 
@@ -3693,6 +3709,38 @@ def _mail_attachment_abs_path(file_path: str | None) -> Path | None:
     return abs_path if abs_path.exists() else None
 
 
+def _mail_auto_target_flash_entry(db: Session, payload: dict[str, object]) -> dict[str, str]:
+    case_id = _to_int(payload.get("case_id"), 0)
+    customer_id = _to_int(payload.get("customer_id"), 0)
+    subject = _crm_clean_text(payload.get("subject")) or "(ohne Betreff)"
+    if case_id > 0:
+        row = db.get(CrmCase, case_id)
+        if row:
+            return {
+                "message": f"Mail automatisch zugeordnet: {row.case_no} | {row.title}",
+                "link_url": f"/crm/vorgaenge/{int(row.id)}",
+                "link_label": "Zum Vorgang",
+            }
+    if customer_id > 0:
+        row = db.get(MasterCustomer, customer_id)
+        if row:
+            party = db.get(Party, int(row.party_id or 0))
+            label = f"{row.customer_no_internal} | {party.display_name if party else 'Kunde'}"
+            return {
+                "message": f"Mail automatisch zugeordnet: {label}",
+                "link_url": f"/crm/kunden/{int(row.id)}",
+                "link_label": "Zum Kunden",
+            }
+    thread_id = _to_int(payload.get("thread_id"), 0)
+    if thread_id > 0:
+        return {
+            "message": f"Mail automatisch erkannt: {subject}",
+            "link_url": f"/mail/threads/{thread_id}",
+            "link_label": "Zum Thread",
+        }
+    return {"message": f"Mail automatisch erkannt: {subject}", "link_url": "", "link_label": ""}
+
+
 def _mail_customer_options(db: Session) -> list[dict[str, object]]:
     rows = db.query(MasterCustomer).order_by(MasterCustomer.customer_no_internal.asc(), MasterCustomer.id.asc()).limit(300).all()
     party_ids = [int(row.party_id) for row in rows]
@@ -3709,6 +3757,92 @@ def _mail_customer_options(db: Session) -> list[dict[str, object]]:
 def _mail_case_options(db: Session) -> list[dict[str, object]]:
     rows = db.query(CrmCase).order_by(CrmCase.id.desc()).limit(300).all()
     return [{"id": int(row.id), "label": f"{row.case_no} | {row.title}"} for row in rows]
+
+
+def _mail_search_customer_rows(db: Session, q: str, limit: int = 16) -> list[dict[str, object]]:
+    search = _crm_clean_text(q)
+    if not search:
+        return []
+    like = f"%{search}%"
+    rows = (
+        db.query(MasterCustomer)
+        .join(Party, Party.id == MasterCustomer.party_id)
+        .outerjoin(CrmAddress, and_(CrmAddress.party_id == Party.id, CrmAddress.is_default == True))
+        .outerjoin(CustomerContactPerson, CustomerContactPerson.master_customer_id == MasterCustomer.id)
+        .filter(
+            or_(
+                MasterCustomer.customer_no_internal.ilike(like),
+                Party.display_name.ilike(like),
+                CrmAddress.email.ilike(like),
+                CrmAddress.phone.ilike(like),
+                CustomerContactPerson.email.ilike(like),
+                CustomerContactPerson.phone.ilike(like),
+            )
+        )
+        .order_by(MasterCustomer.customer_no_internal.asc(), MasterCustomer.id.asc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+    party_ids = [int(row.party_id) for row in rows]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids or [0])).all()} if party_ids else {}
+    _, default_map = _crm_party_address_maps(db, party_ids)
+    return [
+        {
+            "id": int(row.id),
+            "label": _crm_customer_label(row, parties.get(int(row.party_id)), default_map.get(int(row.party_id))),
+            "customer": row,
+            "party": parties.get(int(row.party_id)),
+        }
+        for row in rows
+    ]
+
+
+def _mail_search_case_rows(db: Session, q: str, *, customer_id: int = 0, limit: int = 16) -> list[dict[str, object]]:
+    query = db.query(CrmCase)
+    if int(customer_id or 0) > 0:
+        query = query.join(RoleAssignment, RoleAssignment.case_id == CrmCase.id).filter(
+            RoleAssignment.master_customer_id == int(customer_id),
+            RoleAssignment.role_type.in_((CRM_ROLE_ORDERING_PARTY, CRM_ROLE_INVOICE_RECIPIENT)),
+        )
+    search = _crm_clean_text(q)
+    if search:
+        like = f"%{search}%"
+        query = query.filter(or_(CrmCase.case_no.ilike(like), CrmCase.title.ilike(like), CrmCase.note.ilike(like)))
+    rows = query.order_by(CrmCase.updated_at.desc(), CrmCase.id.desc()).limit(max(1, int(limit))).all()
+    return [{"id": int(row.id), "label": f"{row.case_no} | {row.title}", "row": row} for row in rows]
+
+
+def _mail_customer_label_map_by_ids(db: Session, customer_ids: list[int]) -> dict[int, str]:
+    ids = sorted({int(value) for value in customer_ids if int(value or 0) > 0})
+    if not ids:
+        return {}
+    rows = db.query(MasterCustomer).filter(MasterCustomer.id.in_(ids)).all()
+    party_ids = [int(row.party_id) for row in rows]
+    parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids or [0])).all()} if party_ids else {}
+    _, default_map = _crm_party_address_maps(db, party_ids)
+    return {
+        int(row.id): _crm_customer_label(row, parties.get(int(row.party_id)), default_map.get(int(row.party_id)))
+        for row in rows
+    }
+
+
+def _mail_case_label_map_by_ids(db: Session, case_ids: list[int]) -> dict[int, str]:
+    ids = sorted({int(value) for value in case_ids if int(value or 0) > 0})
+    if not ids:
+        return {}
+    rows = db.query(CrmCase).filter(CrmCase.id.in_(ids)).all()
+    return {int(row.id): f"{row.case_no} | {row.title}" for row in rows}
+
+
+def _mail_thread_spam_reason(latest: EmailMessage | None) -> str:
+    if latest is None:
+        return ""
+    return probable_spam_reason(
+        from_email=str(latest.from_email or ""),
+        subject=str(latest.subject or ""),
+        body_text=str(latest.body_text or latest.snippet or ""),
+        to_emails=str(latest.to_emails or ""),
+    )
 
 
 def _mail_thread_latest_message_map(db: Session, thread_ids: list[int]) -> dict[int, EmailMessage]:
@@ -3834,7 +3968,15 @@ def _mail_backfill_legacy_threads(db: Session, limit: int = 200) -> None:
         db.flush()
 
 
-def _mail_thread_rows(db: Session, *, q: str = "", status: str = "", assignment: str = "", limit: int = 120) -> list[dict[str, object]]:
+def _mail_thread_rows(
+    db: Session,
+    *,
+    q: str = "",
+    status: str = "",
+    assignment: str = "",
+    limit: int = 120,
+    show_spam: bool = False,
+) -> list[dict[str, object]]:
     _mail_backfill_legacy_threads(db, limit=300)
     query = db.query(MailThread)
     status_norm = (status or "").strip().lower()
@@ -3851,6 +3993,7 @@ def _mail_thread_rows(db: Session, *, q: str = "", status: str = "", assignment:
     parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
     for row in rows:
         latest = latest_map.get(int(row.id))
+        spam_reason = _mail_thread_spam_reason(latest)
         search_blob = " ".join(
             [
                 str(latest.subject if latest else ""),
@@ -3863,6 +4006,8 @@ def _mail_thread_rows(db: Session, *, q: str = "", status: str = "", assignment:
         ).lower()
         if q_norm and q_norm not in search_blob:
             continue
+        if spam_reason and not bool(show_spam):
+            continue
         if assignment_norm == "unassigned" and (int(row.master_customer_id or 0) > 0 or int(row.case_id or 0) > 0):
             continue
         if assignment_norm == "assigned" and int(row.master_customer_id or 0) <= 0 and int(row.case_id or 0) <= 0:
@@ -3874,6 +4019,7 @@ def _mail_thread_rows(db: Session, *, q: str = "", status: str = "", assignment:
                 "customer": customers.get(int(row.master_customer_id or 0)),
                 "customer_party": parties.get(int(customers.get(int(row.master_customer_id or 0)).party_id or 0)) if customers.get(int(row.master_customer_id or 0)) else None,
                 "crm_case": cases.get(int(row.case_id or 0)),
+                "spam_reason": spam_reason,
             }
         )
     return out
@@ -3906,11 +4052,19 @@ def _paperless_customer_candidate_items(db: Session, customer_id: int, limit: in
             DocumentInboxItem.suggested_object_id == int(customer_id),
             DocumentInboxItem.status != "matched",
         )
-        .order_by(DocumentInboxItem.created_date.desc(), DocumentInboxItem.id.desc())
-        .limit(max(1, int(limit or 12)))
         .all()
     )
-    return [row for row in rows if str(row.paperless_document_id or "").strip() not in linked_doc_ids]
+    filtered = [row for row in rows if str(row.paperless_document_id or "").strip() not in linked_doc_ids]
+    filtered.sort(
+        key=lambda row: (
+            -int(_json_dict(row.metadata_json).get("customer_scan", {}).get("score") or 0),
+            -int(_json_dict(row.metadata_json).get("customer_scan", {}).get("priority_rank") or 0),
+            -(int((row.created_date or dt.datetime.min).timestamp()) if row.created_date else 0),
+            -int(row.id or 0),
+        ),
+        reverse=False,
+    )
+    return filtered[: max(1, int(limit or 12))]
 
 
 def _paperless_customer_search_terms(
@@ -3952,6 +4106,25 @@ def _paperless_customer_search_terms(
             add_term(getattr(row, "email", None), min_len=6)
             add_term(getattr(row, "phone", None), min_len=6)
     return terms[:8]
+
+
+def _paperless_customer_topic_boost(text: str) -> tuple[int, list[str]]:
+    blob = _crm_normalize_key(text)
+    if not blob:
+        return 0, []
+    topics = [
+        ("Rechnung", ("rechnung", "invoice", "re26", "re24")),
+        ("Angebot", ("angebot", "order", "an-", "angebotnr")),
+        ("Auftrag", ("auftrag", "bestellung", "arbeitsauftrag")),
+        ("Kundendienst", ("kundendienst", "service", "reparatur", "wartung")),
+    ]
+    score = 0
+    reasons: list[str] = []
+    for label, keys in topics:
+        if any(key in blob for key in keys):
+            score += 2
+            reasons.append(label)
+    return score, reasons
 
 
 def _paperless_customer_match_score(
@@ -4003,6 +4176,10 @@ def _paperless_customer_match_score(
             score += 3
             reasons.append("Kontakt-Mail")
             break
+    topic_score, topic_reasons = _paperless_customer_topic_boost(text)
+    score += topic_score
+    for label in topic_reasons:
+        reasons.append(f"Dokumenttyp: {label}")
     return score, reasons
 
 
@@ -4054,6 +4231,16 @@ def _paperless_scan_customer_documents(
             )
             if score < 5:
                 continue
+            _, topic_reasons = _paperless_customer_topic_boost(_document_search_blob(item))
+            priority_rank = 0
+            if "Rechnung" in topic_reasons:
+                priority_rank = 4
+            elif "Angebot" in topic_reasons:
+                priority_rank = 3
+            elif "Auftrag" in topic_reasons:
+                priority_rank = 2
+            elif "Kundendienst" in topic_reasons:
+                priority_rank = 1
             item.suggested_object_type = "customer"
             item.suggested_object_id = int(customer.id)
             meta = _json_dict(item.metadata_json)
@@ -4061,6 +4248,8 @@ def _paperless_scan_customer_documents(
                 "customer_id": int(customer.id),
                 "score": score,
                 "reasons": reasons,
+                "priority_rank": priority_rank,
+                "topic_reasons": topic_reasons,
             }
             item.metadata_json = json.dumps(meta, ensure_ascii=False)
             db.add(item)
@@ -16470,6 +16659,75 @@ def _crm_build_merge_candidates(db: Session, q: str = "") -> list[dict[str, obje
     return rows
 
 
+def _crm_merge_reason_flags(reasons: list[str] | tuple[str, ...]) -> dict[str, bool]:
+    values = [str(value or "") for value in reasons]
+    return {
+        "same_name_zip": any(_crm_normalize_key(value) == _crm_normalize_key("Gleicher Name + PLZ") for value in values),
+        "same_email": any(_crm_normalize_key(value).startswith(_crm_normalize_key("Gleiche Mail")) for value in values),
+        "same_phone": any(_crm_normalize_key(value).startswith(_crm_normalize_key("Gleiche Telefonnummer")) for value in values),
+        "same_outsmart": any(_crm_normalize_key(value).startswith(_crm_normalize_key("Gleiche OutSmart-Nummer")) for value in values),
+    }
+
+
+def _crm_merge_candidate_is_auto_safe(item: dict[str, object], preview: dict[str, object]) -> bool:
+    if list(preview.get("warnings") or []):
+        return False
+    flags = _crm_merge_reason_flags(item.get("reasons") or [])
+    master_party = item.get("master_party")
+    candidate_party = item.get("candidate_party")
+    master_address = item.get("master_address")
+    candidate_address = item.get("candidate_address")
+    master_name = _crm_normalize_key(getattr(master_party, "display_name", ""))
+    candidate_name = _crm_normalize_key(getattr(candidate_party, "display_name", ""))
+    same_name = bool(master_name and candidate_name and (master_name == candidate_name or master_name in candidate_name or candidate_name in master_name))
+    same_zip = bool(
+        _crm_normalize_key(getattr(master_address, "zip_code", ""))
+        and _crm_normalize_key(getattr(master_address, "zip_code", "")) == _crm_normalize_key(getattr(candidate_address, "zip_code", ""))
+    )
+    counts = preview.get("counts") or {}
+    if flags["same_outsmart"]:
+        return True
+    if flags["same_email"] and (same_name or same_zip):
+        return True
+    if flags["same_phone"] and same_name and same_zip:
+        return True
+    if flags["same_email"] and flags["same_phone"]:
+        return True
+    if flags["same_name_zip"] and flags["same_email"]:
+        return True
+    if int(counts.get("external_identities") or 0) <= 1 and flags["same_name_zip"] and flags["same_phone"] and same_name:
+        return True
+    return False
+
+
+def _crm_auto_merge_candidates(db: Session, *, q: str = "", limit: int = 0) -> dict[str, int]:
+    rows = _crm_build_merge_candidates(db, q=q)
+    if int(limit or 0) > 0:
+        rows = rows[: int(limit)]
+    summary = {"merged": 0, "manual": 0, "skipped": 0, "errors": 0}
+    for item in rows:
+        target = db.get(MasterCustomer, int(item["master_customer"].id))
+        source = db.get(MasterCustomer, int(item["candidate_customer"].id))
+        if not target or not source:
+            summary["skipped"] += 1
+            continue
+        if _crm_normalize_key(target.status) == "inactive" or _crm_normalize_key(source.status) == "inactive":
+            summary["skipped"] += 1
+            continue
+        preview = build_customer_merge_preview(db, source_customer=source, target_customer=target)
+        if not _crm_merge_candidate_is_auto_safe(item, preview):
+            summary["manual"] += 1
+            continue
+        try:
+            merge_master_customers(db, target_customer=target, source_customer=source, actor_label="Auto-Merge")
+            summary["merged"] += 1
+        except CustomerMergeConflict:
+            summary["manual"] += 1
+        except Exception:
+            summary["errors"] += 1
+    return summary
+
+
 def _crm_set_case_role(
     db: Session,
     *,
@@ -16879,6 +17137,10 @@ def crm_customer_detail(
     party = db.get(Party, int(customer.party_id))
     if not party:
         raise HTTPException(status_code=404)
+    backfill_summary = _crm_backfill_customer_contact_data(db, customer)
+    if int(backfill_summary.get("updated") or 0) > 0:
+        db.commit()
+        party = db.get(Party, int(customer.party_id))
     customer_init_summary = _customer_init_customer_summary(db, int(customer.id))
     outsmart_stage_workorders_total = int(customer_init_summary.get("workorder_count") or 0)
     sevdesk_stage_documents_total = int(customer_init_summary.get("order_count") or 0) + int(customer_init_summary.get("invoice_count") or 0)
@@ -18806,37 +19068,57 @@ def crm_identity_map(
 
 
 @app.get("/crm/merge-kandidaten", response_class=HTMLResponse)
-def crm_merge_candidates(request: Request, user=Depends(require_admin), q: str = "", db: Session = Depends(db_session)):
+def crm_merge_candidates(request: Request, user=Depends(require_admin), q: str = "", ai: int = 0, db: Session = Depends(db_session)):
     rows = _crm_build_merge_candidates(db, q=q)
     ai_results: dict[str, dict[str, object]] = {}
-    for item in rows[:20]:
-        master_address = item.get("master_address")
-        candidate_address = item.get("candidate_address")
-        sevdesk_identities = item.get("sevdesk_identities") or []
-        ai_result = ai_evaluate_merge_candidate(
-            db,
-            settings=_openai_settings(db, include_secret=True),
-            input_payload={
-                "master_id": int(item["master_customer"].id),
-                "candidate_id": int(item["candidate_customer"].id),
-                "master_name": str(item["master_party"].display_name or ""),
-                "candidate_name": str(item["candidate_party"].display_name or ""),
-                "master_email": str(getattr(master_address, "email", "") or ""),
-                "candidate_email": str(getattr(candidate_address, "email", "") or ""),
-                "master_phone": str(getattr(master_address, "phone", "") or ""),
-                "candidate_phone": str(getattr(candidate_address, "phone", "") or ""),
-                "master_zip": str(getattr(master_address, "zip_code", "") or ""),
-                "candidate_zip": str(getattr(candidate_address, "zip_code", "") or ""),
-                "master_outsmart_key": "",
-                "candidate_outsmart_key": str(sevdesk_identities[0].external_key if sevdesk_identities else ""),
-            },
-            related_object_id=int(item["master_customer"].id),
-        )
-        ai_results[_crm_merge_pair_key(int(item["master_customer"].id), int(item["candidate_customer"].id))] = ai_result
+    if bool(ai):
+        for item in rows[:20]:
+            master_address = item.get("master_address")
+            candidate_address = item.get("candidate_address")
+            sevdesk_identities = item.get("sevdesk_identities") or []
+            ai_result = ai_evaluate_merge_candidate(
+                db,
+                settings=_openai_settings(db, include_secret=True),
+                input_payload={
+                    "master_id": int(item["master_customer"].id),
+                    "candidate_id": int(item["candidate_customer"].id),
+                    "master_name": str(item["master_party"].display_name or ""),
+                    "candidate_name": str(item["candidate_party"].display_name or ""),
+                    "master_email": str(getattr(master_address, "email", "") or ""),
+                    "candidate_email": str(getattr(candidate_address, "email", "") or ""),
+                    "master_phone": str(getattr(master_address, "phone", "") or ""),
+                    "candidate_phone": str(getattr(candidate_address, "phone", "") or ""),
+                    "master_zip": str(getattr(master_address, "zip_code", "") or ""),
+                    "candidate_zip": str(getattr(candidate_address, "zip_code", "") or ""),
+                    "master_outsmart_key": "",
+                    "candidate_outsmart_key": str(sevdesk_identities[0].external_key if sevdesk_identities else ""),
+                },
+                related_object_id=int(item["master_customer"].id),
+            )
+            ai_results[_crm_merge_pair_key(int(item["master_customer"].id), int(item["candidate_customer"].id))] = ai_result
     return templates.TemplateResponse(
         "crm/customer_merge_candidates.html",
-        _ctx(request, user=user, rows=rows, ai_results=ai_results),
+        _ctx(request, user=user, rows=rows, ai_results=ai_results, ai_enabled=bool(ai)),
     )
+
+
+@app.post("/crm/merge-kandidaten/auto")
+async def crm_merge_candidates_auto(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    form = await request.form()
+    q = _crm_clean_text(form.get("q"))
+    try:
+        summary = _crm_auto_merge_candidates(db, q=q)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _flash(request, f"Auto-Merge fehlgeschlagen: {exc}", "error")
+        return RedirectResponse("/crm/merge-kandidaten", status_code=302)
+    _flash(
+        request,
+        f"Auto-Merge abgeschlossen: {summary.get('merged', 0)} zusammengeführt | {summary.get('manual', 0)} bleiben zur Prüfung | {summary.get('errors', 0)} Fehler.",
+        "info",
+    )
+    return RedirectResponse("/crm/merge-kandidaten", status_code=302)
 
 
 @app.post("/crm/merge-kandidaten/{master_id}/zuordnen")
@@ -20287,6 +20569,7 @@ def _customer_init_materialize_cluster(db: Session, cluster: CustomerInitCluster
                     )
                 )
     _customer_init_upsert_cluster_identities(db, customer, cluster)
+    _crm_backfill_customer_contact_data(db, customer)
     cluster.master_customer_id = int(customer.id)
     cluster.status = "materialized"
     cluster.updated_at = _utcnow_naive()
@@ -23541,6 +23824,7 @@ def _mail_assignment_status_label(status: str | None) -> str:
         "unassigned": "Nicht zugeordnet",
         "suggested": "Vorgeschlagen",
         "assigned": "Zugeordnet",
+        "spam": "Spam ausgeblendet",
     }
     key = str(status or "").strip().lower()
     return mapping.get(key, status or "")
@@ -28610,6 +28894,188 @@ def _crm_customer_header_summary(
     }
 
 
+def _crm_split_street_house_no(value: str | None) -> tuple[str, str]:
+    text = _crm_clean_text(value)
+    if not text:
+        return "", ""
+    match = re.match(r"^(.*?)(\d+[A-Za-z/-]*)$", text)
+    if not match:
+        return text, ""
+    return _crm_clean_text(match.group(1)), _crm_clean_text(match.group(2))
+
+
+def _crm_parse_multiline_address_text(value: str | None) -> dict[str, str]:
+    lines = [_crm_clean_text(part) for part in str(value or "").splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return {"display_name": "", "contact_name": "", "street": "", "house_no": "", "zip_code": "", "city": ""}
+    zip_code = ""
+    city = ""
+    street = ""
+    house_no = ""
+    street_idx = -1
+    for idx in range(len(lines) - 1, -1, -1):
+        match = re.search(r"(\d{4,5})\s+(.+)$", lines[idx])
+        if match:
+            zip_code = _crm_clean_text(match.group(1))
+            city = _crm_clean_text(match.group(2))
+            for prev_idx in range(idx - 1, -1, -1):
+                if any(char.isdigit() for char in lines[prev_idx]):
+                    street_idx = prev_idx
+                    street, house_no = _crm_split_street_house_no(lines[prev_idx])
+                    break
+            break
+    contact_name = ""
+    if street_idx > 1:
+        contact_name = lines[street_idx - 1]
+    display_name = lines[0] if lines else ""
+    if contact_name and _crm_normalize_key(contact_name) == _crm_normalize_key(display_name):
+        contact_name = ""
+    return {
+        "display_name": display_name,
+        "contact_name": contact_name,
+        "street": street,
+        "house_no": house_no,
+        "zip_code": zip_code,
+        "city": city,
+    }
+
+
+def _crm_apply_customer_contact_fallback(
+    db: Session,
+    customer: MasterCustomer | None,
+    *,
+    display_name: str = "",
+    email_value: str = "",
+    phone_value: str = "",
+    mobile_value: str = "",
+    street_value: str = "",
+    house_no_value: str = "",
+    zip_value: str = "",
+    city_value: str = "",
+    country_code: str = "DE",
+    contact_name: str = "",
+    contact_email: str = "",
+    contact_phone: str = "",
+    role_label: str = "Ansprechpartner",
+) -> bool:
+    if not customer:
+        return False
+    party = db.get(Party, int(customer.party_id or 0))
+    if not party:
+        return False
+    email_clean = _crm_clean_text(email_value)
+    phone_clean = _crm_clean_text(phone_value)
+    mobile_clean = _crm_clean_text(mobile_value)
+    street_clean = _crm_clean_text(street_value)
+    house_no_clean = _crm_clean_text(house_no_value)
+    zip_clean = _crm_clean_text(zip_value)
+    city_clean = _crm_clean_text(city_value)
+    contact_name_clean = _crm_clean_text(contact_name)
+    contact_email_clean = _crm_clean_text(contact_email) or email_clean
+    contact_phone_clean = _crm_clean_text(contact_phone) or mobile_clean or phone_clean
+    changed = False
+
+    if not _crm_clean_text(party.display_name) and _crm_clean_text(display_name):
+        party.display_name = _crm_clean_text(display_name)
+        changed = True
+
+    address = _outsmart_customer_default_address(db, customer)
+    if address is None and any((street_clean, zip_clean, city_clean, email_clean, phone_clean)):
+        address = CrmAddress(party_id=int(party.id), label="Hauptadresse", is_default=True, active=True)
+        db.add(address)
+        db.flush()
+        _crm_clear_default_addresses(db, int(party.id), int(address.id))
+        changed = True
+    if address is not None:
+        updates = {
+            "street": street_clean,
+            "house_no": house_no_clean,
+            "zip_code": zip_clean,
+            "city": city_clean,
+            "country_code": _crm_clean_text(country_code) or "DE",
+            "email": email_clean,
+            "phone": phone_clean,
+        }
+        for field_name, new_value in updates.items():
+            current_value = _crm_clean_text(getattr(address, field_name, "") or "")
+            if not current_value and new_value:
+                setattr(address, field_name, new_value)
+                changed = True
+        if not _crm_clean_text(address.label):
+            address.label = "Hauptadresse"
+            changed = True
+        db.add(address)
+
+    contact_rows = db.query(CustomerContactPerson).filter(CustomerContactPerson.master_customer_id == int(customer.id)).all()
+    contact_parties = {
+        int(row.party_id): db.get(Party, int(row.party_id))
+        for row in contact_rows
+        if int(row.party_id or 0) > 0
+    }
+    contact_email_norm = _crm_normalize_email(contact_email_clean)
+    contact_phone_norm = _crm_normalize_phone(contact_phone_clean)
+    contact_name_norm = _crm_normalize_key(contact_name_clean)
+    existing = None
+    for row in contact_rows:
+        party_row = contact_parties.get(int(row.party_id or 0))
+        if contact_email_norm and _crm_normalize_email(row.email) == contact_email_norm:
+            existing = (row, party_row)
+            break
+        if contact_phone_norm and _crm_normalize_phone(row.phone) == contact_phone_norm:
+            existing = (row, party_row)
+            break
+        if contact_name_norm and party_row and _crm_normalize_key(party_row.display_name) == contact_name_norm:
+            existing = (row, party_row)
+            break
+    if existing is None and (contact_name_clean or contact_phone_clean):
+        contact_party = Party(
+            party_type="person",
+            display_name=contact_name_clean or _crm_clean_text(display_name) or party.display_name,
+            active=True,
+            created_at=_utcnow_naive(),
+            updated_at=_utcnow_naive(),
+        )
+        db.add(contact_party)
+        db.flush()
+        db.add(
+            CustomerContactPerson(
+                master_customer_id=int(customer.id),
+                party_id=int(contact_party.id),
+                role_label=_crm_clean_text(role_label) or "Ansprechpartner",
+                email=contact_email_clean or None,
+                phone=contact_phone_clean or None,
+                active=True,
+            )
+        )
+        changed = True
+    elif existing is not None:
+        contact_row, contact_party = existing
+        if contact_party and contact_name_clean and not _crm_clean_text(contact_party.display_name):
+            contact_party.display_name = contact_name_clean
+            contact_party.updated_at = _utcnow_naive()
+            db.add(contact_party)
+            changed = True
+        if contact_row:
+            if not _crm_clean_text(contact_row.email) and contact_email_clean:
+                contact_row.email = contact_email_clean
+                changed = True
+            if not _crm_clean_text(contact_row.phone) and contact_phone_clean:
+                contact_row.phone = contact_phone_clean
+                changed = True
+            if not _crm_clean_text(contact_row.role_label):
+                contact_row.role_label = _crm_clean_text(role_label) or "Ansprechpartner"
+                changed = True
+            db.add(contact_row)
+
+    if changed:
+        party.updated_at = _utcnow_naive()
+        customer.updated_at = _utcnow_naive()
+        db.add(party)
+        db.add(customer)
+    return changed
+
+
 def _outsmart_contact_person_name(payload: dict) -> str:
     return _crm_clean_text(
         _outsmart_pick(
@@ -28629,11 +29095,6 @@ def _outsmart_contact_person_name(payload: dict) -> str:
 
 
 def _outsmart_apply_customer_contact_fallback(db: Session, customer: MasterCustomer | None, payload: dict) -> bool:
-    if not customer:
-        return False
-    party = db.get(Party, int(customer.party_id or 0))
-    if not party:
-        return False
     email_value = _crm_clean_text(
         _outsmart_pick(
             payload,
@@ -28674,99 +29135,176 @@ def _outsmart_apply_customer_contact_fallback(db: Session, customer: MasterCusto
     zip_value = _crm_clean_text(_outsmart_pick(payload, ("CustomerZIP", "CustomerZipCode", "customer_zip", "ZipCode", "zip_code")))
     city_value = _crm_clean_text(_outsmart_pick(payload, ("CustomerCity", "customer_city", "City", "city")))
     contact_name = _outsmart_contact_person_name(payload)
-    changed = False
-    address = _outsmart_customer_default_address(db, customer)
-    if address is None and any((street_value, zip_value, city_value, email_value, phone_value)):
-        address = CrmAddress(party_id=int(party.id), label="Hauptadresse", is_default=True, active=True)
-        db.add(address)
-        db.flush()
-        _crm_clear_default_addresses(db, int(party.id), int(address.id))
-        changed = True
-    if address is not None:
-        updates = {
-            "street": street_value,
-            "house_no": house_no_value,
-            "zip_code": zip_value,
-            "city": city_value,
-            "email": email_value,
-            "phone": phone_value,
-        }
-        for field_name, new_value in updates.items():
-            current_value = _crm_clean_text(getattr(address, field_name, "") or "")
-            if not current_value and new_value:
-                setattr(address, field_name, new_value)
-                changed = True
-        if not _crm_clean_text(address.label):
-            address.label = "Hauptadresse"
-            changed = True
-        db.add(address)
-    contact_rows = db.query(CustomerContactPerson).filter(CustomerContactPerson.master_customer_id == int(customer.id)).all()
-    contact_parties = {
-        int(row.party_id): db.get(Party, int(row.party_id))
-        for row in contact_rows
-        if int(row.party_id or 0) > 0
+    return _crm_apply_customer_contact_fallback(
+        db,
+        customer,
+        email_value=email_value,
+        phone_value=phone_value,
+        mobile_value=mobile_value,
+        street_value=street_value,
+        house_no_value=house_no_value,
+        zip_value=zip_value,
+        city_value=city_value,
+        contact_name=contact_name,
+        contact_email=email_value,
+        contact_phone=mobile_value or phone_value,
+        role_label="Ansprechpartner",
+    )
+
+
+def _crm_mail_contact_backfill_payload(db: Session, customer_id: int) -> dict[str, str]:
+    account_emails = {
+        _crm_normalize_email(row.email)
+        for row in db.query(EmailAccount).filter(EmailAccount.enabled == True).all()
+        if _crm_normalize_email(row.email)
     }
-    if contact_name or email_value or mobile_value:
-        existing = None
-        email_norm = _crm_normalize_email(email_value)
-        mobile_norm = _crm_normalize_phone(mobile_value)
-        contact_name_norm = _crm_normalize_key(contact_name)
-        for row in contact_rows:
-            party_row = contact_parties.get(int(row.party_id or 0))
-            if email_norm and _crm_normalize_email(row.email) == email_norm:
-                existing = (row, party_row)
-                break
-            if mobile_norm and _crm_normalize_phone(row.phone) == mobile_norm:
-                existing = (row, party_row)
-                break
-            if contact_name_norm and party_row and _crm_normalize_key(party_row.display_name) == contact_name_norm:
-                existing = (row, party_row)
-                break
-        if existing is None:
-            contact_party = Party(
-                party_type="person",
-                display_name=contact_name or party.display_name,
-                active=True,
-                created_at=_utcnow_naive(),
-                updated_at=_utcnow_naive(),
-            )
-            db.add(contact_party)
-            db.flush()
-            contact_row = CustomerContactPerson(
-                master_customer_id=int(customer.id),
-                party_id=int(contact_party.id),
-                role_label="Ansprechpartner",
-                email=email_value or None,
-                phone=mobile_value or phone_value or None,
-                active=True,
-            )
-            db.add(contact_row)
-            changed = True
-        else:
-            contact_row, contact_party = existing
-            if contact_party and contact_name and not _crm_clean_text(contact_party.display_name):
-                contact_party.display_name = contact_name
-                contact_party.updated_at = _utcnow_naive()
-                db.add(contact_party)
-                changed = True
-            if contact_row:
-                if not _crm_clean_text(contact_row.email) and email_value:
-                    contact_row.email = email_value
-                    changed = True
-                preferred_phone = mobile_value or phone_value
-                if not _crm_clean_text(contact_row.phone) and preferred_phone:
-                    contact_row.phone = preferred_phone
-                    changed = True
-                if not _crm_clean_text(contact_row.role_label):
-                    contact_row.role_label = "Ansprechpartner"
-                    changed = True
-                db.add(contact_row)
-    if changed:
-        party.updated_at = _utcnow_naive()
-        customer.updated_at = _utcnow_naive()
-        db.add(party)
-        db.add(customer)
-    return changed
+    email_scores: dict[str, int] = {}
+    email_names: dict[str, str] = {}
+
+    def consider(email_value: str | None, display_value: str | None, weight: int) -> None:
+        email_clean = _crm_clean_text(email_value)
+        email_norm = _crm_normalize_email(email_clean)
+        if not email_norm or email_norm in account_emails:
+            return
+        email_scores[email_clean] = int(email_scores.get(email_clean, 0)) + int(weight)
+        display_name = _crm_clean_text(parseaddr(display_value or "")[0] or "")
+        if display_name and email_clean not in email_names:
+            email_names[email_clean] = display_name
+
+    rows = (
+        db.query(EmailMessage)
+        .filter(EmailMessage.master_customer_id == int(customer_id))
+        .order_by(func.coalesce(EmailMessage.received_at, EmailMessage.sent_at, EmailMessage.fetched_at).desc(), EmailMessage.id.desc())
+        .limit(160)
+        .all()
+    )
+    for row in rows:
+        if _crm_normalize_key(row.direction) == "in":
+            consider(row.from_email, row.from_text or row.from_email, 2)
+            continue
+        addresses = [addr for _, addr in getaddresses([str(row.to_emails or ""), str(row.cc_emails or "")]) if _crm_clean_text(addr)]
+        if addresses:
+            consider(addresses[0], addresses[0], 1)
+    if not email_scores:
+        return {}
+    best_email = sorted(email_scores.items(), key=lambda item: (-int(item[1]), _crm_normalize_email(item[0])))[0][0]
+    return {
+        "email": best_email,
+        "contact_name": email_names.get(best_email, ""),
+    }
+
+
+def _crm_sevdesk_stage_document_payload(item: dict[str, object]) -> dict[str, str]:
+    row = item.get("row")
+    payload = _json_dict(getattr(row, "raw_json", ""))
+    parsed = _crm_parse_multiline_address_text(
+        sevdesk_first_value(
+            payload,
+            (
+                "address",
+                "addressText",
+                "billingAddress",
+            ),
+        )
+    )
+    street = _crm_clean_text(sevdesk_first_value(payload, ("addressStreet", "street"))) or parsed.get("street", "")
+    house_no = parsed.get("house_no", "")
+    zip_code = _crm_clean_text(sevdesk_first_value(payload, ("addressZip", "zip", "postalCode"))) or parsed.get("zip_code", "")
+    city = _crm_clean_text(sevdesk_first_value(payload, ("addressCity", "city"))) or parsed.get("city", "")
+    display_name = (
+        _crm_clean_text(sevdesk_first_value(payload, ("addressName", "name", "displayName")))
+        or parsed.get("display_name", "")
+    )
+    contact_name = parsed.get("contact_name", "")
+    return {
+        "display_name": display_name,
+        "contact_name": contact_name,
+        "street": street,
+        "house_no": house_no,
+        "zip_code": zip_code,
+        "city": city,
+    }
+
+
+def _crm_backfill_customer_contact_data(db: Session, customer: MasterCustomer | None) -> dict[str, int]:
+    if not customer:
+        return {"updated": 0, "outsmart_relations": 0, "outsmart_workorders": 0, "sevdesk_contacts": 0, "sevdesk_docs": 0, "mail": 0}
+    summary = {"updated": 0, "outsmart_relations": 0, "outsmart_workorders": 0, "sevdesk_contacts": 0, "sevdesk_docs": 0, "mail": 0}
+    refs = _customer_init_stage_refs(db, int(customer.id))
+    for row in list(refs.get("outsmart_relations") or [])[:8]:
+        if _crm_apply_customer_contact_fallback(
+            db,
+            customer,
+            display_name=str(row.name or ""),
+            email_value=str(row.email or ""),
+            phone_value=str(row.phone or ""),
+            street_value=str(row.street or ""),
+            house_no_value=str(row.house_no or ""),
+            zip_value=str(row.zip_code or ""),
+            city_value=str(row.city or ""),
+            contact_name=str(row.contact or ""),
+            contact_email=str(row.email or ""),
+            contact_phone=str(row.phone or ""),
+        ):
+            summary["updated"] += 1
+            summary["outsmart_relations"] += 1
+    stage_workorders = _customer_outsmart_stage_workorder_rows(db, int(customer.id), limit=80)
+    for item in stage_workorders:
+        payload = _json_dict(getattr(item.get("row"), "raw_json", ""))
+        if payload and _outsmart_apply_customer_contact_fallback(db, customer, payload):
+            summary["updated"] += 1
+            summary["outsmart_workorders"] += 1
+    local_workorders = (
+        db.query(OutsmartWorkorder)
+        .filter(OutsmartWorkorder.master_customer_id == int(customer.id))
+        .order_by(OutsmartWorkorder.updated_at.desc(), OutsmartWorkorder.id.desc())
+        .limit(80)
+        .all()
+    )
+    for row in local_workorders:
+        payload = _json_dict(row.raw_json)
+        if payload and _outsmart_apply_customer_contact_fallback(db, customer, payload):
+            summary["updated"] += 1
+            summary["outsmart_workorders"] += 1
+    for row in list(refs.get("sevdesk_contacts") or [])[:8]:
+        if _crm_apply_customer_contact_fallback(
+            db,
+            customer,
+            display_name=str(row.name or ""),
+            email_value=str(row.email or ""),
+            phone_value=str(row.phone or ""),
+            street_value=str(row.street or ""),
+            zip_value=str(row.zip_code or ""),
+            city_value=str(row.city or ""),
+        ):
+            summary["updated"] += 1
+            summary["sevdesk_contacts"] += 1
+    for item in _customer_sevdesk_stage_document_rows(db, int(customer.id), limit=24):
+        payload = _crm_sevdesk_stage_document_payload(item)
+        if _crm_apply_customer_contact_fallback(
+            db,
+            customer,
+            display_name=str(payload.get("display_name") or ""),
+            street_value=str(payload.get("street") or ""),
+            house_no_value=str(payload.get("house_no") or ""),
+            zip_value=str(payload.get("zip_code") or ""),
+            city_value=str(payload.get("city") or ""),
+            contact_name=str(payload.get("contact_name") or ""),
+        ):
+            summary["updated"] += 1
+            summary["sevdesk_docs"] += 1
+    mail_payload = _crm_mail_contact_backfill_payload(db, int(customer.id))
+    if mail_payload and _crm_apply_customer_contact_fallback(
+        db,
+        customer,
+        contact_name=str(mail_payload.get("contact_name") or ""),
+        contact_email=str(mail_payload.get("email") or ""),
+        email_value=str(mail_payload.get("email") or ""),
+        role_label="Mail-Kontakt",
+    ):
+        summary["updated"] += 1
+        summary["mail"] += 1
+    return summary
 
 
 def _crm_add_timeline_event(
@@ -31480,9 +32018,10 @@ def mail_inbox_get(
     q: str = "",
     status: str = "",
     assignment: str = "",
+    show_spam: int = 0,
     db: Session = Depends(db_session),
 ):
-    rows = _mail_thread_rows(db, q=q, status=status, assignment=assignment, limit=180)
+    rows = _mail_thread_rows(db, q=q, status=status, assignment=assignment, limit=180, show_spam=bool(show_spam))
     return templates.TemplateResponse(
         "mail/inbox.html",
         _ctx(
@@ -31492,6 +32031,7 @@ def mail_inbox_get(
             q=(q or "").strip(),
             status=(status or "").strip().lower(),
             assignment=(assignment or "").strip().lower(),
+            show_spam=bool(show_spam),
         ),
     )
 
@@ -31515,7 +32055,22 @@ async def mail_fetch_post(request: Request, user=Depends(require_user), db: Sess
     try:
         result = fetch_inbox_once(db, int(account_id), limit=50)
         db.commit()
-        _flash(request, f"E-Mail-Abruf abgeschlossen: {result.get('created', 0)} neue Nachricht(en).", "info")
+        _flash(
+            request,
+            f"E-Mail-Abruf abgeschlossen: {result.get('created', 0)} neu | {result.get('assigned', 0)} automatisch zugeordnet | {result.get('suggested', 0)} Vorschläge | {result.get('spam', 0)} Spam ausgeblendet.",
+            "info",
+            link_url="/mail/eingang",
+            link_label="Zum Eingang",
+        )
+        for item in list(result.get("auto_targets") or [])[:4]:
+            payload = _mail_auto_target_flash_entry(db, item)
+            _flash(
+                request,
+                payload.get("message") or "Mail automatisch erkannt.",
+                "info",
+                link_url=payload.get("link_url"),
+                link_label=payload.get("link_label"),
+            )
     except Exception as exc:
         db.rollback()
         _flash(request, f"E-Mail-Abruf fehlgeschlagen: {friendly_mail_error(exc)}", "error")
@@ -31527,9 +32082,10 @@ def mail_unassigned_get(
     request: Request,
     user=Depends(require_user),
     q: str = "",
+    show_spam: int = 0,
     db: Session = Depends(db_session),
 ):
-    rows = _mail_thread_rows(db, q=q, status="", assignment="unassigned", limit=120)
+    rows = _mail_thread_rows(db, q=q, status="", assignment="unassigned", limit=120, show_spam=bool(show_spam))
     return templates.TemplateResponse(
         "mail/inbox_unassigned.html",
         _ctx(
@@ -31537,12 +32093,22 @@ def mail_unassigned_get(
             user=user,
             rows=rows,
             q=(q or "").strip(),
+            show_spam=bool(show_spam),
         ),
     )
 
 
 @app.get("/mail/threads/{thread_id}", response_class=HTMLResponse)
-def mail_thread_detail(thread_id: int, request: Request, user=Depends(require_user), db: Session = Depends(db_session)):
+def mail_thread_detail(
+    thread_id: int,
+    request: Request,
+    user=Depends(require_user),
+    assign_q: str = "",
+    assign_customer_id: int = 0,
+    assign_case_id: int = 0,
+    assign_case_q: str = "",
+    db: Session = Depends(db_session),
+):
     thread = db.get(MailThread, thread_id)
     if not thread:
         raise HTTPException(status_code=404)
@@ -31602,10 +32168,43 @@ def mail_thread_detail(thread_id: int, request: Request, user=Depends(require_us
             reply_to = str(latest_message.to_emails or "").split(",")[0].strip()
     if not reply_to:
         reply_to = _mail_default_recipient(db, customer, crm_case)
-    customer_options = _mail_customer_options(db)
-    case_options = _mail_case_options(db)
-    customer_label_map = {int(item["id"]): str(item["label"]) for item in customer_options}
-    case_label_map = {int(item["id"]): str(item["label"]) for item in case_options}
+    selected_customer_id = int(assign_customer_id or 0) or (int(customer.id) if customer else 0)
+    if selected_customer_id <= 0 and len(suggestion_customer_ids) == 1:
+        selected_customer_id = int(next(iter(suggestion_customer_ids)))
+    selected_case_id = int(assign_case_id or 0) or (int(crm_case.id) if crm_case else 0)
+    customer_search_query = _crm_clean_text(assign_q)
+    case_search_query = _crm_clean_text(assign_case_q)
+    customer_search_rows = _mail_search_customer_rows(db, customer_search_query, limit=12) if customer_search_query else []
+    if not customer_search_rows:
+        preferred_customer_ids = [int(customer.id)] if customer else []
+        preferred_customer_ids.extend(sorted(suggestion_customer_ids))
+        customer_label_map = _mail_customer_label_map_by_ids(db, preferred_customer_ids[:12])
+        customer_search_rows = [
+            {"id": customer_id, "label": label}
+            for customer_id, label in customer_label_map.items()
+        ]
+    else:
+        customer_label_map = {
+            int(item["id"]): str(item["label"])
+            for item in customer_search_rows
+        }
+        customer_label_map.update(_mail_customer_label_map_by_ids(db, [int(customer.id)] if customer else []))
+        customer_label_map.update(_mail_customer_label_map_by_ids(db, sorted(suggestion_customer_ids)))
+    case_search_rows = _mail_search_case_rows(
+        db,
+        case_search_query or customer_search_query,
+        customer_id=selected_customer_id,
+        limit=14,
+    )
+    if not case_search_rows:
+        case_label_map = _mail_case_label_map_by_ids(([int(crm_case.id)] if crm_case else []) + sorted(suggestion_case_ids))
+        case_search_rows = [{"id": case_id, "label": label} for case_id, label in case_label_map.items()]
+    else:
+        case_label_map = {int(item["id"]): str(item["label"]) for item in case_search_rows}
+        case_label_map.update(_mail_case_label_map_by_ids(([int(crm_case.id)] if crm_case else []) + sorted(suggestion_case_ids)))
+    selected_customer_label = customer_label_map.get(int(selected_customer_id), "")
+    selected_case_label = case_label_map.get(int(selected_case_id), "")
+    thread_spam_reason = _mail_thread_spam_reason(last_message_row)
     if latest_message is not None:
         ai_input_payload = {
             "thread_subject": _mail_thread_subject(thread, messages),
@@ -31635,20 +32234,25 @@ def mail_thread_detail(thread_id: int, request: Request, user=Depends(require_us
             customer=customer,
             customer_party=customer_party,
             crm_case=crm_case,
-            customer_options=customer_options,
-            case_options=case_options,
-            selected_customer_id=int(customer.id) if customer else 0,
-            selected_case_id=int(crm_case.id) if crm_case else 0,
+            selected_customer_id=selected_customer_id,
+            selected_customer_label=selected_customer_label,
+            selected_case_id=selected_case_id,
+            selected_case_label=selected_case_label,
+            customer_search_query=customer_search_query,
+            case_search_query=case_search_query,
+            customer_search_rows=customer_search_rows,
+            case_search_rows=case_search_rows,
             suggestion_customer_ids=sorted(suggestion_customer_ids),
             suggestion_case_ids=sorted(suggestion_case_ids),
-            suggestion_customer_labels={int(item["id"]): str(item["label"]) for item in customer_options if int(item.get("id") or 0) in suggestion_customer_ids},
-            suggestion_case_labels={int(item["id"]): str(item["label"]) for item in case_options if int(item.get("id") or 0) in suggestion_case_ids},
+            suggestion_customer_labels={key: value for key, value in customer_label_map.items() if key in suggestion_customer_ids},
+            suggestion_case_labels={key: value for key, value in case_label_map.items() if key in suggestion_case_ids},
             customer_label_map=customer_label_map,
             case_label_map=case_label_map,
             suggestion_reasons=list(dict.fromkeys([value for value in suggestion_reasons if value]))[:8],
             thread_subject=_mail_thread_subject(thread, messages),
             last_message_row=last_message_row,
             reply_to=reply_to,
+            thread_spam_reason=thread_spam_reason,
             ai_mail_result=ai_mail_result,
             ai_mail_review=ai_find_review_item(db, int(ai_mail_result["log"].id)) if ai_mail_result else None,
             paperless_enabled=bool(paperless_settings.get("enabled")) and bool(str(paperless_settings.get("base_url") or "").strip()),
@@ -31706,7 +32310,12 @@ async def mail_thread_assign_post(thread_id: int, request: Request, user=Depends
             meta={"thread_id": int(thread.id)},
         )
     db.commit()
-    _flash(request, "Mail-Thread gespeichert.", "info")
+    if case_id > 0:
+        _flash(request, "Mail-Thread gespeichert.", "info", link_url=f"/crm/vorgaenge/{int(case_id)}", link_label="Zum Vorgang")
+    elif customer_id > 0:
+        _flash(request, "Mail-Thread gespeichert.", "info", link_url=f"/crm/kunden/{int(customer_id)}", link_label="Zum Kunden")
+    else:
+        _flash(request, "Mail-Thread gespeichert.", "info", link_url=f"/mail/threads/{int(thread.id)}", link_label="Zum Thread")
     return RedirectResponse(f"/mail/threads/{thread_id}", status_code=302)
 
 
@@ -31786,6 +32395,12 @@ async def mail_message_assign_post(message_id: int, request: Request, user=Depen
             meta={"thread_id": int(thread.id) if thread else 0, "message_id": int(message.id)},
         )
     db.commit()
+    if case_id > 0:
+        _flash(request, "Nachricht zugeordnet.", "info", link_url=f"/crm/vorgaenge/{int(case_id)}", link_label="Zum Vorgang")
+    elif customer_id > 0:
+        _flash(request, "Nachricht zugeordnet.", "info", link_url=f"/crm/kunden/{int(customer_id)}", link_label="Zum Kunden")
+    else:
+        _flash(request, "Nachricht gespeichert.", "info")
     target_thread_id = int(thread.id) if thread else int(message.thread_id or 0)
     return RedirectResponse(f"/mail/threads/{target_thread_id}#mail-message-{message_id}", status_code=302)
 

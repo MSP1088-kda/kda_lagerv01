@@ -6,6 +6,7 @@
   <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
     <form method="get" action="/mail/unzugeordnet" class="inline row" style="gap:8px; flex-wrap:wrap;">
       <input type="text" name="q" value="{{ q }}" placeholder="Betreff, Absender, Referenz">
+      <label><input type="checkbox" name="show_spam" value="1"{% if show_spam %} checked{% endif %}> Spam anzeigen</label>
       <button class="btn" type="submit">Filtern</button>
     </form>
     <a class="btn" href="/mail/eingang">Alle Threads</a>
@@ -22,6 +23,7 @@
               <div><b>Letzte Nachricht:</b> {{ format_date(item.thread.last_message_at) }}</div>
               <div><b>Von:</b> {{ latest.from_email or latest.from_text or '-' }}</div>
               <div><b>Zuordnung:</b> {{ mail_assignment_status_label(latest.assignment_status if latest else 'unassigned') }}</div>
+              {% if item.spam_reason %}<div class="hint">Spam-Hinweis: {{ item.spam_reason }}</div>{% endif %}
             </div>
             <div>
               {% if item.customer or item.crm_case %}
@@ -51,7 +53,7 @@
 {% block help %}
 <ul>
   <li>Diese Liste zeigt Threads ohne feste fachliche Zuordnung.</li>
-  <li>Von hier aus springst du direkt zur passenden Nacharbeit im Thread.</li>
-  <li>Nicht zuordenbare Mails bleiben sichtbar und gehen nicht verloren.</li>
+  <li>Spam bleibt standardmäßig ausgeblendet und kann bei Bedarf eingeblendet werden.</li>
+  <li>Von hier aus springst du direkt zur Such- und Trefferansicht im Thread.</li>
 </ul>
 {% endblock %}

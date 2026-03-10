@@ -140,7 +140,12 @@
   {% if flash %}
   <section class="flash">
     {% for f in flash %}
-      <div class="flash-item flash-{{ f.level }}">{{ f.message }}</div>
+      <div class="flash-item flash-{{ f.level }}">
+        {{ f.message }}
+        {% if f.link_url and f.link_label %}
+          <a href="{{ f.link_url }}">{{ f.link_label }}</a>
+        {% endif %}
+      </div>
     {% endfor %}
   </section>
   {% endif %}

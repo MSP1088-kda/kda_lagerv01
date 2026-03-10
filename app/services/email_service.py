@@ -21,6 +21,33 @@ from ..utils import ensure_dirs, get_fernet
 from .mail_assignment_service import normalize_subject, suggest_assignments
 
 
+SPAM_SUBJECT_MARKERS = (
+    "viagra",
+    "casino",
+    "bitcoin",
+    "crypto",
+    "gewinn",
+    "gewinner",
+    "loan",
+    "seo service",
+    "guest post",
+    "backlink",
+    "nude",
+    "porn",
+)
+SPAM_BODY_MARKERS = (
+    "unsubscribe",
+    "risk-free",
+    "guest post",
+    "seo backlinks",
+    "earn money fast",
+    "investment opportunity",
+    "crypto",
+    "telegram",
+    "whatsapp",
+)
+
+
 def decrypt_password(value_enc: str | None) -> str | None:
     if not value_enc:
         return None
@@ -268,6 +295,10 @@ def _apply_assignment(
     case_ids: list[int],
     status: str,
 ) -> None:
+    if status == "spam":
+        message.assignment_status = "spam"
+        thread.status = "closed"
+        return
     if len(customer_ids) == 1:
         message.master_customer_id = int(customer_ids[0])
         if int(thread.master_customer_id or 0) <= 0:
@@ -279,6 +310,46 @@ def _apply_assignment(
     message.assignment_status = status or "unassigned"
     if int(thread.master_customer_id or 0) > 0 or int(thread.case_id or 0) > 0:
         thread.status = "open" if message.direction == "in" else thread.status
+
+
+def probable_spam_reason(
+    *,
+    from_email: str | None,
+    subject: str | None,
+    body_text: str | None,
+    to_emails: str | None = None,
+) -> str:
+    sender = str(from_email or "").strip().lower()
+    subject_text = str(subject or "").strip().lower()
+    body = " ".join(str(body_text or "").strip().lower().split())
+    recipients = [addr for _, addr in getaddresses([str(to_emails or "")]) if str(addr or "").strip()]
+    if not sender and not subject_text and not body:
+        return ""
+    subject_hits = [token for token in SPAM_SUBJECT_MARKERS if token in subject_text]
+    body_hits = [token for token in SPAM_BODY_MARKERS if token in body]
+    score = 0
+    if subject_hits:
+        score += 2
+    if len(body_hits) >= 2:
+        score += 2
+    elif body_hits:
+        score += 1
+    if sender.endswith((".xyz", ".top", ".click", ".loan")):
+        score += 2
+    if len(recipients) >= 8:
+        score += 1
+    if ("noreply" in sender or "no-reply" in sender) and subject_hits:
+        score += 1
+    if score < 3:
+        return ""
+    reasons: list[str] = []
+    if subject_hits:
+        reasons.append(f"Betreff: {subject_hits[0]}")
+    if body_hits:
+        reasons.append(f"Inhalt: {body_hits[0]}")
+    if sender.endswith((".xyz", ".top", ".click", ".loan")):
+        reasons.append("Absender-Domain auffällig")
+    return " | ".join(reasons) or "Spam-Heuristik"
 
 
 def _smtp_client(account: EmailAccount):
@@ -547,6 +618,10 @@ def fetch_inbox_once(db: Session, account_id: int, limit: int = 50) -> dict[str,
     client = None
     created = 0
     scanned = 0
+    assigned = 0
+    suggested = 0
+    spam = 0
+    auto_targets: list[dict[str, object]] = []
     try:
         client = _imap_client(account)
         status, _ = client.select("INBOX", readonly=True)
@@ -615,6 +690,20 @@ def fetch_inbox_once(db: Session, account_id: int, limit: int = 50) -> dict[str,
                 references_header=references_header,
                 attachment_names=[str(item.get("filename") or "") for item in attachment_rows],
             )
+            spam_reason = probable_spam_reason(
+                from_email=from_email or None,
+                subject=subject,
+                body_text=body_text or snippet,
+                to_emails=to_emails,
+            )
+            if spam_reason:
+                suggestion = {
+                    "status": "spam",
+                    "customer_ids": [],
+                    "case_ids": [],
+                    "thread_id": suggestion.get("thread_id"),
+                    "reasons": [spam_reason],
+                }
             customer_ids = list(suggestion.get("customer_ids") or [])
             case_ids = list(suggestion.get("case_ids") or [])
             received_at = _parse_received_datetime(date_text) or _utcnow_naive()
@@ -673,6 +762,21 @@ def fetch_inbox_once(db: Session, account_id: int, limit: int = 50) -> dict[str,
                 body=f"Von: {row.from_email or row.from_text or '-'}" + (f"\nZuordnung: {reason_text}" if reason_text else ""),
                 event_type="mail_in",
             )
+            if row.assignment_status == "assigned":
+                assigned += 1
+                if len(auto_targets) < 6:
+                    auto_targets.append(
+                        {
+                            "thread_id": int(thread.id),
+                            "customer_id": int(row.master_customer_id or 0) or None,
+                            "case_id": int(row.case_id or 0) or None,
+                            "subject": str(row.subject or "").strip() or "(ohne Betreff)",
+                        }
+                    )
+            elif row.assignment_status == "suggested":
+                suggested += 1
+            elif row.assignment_status == "spam":
+                spam += 1
             created += 1
     finally:
         if client is not None:
@@ -684,4 +788,11 @@ def fetch_inbox_once(db: Session, account_id: int, limit: int = 50) -> dict[str,
                 client.logout()
             except Exception:
                 pass
-    return {"scanned": scanned, "created": created}
+    return {
+        "scanned": scanned,
+        "created": created,
+        "assigned": assigned,
+        "suggested": suggested,
+        "spam": spam,
+        "auto_targets": auto_targets,
+    }

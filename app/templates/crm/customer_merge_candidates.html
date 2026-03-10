@@ -3,6 +3,16 @@
 <div class="panel">
   <h1>CRM: Merge-Kandidaten</h1>
   <div class="hint">Regelbasiert: gleicher Name + PLZ, gleiche Mail, gleiche Telefonnummer oder gleiche OutSmart-Debitornummer.</div>
+  <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+    <form method="post" action="/crm/merge-kandidaten/auto" class="inline">
+      <button class="btn primary" type="submit">Klare Dubletten automatisch zusammenführen</button>
+    </form>
+    {% if ai_enabled %}
+      <a class="btn" href="/crm/merge-kandidaten">KI-Bewertung ausblenden</a>
+    {% else %}
+      <a class="btn" href="/crm/merge-kandidaten?ai=1">KI nur für Restfälle laden</a>
+    {% endif %}
+  </div>
 
   {% for item in rows %}
     {% set pair_key = item.master_customer.id|string ~ ':' ~ item.candidate_customer.id|string if item.master_customer.id < item.candidate_customer.id else item.candidate_customer.id|string ~ ':' ~ item.master_customer.id|string %}

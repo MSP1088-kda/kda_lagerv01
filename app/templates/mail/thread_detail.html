@@ -15,24 +15,60 @@
       <div class="box-title">Thread-Zuordnung</div>
       <div class="box-body">
         <div><b>Status:</b> {{ mail_thread_status_label(thread.status) }}</div>
-        <div><b>Kunde:</b> {% if customer %}{{ customer.customer_no_internal }} | {{ customer_party.display_name if customer_party else '-' }}{% else %}-{% endif %}</div>
-        <div><b>Vorgang:</b> {% if crm_case %}{{ crm_case.case_no }} | {{ crm_case.title }}{% else %}-{% endif %}</div>
+        <div><b>Kunde:</b> {% if customer %}{{ customer.customer_no_internal }} | {{ customer_party.display_name if customer_party else '-' }}{% elif selected_customer_label %}{{ selected_customer_label }}{% else %}-{% endif %}</div>
+        <div><b>Vorgang:</b> {% if crm_case %}{{ crm_case.case_no }} | {{ crm_case.title }}{% elif selected_case_label %}{{ selected_case_label }}{% else %}-{% endif %}</div>
+        {% if thread_spam_reason %}<div class="hint" style="margin-top:8px;">Spam-Hinweis: {{ thread_spam_reason }}</div>{% endif %}
+
+        <form method="get" action="/mail/threads/{{ thread.id }}#assign-thread" class="form" style="margin-top:10px;">
+          <input type="hidden" name="assign_customer_id" value="{{ selected_customer_id }}">
+          <input type="hidden" name="assign_case_id" value="{{ selected_case_id }}">
+          <label>Kunde suchen</label>
+          <input type="text" name="assign_q" value="{{ customer_search_query }}" placeholder="Kundennummer, Name, Mail, Telefon">
+          <label>Vorgang suchen</label>
+          <input type="text" name="assign_case_q" value="{{ case_search_query }}" placeholder="Vorgangsnummer oder Titel">
+          <button class="btn" type="submit">Treffer aktualisieren</button>
+        </form>
+
+        <div style="margin-top:10px;"><b>Kundentreffer</b></div>
+        {% if customer_search_rows %}
+          {% for item in customer_search_rows %}
+            <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:6px;">
+              <div>{{ item.label }}</div>
+              <form method="get" action="/mail/threads/{{ thread.id }}#assign-thread" class="inline">
+                <input type="hidden" name="assign_q" value="{{ customer_search_query }}">
+                <input type="hidden" name="assign_case_q" value="{{ case_search_query }}">
+                <input type="hidden" name="assign_customer_id" value="{{ item.id }}">
+                <input type="hidden" name="assign_case_id" value="0">
+                <button class="btn small" type="submit">Kunden wählen</button>
+              </form>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="muted" style="margin-top:6px;">Noch keine Kundentreffer geladen.</div>
+        {% endif %}
+
+        <div style="margin-top:10px;"><b>Vorgangstreffer</b></div>
+        {% if case_search_rows %}
+          {% for item in case_search_rows %}
+            <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:6px;">
+              <div>{{ item.label }}</div>
+              <form method="get" action="/mail/threads/{{ thread.id }}#assign-thread" class="inline">
+                <input type="hidden" name="assign_q" value="{{ customer_search_query }}">
+                <input type="hidden" name="assign_case_q" value="{{ case_search_query }}">
+                <input type="hidden" name="assign_customer_id" value="{{ selected_customer_id }}">
+                <input type="hidden" name="assign_case_id" value="{{ item.id }}">
+                <button class="btn small" type="submit">Vorgang wählen</button>
+              </form>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="muted" style="margin-top:6px;">Noch keine Vorgangstreffer geladen.</div>
+        {% endif %}
+
         <form method="post" action="/mail/threads/{{ thread.id }}/zuweisen" class="form" style="margin-top:10px;">
-          <label>Kunde</label>
-          <select name="customer_id">
-            <option value="0">-</option>
-            {% for option in customer_options %}
-              <option value="{{ option.id }}"{% if option.id == selected_customer_id %} selected{% endif %}>{{ option.label }}</option>
-            {% endfor %}
-          </select>
-          <label>Vorgang</label>
-          <select name="case_id">
-            <option value="0">-</option>
-            {% for option in case_options %}
-              <option value="{{ option.id }}"{% if option.id == selected_case_id %} selected{% endif %}>{{ option.label }}</option>
-            {% endfor %}
-          </select>
-          <button class="btn primary" type="submit">Thread speichern</button>
+          <input type="hidden" name="customer_id" value="{{ selected_customer_id }}">
+          <input type="hidden" name="case_id" value="{{ selected_case_id }}">
+          <button class="btn primary" type="submit">Auswahl speichern</button>
         </form>
       </div>
     </div>
@@ -42,15 +78,33 @@
       <div class="box-body">
         {% if suggestion_customer_ids or suggestion_case_ids %}
           {% if suggestion_customer_ids %}
-            <div><b>Kandidaten Kunde:</b></div>
-            {% for customer_id in suggestion_customer_ids %}<div>{{ suggestion_customer_labels.get(customer_id, customer_id) }}</div>{% endfor %}
+            <div><b>Kundenkandidaten</b></div>
+            {% for customer_id in suggestion_customer_ids %}
+              <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:6px;">
+                <div>{{ suggestion_customer_labels.get(customer_id, customer_id) }}</div>
+                <form method="post" action="/mail/threads/{{ thread.id }}/zuweisen" class="inline">
+                  <input type="hidden" name="customer_id" value="{{ customer_id }}">
+                  <input type="hidden" name="case_id" value="{{ selected_case_id }}">
+                  <button class="btn small" type="submit">Übernehmen</button>
+                </form>
+              </div>
+            {% endfor %}
           {% endif %}
           {% if suggestion_case_ids %}
-            <div style="margin-top:8px;"><b>Kandidaten Vorgang:</b></div>
-            {% for case_id in suggestion_case_ids %}<div>{{ suggestion_case_labels.get(case_id, case_id) }}</div>{% endfor %}
+            <div style="margin-top:10px;"><b>Vorgangskandidaten</b></div>
+            {% for case_id in suggestion_case_ids %}
+              <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:6px;">
+                <div>{{ suggestion_case_labels.get(case_id, case_id) }}</div>
+                <form method="post" action="/mail/threads/{{ thread.id }}/zuweisen" class="inline">
+                  <input type="hidden" name="customer_id" value="{{ selected_customer_id }}">
+                  <input type="hidden" name="case_id" value="{{ case_id }}">
+                  <button class="btn small" type="submit">Übernehmen</button>
+                </form>
+              </div>
+            {% endfor %}
           {% endif %}
           {% if suggestion_reasons %}
-            <div style="margin-top:8px;"><b>Treffer:</b></div>
+            <div style="margin-top:10px;"><b>Treffergründe</b></div>
             {% for reason in suggestion_reasons %}<div class="hint">{{ reason }}</div>{% endfor %}
           {% endif %}
         {% else %}
@@ -63,13 +117,9 @@
       <div class="box-title">Neuen Vorgang anlegen</div>
       <div class="box-body">
         <form method="post" action="/mail/nachrichten/{{ last_message_row.id if last_message_row else 0 }}/vorgang-neu" class="form">
+          <input type="hidden" name="customer_id" value="{{ selected_customer_id }}">
           <label>Kunde</label>
-          <select name="customer_id">
-            <option value="0">-</option>
-            {% for option in customer_options %}
-              <option value="{{ option.id }}"{% if option.id == selected_customer_id %} selected{% endif %}>{{ option.label }}</option>
-            {% endfor %}
-          </select>
+          <div class="hint">{{ selected_customer_label or 'Noch kein Kunde gewählt' }}</div>
           <label>Titel</label>
           <input type="text" name="title" value="{{ thread_subject }}">
           <button class="btn" type="submit">Vorgang anlegen</button>
@@ -178,32 +228,28 @@
           {% endfor %}
         {% endif %}
 
+        {% if item.suggestion.customer_ids or item.suggestion.case_ids %}
+          <div style="margin-top:10px;"><b>Vorschläge für diese Nachricht</b></div>
+          {% if item.suggestion.customer_ids %}
+            <div class="hint">Kunden: {% for customer_id in item.suggestion.customer_ids %}{{ customer_label_map.get(customer_id, customer_id) }}{% if not loop.last %} | {% endif %}{% endfor %}</div>
+          {% endif %}
+          {% if item.suggestion.case_ids %}
+            <div class="hint">Vorgänge: {% for case_id in item.suggestion.case_ids %}{{ case_label_map.get(case_id, case_id) }}{% if not loop.last %} | {% endif %}{% endfor %}</div>
+          {% endif %}
+        {% endif %}
+
         {% if row.assignment_status != 'assigned' %}
-          <form method="post" action="/mail/nachrichten/{{ row.id }}/zuweisen" class="form" style="margin-top:10px;">
-            <input type="hidden" name="apply_to_thread" value="1">
-            <label>Kunde</label>
-            <select name="customer_id">
-              <option value="0">-</option>
-              {% for option in customer_options %}
-                <option value="{{ option.id }}"{% if option.id == (row.master_customer_id or selected_customer_id) %} selected{% endif %}>{{ option.label }}</option>
-              {% endfor %}
-            </select>
-            <label>Vorgang</label>
-            <select name="case_id">
-              <option value="0">-</option>
-              {% for option in case_options %}
-                <option value="{{ option.id }}"{% if option.id == (row.case_id or selected_case_id) %} selected{% endif %}>{{ option.label }}</option>
-              {% endfor %}
-            </select>
-            {% if item.suggestion.customer_ids or item.suggestion.case_ids %}
-              <div class="hint">
-                Vorschlag:
-                {% for customer_id in item.suggestion.customer_ids %}{{ customer_label_map.get(customer_id, customer_id) }} {% endfor %}
-                {% for case_id in item.suggestion.case_ids %}{{ case_label_map.get(case_id, case_id) }} {% endfor %}
-              </div>
+          <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+            <a class="btn" href="/mail/threads/{{ thread.id }}#assign-thread">Im Thread zuordnen</a>
+            {% if selected_customer_id > 0 or selected_case_id > 0 %}
+              <form method="post" action="/mail/nachrichten/{{ row.id }}/zuweisen" class="inline">
+                <input type="hidden" name="apply_to_thread" value="1">
+                <input type="hidden" name="customer_id" value="{{ selected_customer_id }}">
+                <input type="hidden" name="case_id" value="{{ selected_case_id }}">
+                <button class="btn small" type="submit">Aktuelle Auswahl übernehmen</button>
+              </form>
             {% endif %}
-            <button class="btn" type="submit">Nachricht zuweisen</button>
-          </form>
+          </div>
         {% endif %}
       </div>
     </div>
@@ -214,7 +260,7 @@
 {% block help %}
 <ul>
   <li>Die Thread-Ansicht bündelt Eingang, Ausgang, Anhänge und Zuordnung an einer Stelle.</li>
-  <li>Manuelle Zuordnung schreibt den Bezug auf Thread und Nachrichten zurück.</li>
+  <li>Kunden und Vorgänge werden jetzt über Suche und Direkttreffer gewählt, nicht mehr über lange Dropdowns.</li>
   <li>Anhänge lassen sich direkt aus dem Thread nach Paperless archivieren.</li>
 </ul>
 {% endblock %}
