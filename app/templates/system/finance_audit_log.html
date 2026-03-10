@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Finanzjournal</h1>
+  <div class="hint" style="margin-bottom:10px;">Append-only Auditspur für Einkaufsbelege und statusrelevante Finanzaktionen.</div>
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 140px 140px 140px 140px 180px 180px 1fr;">
+      <div>Zeit</div>
+      <div>Bereich</div>
+      <div>Objekt</div>
+      <div>Aktion</div>
+      <div>Benutzer</div>
+      <div>Hash</div>
+      <div>Änderung</div>
+    </div>
+    {% for item in rows %}
+      {% set row = item.row %}
+      <div class="tr" style="grid-template-columns: 140px 140px 140px 140px 180px 180px 1fr; align-items:start;">
+        <div>{{ format_date(row.created_at) }}</div>
+        <div>{{ row.area or '-' }}</div>
+        <div>{{ row.entity_type }} #{{ row.entity_id }}</div>
+        <div>{{ row.action }}</div>
+        <div>{{ item.actor.email if item.actor else '-' }}</div>
+        <div><code>{{ (row.entry_hash or '')[:16] }}</code></div>
+        <div>
+          <details>
+            <summary>Vorher / Nachher</summary>
+            <div class="hint" style="margin-top:6px;"><b>Vorher:</b> {{ item.before or '-' }}</div>
+            <div class="hint" style="margin-top:6px;"><b>Nachher:</b> {{ item.after or '-' }}</div>
+          </details>
+        </div>
+      </div>
+    {% endfor %}
+    {% if not rows %}<div class="muted">Noch keine Finanzjournal-Einträge vorhanden.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Das Finanzjournal zeigt status- und dokumentrelevante Änderungen an Einkaufsbelegen nachvollziehbar in Zeitreihenfolge.</li>
+  <li>Jeder Eintrag enthält einen Verkettungshash, damit nachträgliche Änderungen an der Spur erkennbar bleiben.</li>
+  <li>Gebuchte und bezahlte Eingangsrechnungen dürfen nicht mehr in frühere Status zurückgesetzt werden.</li>
+</ul>
+{% endblock %}

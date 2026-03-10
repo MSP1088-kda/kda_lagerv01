@@ -1203,6 +1203,29 @@ class PurchaseInvoiceLine(Base):
     )
 
 
+class FinanceAuditLog(Base):
+    __tablename__ = "finance_audit_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    area: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    before_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    after_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    actor = relationship("User")
+
+    __table_args__ = (
+        Index("ix_finance_audit_logs_entity", "entity_type", "entity_id"),
+        Index("ix_finance_audit_logs_area", "area"),
+        Index("ix_finance_audit_logs_created", "created_at"),
+    )
+
+
 class ProductPurchasePrice(Base):
     __tablename__ = "product_purchase_prices"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

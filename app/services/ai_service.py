@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from typing import Any
 from urllib import error as url_error, request as url_request
 
@@ -12,6 +13,11 @@ from .ai_schemas import default_output, extract_confidence, schema_for, schema_n
 
 
 OPENAI_API_BASE = "https://api.openai.com/v1"
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+PHONE_RE = re.compile(r"(?:(?:\+|00)\d{1,3}[\s./-]*)?(?:\(?\d{2,5}\)?[\s./-]*){2,}\d{2,}")
+URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+LONG_NUMBER_RE = re.compile(r"\b\d{5,}\b")
+WHITESPACE_RE = re.compile(r"\s+")
 
 RISK_GREEN = "gruen"
 RISK_YELLOW = "gelb"
@@ -228,7 +234,8 @@ def run_task(
 ) -> dict[str, Any]:
     task = str(task_name or "").strip()
     prompt = active_prompt(db, task)
-    serialized_input = json.dumps(input_payload or {}, ensure_ascii=False, sort_keys=True)
+    public_input_payload = _public_input_payload(task, input_payload or {})
+    serialized_input = json.dumps(public_input_payload, ensure_ascii=False, sort_keys=True)
     if not force_refresh:
         existing = find_existing_decision(
             db,
@@ -255,8 +262,8 @@ def run_task(
             output = _call_openai_structured(
                 settings=settings,
                 prompt=prompt,
-                input_payload=input_payload,
-                tool_context=tool_context or {},
+                input_payload=public_input_payload,
+                tool_context=_public_tool_context(task, tool_context or {}),
                 model_name_override=model_name_override,
             )
             model_name = str(model_name_override or settings.get("model_default") or "gpt-5-mini")
@@ -450,6 +457,184 @@ def _render_user_text(prompt: AiPromptDefinition, input_payload: dict[str, Any],
         parts.append(json.dumps(tool_context, ensure_ascii=False, indent=2, sort_keys=True))
     parts.append("Arbeite konservativ. Unsichere Felder leer lassen oder als Hinweis markieren.")
     return "\n\n".join(part for part in parts if part)
+
+
+def _public_input_payload(task_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    task = str(task_name or "").strip()
+    data = payload or {}
+    if task == "customer_merge_candidate":
+        return {
+            "master_id": int(data.get("master_id") or 0) or None,
+            "candidate_id": int(data.get("candidate_id") or 0) or None,
+            "same_name": _normalize_cmp(data.get("master_name")) == _normalize_cmp(data.get("candidate_name")) if data.get("master_name") or data.get("candidate_name") else False,
+            "same_email": _normalize_email(data.get("master_email")) == _normalize_email(data.get("candidate_email")) if data.get("master_email") or data.get("candidate_email") else False,
+            "same_phone": _normalize_phone(data.get("master_phone")) == _normalize_phone(data.get("candidate_phone")) if data.get("master_phone") or data.get("candidate_phone") else False,
+            "same_zip": _normalize_cmp(data.get("master_zip")) == _normalize_cmp(data.get("candidate_zip")) if data.get("master_zip") or data.get("candidate_zip") else False,
+            "same_outsmart_key": _normalize_cmp(data.get("master_outsmart_key")) == _normalize_cmp(data.get("candidate_outsmart_key")) if data.get("master_outsmart_key") or data.get("candidate_outsmart_key") else False,
+        }
+    if task == "customer_init_cluster_review":
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        members = []
+        for member in list(data.get("members") or [])[:4]:
+            if not isinstance(member, dict):
+                continue
+            members.append(
+                {
+                    "source_system": str(member.get("source_system") or ""),
+                    "source_type": str(member.get("source_type") or ""),
+                    "match_score": float(member.get("match_score") or 0.0),
+                    "match_reason": _redact_text(member.get("match_reason"), 160),
+                    "is_anchor": bool(member.get("is_anchor")),
+                }
+            )
+        return {
+            "cluster_id": int(data.get("cluster_id") or 0) or None,
+            "cluster_status": str(data.get("cluster_status") or ""),
+            "cluster_confidence": float(data.get("cluster_confidence") or 0.0),
+            "anchor_system": str(data.get("anchor_system") or ""),
+            "conflict_note": _redact_text(data.get("conflict_note"), 200),
+            "master_customer_id": int(data.get("master_customer_id") or 0) or None,
+            "summary": {
+                "member_count": int(summary.get("member_count") or 0),
+                "relation_count": int(summary.get("relation_count") or 0),
+                "project_count": int(summary.get("project_count") or 0),
+                "workorder_count": int(summary.get("workorder_count") or 0),
+                "contact_count": int(summary.get("contact_count") or 0),
+                "order_count": int(summary.get("order_count") or 0),
+                "invoice_count": int(summary.get("invoice_count") or 0),
+            },
+            "members": members,
+        }
+    if task == "email_classification":
+        return {
+            "thread_subject": _redact_text(data.get("thread_subject"), 180),
+            "subject": _redact_text(data.get("subject"), 180),
+            "body_excerpt": _redact_text(data.get("body_text") or data.get("snippet"), 700),
+            "from_domain": _email_domain(data.get("from_email")),
+            "to_domains": _email_domains(data.get("to_emails")),
+            "cc_domains": _email_domains(data.get("cc_emails")),
+            "attachment_names": [_redact_text(item, 80) for item in list(data.get("attachment_names") or [])[:8]],
+        }
+    if task == "document_classification":
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), str) else json.dumps(data.get("metadata") or {}, ensure_ascii=False)
+        return {
+            "paperless_document_id": str(data.get("paperless_document_id") or ""),
+            "title": _redact_text(data.get("title"), 180),
+            "correspondent": _redact_text(data.get("correspondent"), 160),
+            "document_type": _redact_text(data.get("document_type"), 120),
+            "metadata_excerpt": _redact_text(metadata, 900),
+        }
+    if task in {"incoming_invoice_extract", "voucher_accounting_suggestion"}:
+        return {
+            "purchase_invoice_id": int(data.get("purchase_invoice_id") or 0) or None,
+            "supplier_id": int(data.get("supplier_id") or 0) or None,
+            "purchase_order_id": int(data.get("purchase_order_id") or 0) or None,
+            "goods_receipt_id": int(data.get("goods_receipt_id") or 0) or None,
+            "invoice_no": _redact_text(data.get("invoice_no"), 80),
+            "description": _redact_text(data.get("description") or data.get("text"), 700),
+            "voucher_date": str(data.get("voucher_date") or ""),
+            "due_date": str(data.get("due_date") or ""),
+            "net_total": str(data.get("net_total") or ""),
+            "tax_total": str(data.get("tax_total") or ""),
+            "gross_total": str(data.get("gross_total") or ""),
+        }
+    if task in {"offer_draft_prepare", "invoice_draft_prepare", "role_assignment_suggestion"}:
+        public = {
+            "case_id": int(data.get("case_id") or 0) or None,
+            "master_customer_id": int(data.get("master_customer_id") or 0) or None,
+            "invoice_recipient_id": int(data.get("invoice_recipient_id") or 0) or None,
+            "offer_draft_id": int(data.get("offer_draft_id") or 0) or None,
+            "case_no": str(data.get("case_no") or ""),
+            "invoice_date": str(data.get("invoice_date") or ""),
+            "line_hint": _redact_text(data.get("line_hint"), 180),
+            "case_title": _redact_text(data.get("case_title") or data.get("title"), 180),
+        }
+        offer_lines = data.get("offer_lines") or data.get("lines") or []
+        if isinstance(offer_lines, list):
+            public["offer_lines"] = [
+                {
+                    "qty": item.get("qty"),
+                    "unit": str(item.get("unit") or ""),
+                    "tax_rate": item.get("tax_rate"),
+                    "product_id": item.get("product_id"),
+                    "text": _redact_text(item.get("text"), 120),
+                }
+                for item in offer_lines[:6]
+                if isinstance(item, dict)
+            ]
+        return public
+    return _sanitize_generic_payload(data)
+
+
+def _public_tool_context(task_name: str, tool_context: dict[str, Any]) -> dict[str, Any]:
+    task = str(task_name or "").strip()
+    context = tool_context or {}
+    if task in {"customer_merge_candidate", "customer_init_cluster_review"}:
+        return _sanitize_generic_payload(context, keep_keys={"id", "customer_id", "status", "system_name", "external_type", "is_primary"})
+    if task in {"email_classification", "document_classification", "incoming_invoice_extract", "voucher_accounting_suggestion", "offer_draft_prepare", "invoice_draft_prepare", "role_assignment_suggestion"}:
+        return _sanitize_generic_payload(context, keep_keys={"id", "customer_id", "case_id", "status", "customer_no", "case_no", "workorder_no", "invoice_no", "voucher_ref", "paperless_document_id", "document_type", "object_type", "object_id"})
+    return _sanitize_generic_payload(context)
+
+
+def _sanitize_generic_payload(value: Any, *, keep_keys: set[str] | None = None) -> Any:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if keep_keys and str(key) in keep_keys and not isinstance(item, (dict, list)):
+                out[str(key)] = item
+            else:
+                out[str(key)] = _sanitize_generic_payload(item, keep_keys=keep_keys)
+        return out
+    if isinstance(value, list):
+        return [_sanitize_generic_payload(item, keep_keys=keep_keys) for item in value[:12]]
+    if isinstance(value, str):
+        return _redact_text(value, 220)
+    return value
+
+
+def _redact_text(value: Any, max_len: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = EMAIL_RE.sub("<EMAIL>", text)
+    text = URL_RE.sub("<URL>", text)
+    text = PHONE_RE.sub("<PHONE>", text)
+    text = LONG_NUMBER_RE.sub("<NUM>", text)
+    text = WHITESPACE_RE.sub(" ", text).strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len - 3].rstrip()}..."
+
+
+def _normalize_cmp(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _normalize_email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_phone(value: Any) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def _email_domain(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if "@" not in text:
+        return ""
+    return text.split("@", 1)[1]
+
+
+def _email_domains(value: Any) -> list[str]:
+    raw = str(value or "").replace(";", ",")
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw.split(","):
+        domain = _email_domain(item)
+        if domain and domain not in seen:
+            seen.add(domain)
+            out.append(domain)
+    return out[:8]
 
 
 def _extract_response_text(payload: dict[str, Any]) -> str:

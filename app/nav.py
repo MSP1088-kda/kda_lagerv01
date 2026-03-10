@@ -644,6 +644,14 @@ NAV_ITEMS: list[dict] = [
                 "show_in_mobile": False,
             },
             {
+                "label_de": "Finanzjournal",
+                "path": "/system/finanzjournal",
+                "aliases": "gobd audit finanz beleg journal",
+                "roles": ("admin",),
+                "show_in_topnav": False,
+                "show_in_mobile": False,
+            },
+            {
                 "label_de": "KI-Log",
                 "path": "/system/ki-log",
                 "aliases": "ki log audit openai",

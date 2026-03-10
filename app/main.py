@@ -6,6 +6,7 @@ import datetime as dt
 import email
 from email.header import decode_header
 from email.utils import getaddresses, parseaddr
+import hashlib
 import html
 import io
 import imaplib
@@ -69,6 +70,7 @@ from .models import (
     FeatureOption,
     FeatureOptionAlias,
     FeatureValue,
+    FinanceAuditLog,
     GoodsReceipt,
     GoodsReceiptLine,
     IncomingVoucherDraft,
@@ -16520,8 +16522,36 @@ def _crm_next_case_no(db: Session) -> str:
     return f"{prefix}{seq:04d}"
 
 
-def _crm_customer_options(db: Session) -> list[dict[str, object]]:
-    rows = db.query(MasterCustomer).order_by(MasterCustomer.customer_no_internal.asc()).all()
+def _crm_customer_options(
+    db: Session,
+    *,
+    include_ids: list[int] | None = None,
+    limit: int = 300,
+) -> list[dict[str, object]]:
+    include_id_values = [int(value) for value in (include_ids or []) if int(value or 0) > 0]
+    base_query = (
+        db.query(MasterCustomer)
+        .filter(MasterCustomer.status == "active")
+        .order_by(MasterCustomer.customer_no_internal.asc())
+    )
+    rows: list[MasterCustomer] = []
+    seen_ids: set[int] = set()
+    if include_id_values:
+        for row in db.query(MasterCustomer).filter(MasterCustomer.id.in_(include_id_values)).order_by(MasterCustomer.customer_no_internal.asc()).all():
+            row_id = int(row.id or 0)
+            if row_id > 0 and row_id not in seen_ids:
+                seen_ids.add(row_id)
+                rows.append(row)
+    remaining = max(0, int(limit) - len(rows))
+    if remaining > 0:
+        query = base_query
+        if seen_ids:
+            query = query.filter(~MasterCustomer.id.in_(sorted(seen_ids)))
+        for row in query.limit(remaining).all():
+            row_id = int(row.id or 0)
+            if row_id > 0 and row_id not in seen_ids:
+                seen_ids.add(row_id)
+                rows.append(row)
     party_ids = [int(row.party_id) for row in rows]
     parties = {int(row.id): row for row in db.query(Party).filter(Party.id.in_(party_ids)).all()} if party_ids else {}
     _, default_map = _crm_party_address_maps(db, party_ids)
@@ -16535,8 +16565,47 @@ def _crm_customer_options(db: Session) -> list[dict[str, object]]:
     return options
 
 
-def _crm_location_options(db: Session) -> list[dict[str, object]]:
-    rows = db.query(ServiceLocation).order_by(ServiceLocation.location_label.asc(), ServiceLocation.id.asc()).all()
+def _crm_location_options(
+    db: Session,
+    *,
+    include_ids: list[int] | None = None,
+    customer_ids: list[int] | None = None,
+    limit: int = 300,
+) -> list[dict[str, object]]:
+    include_id_values = [int(value) for value in (include_ids or []) if int(value or 0) > 0]
+    customer_id_values = [int(value) for value in (customer_ids or []) if int(value or 0) > 0]
+    base_query = (
+        db.query(ServiceLocation)
+        .filter(ServiceLocation.active == True)
+        .order_by(ServiceLocation.location_label.asc(), ServiceLocation.id.asc())
+    )
+    rows: list[ServiceLocation] = []
+    seen_ids: set[int] = set()
+    if include_id_values:
+        for row in db.query(ServiceLocation).filter(ServiceLocation.id.in_(include_id_values)).order_by(ServiceLocation.location_label.asc(), ServiceLocation.id.asc()).all():
+            row_id = int(row.id or 0)
+            if row_id > 0 and row_id not in seen_ids:
+                seen_ids.add(row_id)
+                rows.append(row)
+    if customer_id_values:
+        query = base_query.filter(ServiceLocation.master_customer_id.in_(customer_id_values))
+        if seen_ids:
+            query = query.filter(~ServiceLocation.id.in_(sorted(seen_ids)))
+        for row in query.limit(max(0, int(limit) - len(rows))).all():
+            row_id = int(row.id or 0)
+            if row_id > 0 and row_id not in seen_ids:
+                seen_ids.add(row_id)
+                rows.append(row)
+    remaining = max(0, int(limit) - len(rows))
+    if remaining > 0:
+        query = base_query
+        if seen_ids:
+            query = query.filter(~ServiceLocation.id.in_(sorted(seen_ids)))
+        for row in query.limit(remaining).all():
+            row_id = int(row.id or 0)
+            if row_id > 0 and row_id not in seen_ids:
+                seen_ids.add(row_id)
+                rows.append(row)
     customer_ids = [int(row.master_customer_id) for row in rows if int(row.master_customer_id or 0) > 0]
     customers = {int(row.id): row for row in db.query(MasterCustomer).filter(MasterCustomer.id.in_(customer_ids)).all()} if customer_ids else {}
     party_ids = [int(row.party_id) for row in customers.values()]
@@ -17392,8 +17461,20 @@ def _crm_render_case_form(
             form_data=form_data,
             form_errors=form_errors,
             first_error_field_id=first_error_field_id,
-            customer_options=_crm_customer_options(db),
-            location_options=_crm_location_options(db),
+            customer_options=_crm_customer_options(
+                db,
+                include_ids=[
+                    int(selected_ordering_party_id or 0),
+                    int(selected_invoice_recipient_id or 0),
+                ],
+                limit=300,
+            ),
+            location_options=_crm_location_options(
+                db,
+                include_ids=[int(selected_service_location_id or 0)],
+                customer_ids=[int(selected_ordering_party_id or 0)],
+                limit=300,
+            ),
             status_choices=CRM_CASE_STATUS_CHOICES,
             priority_choices=CRM_CASE_PRIORITY_CHOICES,
             selected_ordering_party_id=int(selected_ordering_party_id or 0),
@@ -24357,6 +24438,99 @@ def _invoice_three_way_rows(db: Session, lines: list[PurchaseInvoiceLine]) -> li
     return out
 
 
+def _finance_snapshot(row) -> dict[str, object]:
+    if isinstance(row, PurchaseOrder):
+        return {
+            "supplier_id": int(row.supplier_id or 0) or None,
+            "order_no": str(row.order_no or row.po_number or ""),
+            "status": str(row.status or ""),
+            "order_date": row.order_date.isoformat() if row.order_date else "",
+            "wanted_date": row.wanted_date.isoformat() if row.wanted_date else "",
+            "paperless_document_id": str(row.paperless_document_id or ""),
+            "note": str(row.note or ""),
+        }
+    if isinstance(row, GoodsReceipt):
+        return {
+            "supplier_id": int(row.supplier_id or 0) or None,
+            "purchase_order_id": int(row.purchase_order_id or 0) or None,
+            "receipt_no": str(row.receipt_no or ""),
+            "status": str(row.status or ""),
+            "warehouse_id": int(row.warehouse_id or 0) or None,
+            "receipt_date": row.receipt_date.isoformat() if row.receipt_date else "",
+            "delivery_note_no": str(row.delivery_note_no or ""),
+            "paperless_document_id": str(row.paperless_document_id or ""),
+        }
+    if isinstance(row, PurchaseInvoice):
+        return {
+            "supplier_id": int(row.supplier_id or 0) or None,
+            "invoice_no": str(row.invoice_no or ""),
+            "status": str(row.status or ""),
+            "invoice_date": row.invoice_date.isoformat() if row.invoice_date else "",
+            "due_date": row.due_date.isoformat() if row.due_date else "",
+            "net_total": int(row.net_total or 0) if row.net_total is not None else None,
+            "tax_total": int(row.tax_total or 0) if row.tax_total is not None else None,
+            "gross_total": int(row.gross_total or 0) if row.gross_total is not None else None,
+            "paperless_document_id": str(row.paperless_document_id or ""),
+        }
+    return {}
+
+
+def _finance_audit_append(
+    db: Session,
+    *,
+    area: str,
+    entity_type: str,
+    entity_id: int,
+    action: str,
+    actor_user_id: int | None = None,
+    before: dict[str, object] | None = None,
+    after: dict[str, object] | None = None,
+) -> None:
+    previous = db.query(FinanceAuditLog).order_by(FinanceAuditLog.id.desc()).first()
+    prev_hash = str(getattr(previous, "entry_hash", "") or "")
+    before_json = json.dumps(before, ensure_ascii=False, sort_keys=True) if before is not None else None
+    after_json = json.dumps(after, ensure_ascii=False, sort_keys=True) if after is not None else None
+    payload = json.dumps(
+        {
+            "area": str(area or ""),
+            "entity_type": str(entity_type or ""),
+            "entity_id": int(entity_id or 0),
+            "action": str(action or ""),
+            "actor_user_id": int(actor_user_id or 0) or None,
+            "before_json": before_json,
+            "after_json": after_json,
+            "created_at": _utcnow_naive().isoformat(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    entry_hash = hashlib.sha256(f"{prev_hash}\n{payload}".encode("utf-8")).hexdigest()
+    db.add(
+        FinanceAuditLog(
+            area=str(area or ""),
+            entity_type=str(entity_type or ""),
+            entity_id=int(entity_id or 0),
+            action=str(action or ""),
+            actor_user_id=int(actor_user_id or 0) or None,
+            before_json=before_json,
+            after_json=after_json,
+            prev_hash=prev_hash or None,
+            entry_hash=entry_hash,
+            created_at=_utcnow_naive(),
+        )
+    )
+
+
+def _purchase_invoice_status_transition_allowed(current_status: str | None, new_status: str | None) -> bool:
+    current_key = str(current_status or "").strip().lower()
+    new_key = str(new_status or "").strip().lower()
+    if current_key == "paid":
+        return new_key == "paid"
+    if current_key == "booked":
+        return new_key in {"booked", "paid"}
+    return True
+
+
 def _dashboard_purchase_stats(db: Session) -> dict[str, int]:
     condition_rows = calculate_condition_progress(db)
     db.flush()
@@ -24763,6 +24937,16 @@ async def einkauf_order_from_product(request: Request, user=Depends(require_admi
         qty=int(qty),
         unit_cost=expected_cost_cents,
     )
+    _finance_audit_append(
+        db,
+        area="einkauf",
+        entity_type="purchase_order",
+        entity_id=int(order.id),
+        action="create",
+        actor_user_id=int(user.id or 0) or None,
+        before=None,
+        after=_finance_snapshot(order),
+    )
     db.commit()
     _draft_clear(request, draft_key)
     _flash(request, f"Bestellung {order_no} angelegt.", "info")
@@ -24851,6 +25035,16 @@ async def einkauf_order_new_post(request: Request, user=Depends(require_admin), 
             qty=int(entry["qty_ordered"]),
             unit_cost=entry["unit_price_expected"],
         )
+    _finance_audit_append(
+        db,
+        area="einkauf",
+        entity_type="purchase_order",
+        entity_id=int(order.id),
+        action="create",
+        actor_user_id=int(user.id or 0) or None,
+        before=None,
+        after=_finance_snapshot(order),
+    )
     db.commit()
     _flash(request, f"Bestellung {order_no} gespeichert.", "info")
     return RedirectResponse(f"/einkauf/bestellungen/{order.id}", status_code=302)
@@ -24889,6 +25083,7 @@ async def einkauf_order_edit_post(order_id: int, request: Request, user=Depends(
     row = db.get(PurchaseOrder, order_id)
     if not row:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(row)
     form = await request.form()
     form_data = _extract_form_data(form)
     form_errors: dict[str, str] = {}
@@ -24976,6 +25171,16 @@ async def einkauf_order_edit_post(order_id: int, request: Request, user=Depends(
             old.note = new["note"]
             db.add(old)
 
+    _finance_audit_append(
+        db,
+        area="einkauf",
+        entity_type="purchase_order",
+        entity_id=int(row.id),
+        action="update",
+        actor_user_id=int(user.id or 0) or None,
+        before=before_snapshot,
+        after=_finance_snapshot(row),
+    )
     db.commit()
     _flash(request, "Bestellung aktualisiert.", "info")
     return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
@@ -25016,6 +25221,7 @@ async def einkauf_order_status(order_id: int, request: Request, user=Depends(req
     order = db.get(PurchaseOrder, order_id)
     if not order:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(order)
     form = await request.form()
     status = (form.get("status") or "").strip().lower()
     if status not in ("draft", "sent", "confirmed", "partially_received", "received", "closed", "cancelled"):
@@ -25028,6 +25234,16 @@ async def einkauf_order_status(order_id: int, request: Request, user=Depends(req
     if status == "confirmed" and not order.confirmed_at:
         order.confirmed_at = _utcnow_naive()
     db.add(order)
+    _finance_audit_append(
+        db,
+        area="einkauf",
+        entity_type="purchase_order",
+        entity_id=int(order.id),
+        action="status_change",
+        actor_user_id=int(user.id or 0) or None,
+        before=before_snapshot,
+        after=_finance_snapshot(order),
+    )
     db.commit()
     _flash(request, "Bestellstatus gespeichert.", "info")
     return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
@@ -25038,6 +25254,7 @@ async def einkauf_order_document_link(order_id: int, request: Request, user=Depe
     order = db.get(PurchaseOrder, order_id)
     if not order:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(order)
     form = await request.form()
     inbox_id = _to_int(form.get("document_inbox_id"), 0)
     direct_id = (form.get("paperless_document_id") or "").strip()
@@ -25048,6 +25265,16 @@ async def einkauf_order_document_link(order_id: int, request: Request, user=Depe
             if not order.paperless_document_id:
                 order.paperless_document_id = item.paperless_document_id
             db.add(order)
+            _finance_audit_append(
+                db,
+                area="einkauf",
+                entity_type="purchase_order",
+                entity_id=int(order.id),
+                action="document_link",
+                actor_user_id=int(user.id or 0) or None,
+                before=before_snapshot,
+                after=_finance_snapshot(order),
+            )
             db.commit()
             _flash(request, "Dokument verknüpft.", "info")
             return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
@@ -25056,6 +25283,16 @@ async def einkauf_order_document_link(order_id: int, request: Request, user=Depe
         if not order.paperless_document_id:
             order.paperless_document_id = direct_id
         db.add(order)
+        _finance_audit_append(
+            db,
+            area="einkauf",
+            entity_type="purchase_order",
+            entity_id=int(order.id),
+            action="document_link",
+            actor_user_id=int(user.id or 0) or None,
+            before=before_snapshot,
+            after=_finance_snapshot(order),
+        )
         db.commit()
         _flash(request, "Dokument-ID verknüpft.", "info")
         return RedirectResponse(f"/einkauf/bestellungen/{order_id}", status_code=302)
@@ -25068,6 +25305,7 @@ def einkauf_order_document_export(order_id: int, request: Request, user=Depends(
     order = db.get(PurchaseOrder, order_id)
     if not order:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(order)
     settings = _paperless_settings(db, include_secret=True)
     lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == int(order_id)).order_by(PurchaseOrderLine.id.asc()).all()
     product_map = {int(row.id): row for row in db.query(Product).filter(Product.id.in_([int(line.product_id) for line in lines])).all()} if lines else {}
@@ -25090,6 +25328,16 @@ def einkauf_order_document_export(order_id: int, request: Request, user=Depends(
         )
         order.paperless_document_id = document_id
         db.add(order)
+        _finance_audit_append(
+            db,
+            area="einkauf",
+            entity_type="purchase_order",
+            entity_id=int(order.id),
+            action="paperless_export",
+            actor_user_id=int(user.id or 0) or None,
+            before=before_snapshot,
+            after=_finance_snapshot(order),
+        )
         db.commit()
         _flash(request, f"Zusammenfassung an Paperless gesendet ({document_id}).", "info")
     except Exception as exc:
@@ -25681,6 +25929,32 @@ def system_sync_log(request: Request, user=Depends(require_admin), db: Session =
     return templates.TemplateResponse("system/sync_log.html", _ctx(request, user=user, rows=[_sync_job_view(row) for row in rows]))
 
 
+@app.get("/system/finanzjournal", response_class=HTMLResponse)
+def system_finance_audit_log(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    actor_ids = [int(row.actor_user_id or 0) for row in db.query(FinanceAuditLog).order_by(FinanceAuditLog.id.desc()).limit(300).all() if int(row.actor_user_id or 0) > 0]
+    rows = db.query(FinanceAuditLog).order_by(FinanceAuditLog.id.desc()).limit(300).all()
+    actors = {int(row.id): row for row in db.query(User).filter(User.id.in_(actor_ids)).all()} if actor_ids else {}
+    view_rows = []
+    for row in rows:
+        try:
+            before_payload = json.loads(row.before_json or "null") if row.before_json else None
+        except Exception:
+            before_payload = None
+        try:
+            after_payload = json.loads(row.after_json or "null") if row.after_json else None
+        except Exception:
+            after_payload = None
+        view_rows.append(
+            {
+                "row": row,
+                "actor": actors.get(int(row.actor_user_id or 0)),
+                "before": before_payload,
+                "after": after_payload,
+            }
+        )
+    return templates.TemplateResponse("system/finance_audit_log.html", _ctx(request, user=user, rows=view_rows))
+
+
 @app.get("/api/jobs/active")
 def api_jobs_active(user=Depends(require_admin), db: Session = Depends(db_session)):
     _ = user
@@ -25932,6 +26206,16 @@ async def einkauf_receipt_new_post(request: Request, user=Depends(require_admin)
                     db.add(po_line)
         if order:
             _update_purchase_order_status_from_lines(db, order)
+        _finance_audit_append(
+            db,
+            area="einkauf",
+            entity_type="goods_receipt",
+            entity_id=int(receipt.id),
+            action="create",
+            actor_user_id=int(user.id or 0) or None,
+            before=None,
+            after=_finance_snapshot(receipt),
+        )
         db.commit()
     except Exception as exc:
         db.rollback()
@@ -25978,6 +26262,7 @@ async def einkauf_receipt_document_link(receipt_id: int, request: Request, user=
     row = db.get(GoodsReceipt, receipt_id)
     if not row:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(row)
     form = await request.form()
     inbox_id = _to_int(form.get("document_inbox_id"), 0)
     direct_id = (form.get("paperless_document_id") or "").strip()
@@ -25988,6 +26273,16 @@ async def einkauf_receipt_document_link(receipt_id: int, request: Request, user=
             if not row.paperless_document_id:
                 row.paperless_document_id = item.paperless_document_id
             db.add(row)
+            _finance_audit_append(
+                db,
+                area="einkauf",
+                entity_type="goods_receipt",
+                entity_id=int(row.id),
+                action="document_link",
+                actor_user_id=int(user.id or 0) or None,
+                before=before_snapshot,
+                after=_finance_snapshot(row),
+            )
             db.commit()
             _flash(request, "Dokument verknüpft.", "info")
             return RedirectResponse(f"/einkauf/wareneingaenge/{receipt_id}", status_code=302)
@@ -25995,6 +26290,16 @@ async def einkauf_receipt_document_link(receipt_id: int, request: Request, user=
         _ensure_paperless_link(db, object_type="goods_receipt", object_id=int(receipt_id), paperless_document_id=direct_id)
         row.paperless_document_id = row.paperless_document_id or direct_id
         db.add(row)
+        _finance_audit_append(
+            db,
+            area="einkauf",
+            entity_type="goods_receipt",
+            entity_id=int(row.id),
+            action="document_link",
+            actor_user_id=int(user.id or 0) or None,
+            before=before_snapshot,
+            after=_finance_snapshot(row),
+        )
         db.commit()
         _flash(request, "Dokument-ID verknüpft.", "info")
         return RedirectResponse(f"/einkauf/wareneingaenge/{receipt_id}", status_code=302)
@@ -26007,6 +26312,7 @@ def einkauf_receipt_document_export(receipt_id: int, request: Request, user=Depe
     row = db.get(GoodsReceipt, receipt_id)
     if not row:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(row)
     settings = _paperless_settings(db, include_secret=True)
     lines = db.query(GoodsReceiptLine).filter(GoodsReceiptLine.goods_receipt_id == int(receipt_id)).order_by(GoodsReceiptLine.id.asc()).all()
     products = {int(item.id): item for item in db.query(Product).filter(Product.id.in_([int(line.product_id) for line in lines])).all()} if lines else {}
@@ -26029,6 +26335,16 @@ def einkauf_receipt_document_export(receipt_id: int, request: Request, user=Depe
         )
         row.paperless_document_id = document_id
         db.add(row)
+        _finance_audit_append(
+            db,
+            area="einkauf",
+            entity_type="goods_receipt",
+            entity_id=int(row.id),
+            action="paperless_export",
+            actor_user_id=int(user.id or 0) or None,
+            before=before_snapshot,
+            after=_finance_snapshot(row),
+        )
         db.commit()
         _flash(request, f"Zusammenfassung an Paperless gesendet ({document_id}).", "info")
     except Exception as exc:
@@ -26247,6 +26563,16 @@ async def einkauf_invoice_new_post(request: Request, user=Depends(require_admin)
         if all_linked and lines:
             invoice.status = "matched"
             db.add(invoice)
+        _finance_audit_append(
+            db,
+            area="einkauf",
+            entity_type="purchase_invoice",
+            entity_id=int(invoice.id),
+            action="create",
+            actor_user_id=int(user.id or 0) or None,
+            before=None,
+            after=_finance_snapshot(invoice),
+        )
         db.commit()
     except Exception as exc:
         db.rollback()
@@ -26286,13 +26612,27 @@ async def einkauf_invoice_status(invoice_id: int, request: Request, user=Depends
     row = db.get(PurchaseInvoice, invoice_id)
     if not row:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(row)
     form = await request.form()
     status = (form.get("status") or "").strip().lower()
     if status not in ("draft", "matched", "approved", "booked", "paid", "disputed"):
         _flash(request, "Ungültiger Status.", "error")
         return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
+    if not _purchase_invoice_status_transition_allowed(row.status, status):
+        _flash(request, "Gebuchte oder bezahlte Rechnungen dürfen nicht in frühere Status zurückgesetzt werden.", "error")
+        return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
     row.status = status
     db.add(row)
+    _finance_audit_append(
+        db,
+        area="einkauf",
+        entity_type="purchase_invoice",
+        entity_id=int(row.id),
+        action="status_change",
+        actor_user_id=int(user.id or 0) or None,
+        before=before_snapshot,
+        after=_finance_snapshot(row),
+    )
     db.commit()
     _flash(request, "Rechnungsstatus gespeichert.", "info")
     return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
@@ -26303,6 +26643,7 @@ async def einkauf_invoice_document_link(invoice_id: int, request: Request, user=
     row = db.get(PurchaseInvoice, invoice_id)
     if not row:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(row)
     form = await request.form()
     inbox_id = _to_int(form.get("document_inbox_id"), 0)
     direct_id = (form.get("paperless_document_id") or "").strip()
@@ -26312,6 +26653,16 @@ async def einkauf_invoice_document_link(invoice_id: int, request: Request, user=
             _link_inbox_item_to_object(db, item=item, object_type="purchase_invoice", object_id=int(invoice_id))
             row.paperless_document_id = row.paperless_document_id or item.paperless_document_id
             db.add(row)
+            _finance_audit_append(
+                db,
+                area="einkauf",
+                entity_type="purchase_invoice",
+                entity_id=int(row.id),
+                action="document_link",
+                actor_user_id=int(user.id or 0) or None,
+                before=before_snapshot,
+                after=_finance_snapshot(row),
+            )
             db.commit()
             _flash(request, "Dokument verknüpft.", "info")
             return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
@@ -26319,6 +26670,16 @@ async def einkauf_invoice_document_link(invoice_id: int, request: Request, user=
         _ensure_paperless_link(db, object_type="purchase_invoice", object_id=int(invoice_id), paperless_document_id=direct_id)
         row.paperless_document_id = row.paperless_document_id or direct_id
         db.add(row)
+        _finance_audit_append(
+            db,
+            area="einkauf",
+            entity_type="purchase_invoice",
+            entity_id=int(row.id),
+            action="document_link",
+            actor_user_id=int(user.id or 0) or None,
+            before=before_snapshot,
+            after=_finance_snapshot(row),
+        )
         db.commit()
         _flash(request, "Dokument-ID verknüpft.", "info")
         return RedirectResponse(f"/einkauf/rechnungen/{invoice_id}", status_code=302)
@@ -26331,6 +26692,7 @@ def einkauf_invoice_document_export(invoice_id: int, request: Request, user=Depe
     row = db.get(PurchaseInvoice, invoice_id)
     if not row:
         raise HTTPException(status_code=404)
+    before_snapshot = _finance_snapshot(row)
     settings = _paperless_settings(db, include_secret=True)
     lines = db.query(PurchaseInvoiceLine).filter(PurchaseInvoiceLine.purchase_invoice_id == int(invoice_id)).order_by(PurchaseInvoiceLine.id.asc()).all()
     products = {int(item.id): item for item in db.query(Product).filter(Product.id.in_([int(line.product_id) for line in lines if line.product_id])).all()} if lines else {}
@@ -26354,6 +26716,16 @@ def einkauf_invoice_document_export(invoice_id: int, request: Request, user=Depe
         )
         row.paperless_document_id = document_id
         db.add(row)
+        _finance_audit_append(
+            db,
+            area="einkauf",
+            entity_type="purchase_invoice",
+            entity_id=int(row.id),
+            action="paperless_export",
+            actor_user_id=int(user.id or 0) or None,
+            before=before_snapshot,
+            after=_finance_snapshot(row),
+        )
         db.commit()
         _flash(request, f"Zusammenfassung an Paperless gesendet ({document_id}).", "info")
     except Exception as exc:
