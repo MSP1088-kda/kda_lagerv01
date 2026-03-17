@@ -2,7 +2,7 @@
 {% block content %}
 <div class="panel">
   <h1>Merkmale</h1>
-  <div class="hint">Hier bearbeitest du Merkmale, die beim CSV-Import angelegt wurden.</div>
+  <div class="hint">Hier bearbeitest du freigegebene Merkmale. Neue Werte kommen direkt aus dem CSV-Import und werden nicht mehr über eine separate Kandidatenansicht geprüft.</div>
   <div class="row" style="margin-top:10px;">
     <a class="btn" href="/catalog/features/normalization{% if selected_kind_id %}?kind_id={{ selected_kind_id }}{% endif %}">Normalisierung öffnen</a>
   </div>
@@ -120,5 +120,6 @@
   <li>Merkmale kommen aus dem CSV-Import und können hier nachträglich angepasst werden.</li>
   <li>Der Schlüssel ist technisch wichtig und muss je Geräteart eindeutig sein.</li>
   <li>Beim Speichern einer Schlüsseländerung werden passende Import-Profile automatisch aktualisiert.</li>
+  <li>Der alte Kandidatenworkflow ist stillgelegt; neue Werte werden direkt im Import auf Produkte geschrieben.</li>
 </ul>
 {% endblock %}

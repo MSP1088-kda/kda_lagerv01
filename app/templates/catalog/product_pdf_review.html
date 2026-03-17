@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+{% block content %}
+{% import "macros/forms.html" as f %}
+{% set fd = form_data or {} %}
+{% set fe = form_errors or {} %}
+{% set attr_total = (attrs|length) + (new_attr_candidates|length) %}
+{% set required_total = attrs|selectattr('is_required')|list|length %}
+
+<div class="panel">
+  <h1>Datenblatt prüfen</h1>
+
+  <div class="hint">
+    Quelle: <b>{{ review_meta.source_filename or '-' }}</b> |
+    Vertrauen: <b>{{ '%.0f'|format((review_meta.confidence or 0) * 100) }}%</b> |
+    Modus: <b>{% if review_meta.existing_product_id %}Vorhandenes Produkt aktualisieren{% else %}Neues Produkt anlegen{% endif %}</b>
+    {% if review_meta.ai_model %}| KI: <b>{{ review_meta.ai_model }}</b>{% endif %}
+  </div>
+
+  {% if review_meta.hard_case or review_meta.notes %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Prüfhinweise</div>
+    <div class="box-body">
+      {% if review_meta.hard_case %}
+      <div class="muted">Der Parser hat den Fall als schwierig markiert. Bitte die Werte kurz prüfen.</div>
+      {% endif %}
+      {% for note in review_meta.notes %}
+      <div>- {{ note }}</div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if existing_product %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Gefundener Produktbestand</div>
+    <div class="box-body">
+      <div><b>#{{ existing_product.id }}</b> {{ existing_product.name or existing_product.sales_name or existing_product.material_no or '-' }}</div>
+      <div class="muted">Beim Bestätigen wird dieses Produkt aktualisiert.</div>
+    </div>
+  </div>
+  {% endif %}
+
+  {{ f.render_errors(fe) }}
+
+  <form method="post" action="/catalog/products/new/confirm" class="form" data-pdf-marker-scope>
+    <input type="hidden" name="review_token" value="{{ review_token }}">
+
+    <div class="grid2 pdf-review-layout" style="align-items:start;">
+      <div class="pdf-review-viewer-col">
+        {% set pdf_marker_title = "Datenblatt prüfen und markieren" %}
+        {% set pdf_marker_help = "Merkmal unten auswählen und die gefundene Stelle im Datenblatt markieren." %}
+        {% set pdf_back_url = "/catalog/products/new" %}
+        {% set pdf_back_label = "Neu analysieren" %}
+        {% include "catalog/_pdf_marker_viewer.html" %}
+      </div>
+
+      <div class="pdf-review-side-col">
+        <div class="pdf-review-overview">
+          <div class="pdf-review-stat">
+            <span class="label">Merkmale</span>
+            <strong data-pdf-marker-count-total>{{ attr_total }}</strong>
+          </div>
+          <div class="pdf-review-stat">
+            <span class="label">Markiert</span>
+            <strong data-pdf-marker-count-marked>0</strong>
+          </div>
+          <div class="pdf-review-stat">
+            <span class="label">Offen</span>
+            <strong data-pdf-marker-count-open>{{ attr_total }}</strong>
+          </div>
+          <div class="pdf-review-stat">
+            <span class="label">Pflicht offen</span>
+            <strong data-pdf-marker-count-required-open>{{ required_total }}</strong>
+          </div>
+        </div>
+        <div class="pdf-review-progress">
+          <div class="pdf-review-progress-bar">
+            <div class="pdf-review-progress-fill" data-pdf-marker-progress-fill style="width:0%;"></div>
+          </div>
+          <div class="muted" data-pdf-marker-progress-label>Noch keine Markierung</div>
+        </div>
+        <div class="row pdf-review-jumpbar">
+          <button class="btn small" type="button" data-pdf-marker-next-open>Nächstes offenes Merkmal</button>
+          <button class="btn small" type="button" data-pdf-marker-first-open>Erstes offenes Merkmal</button>
+          <span class="muted">Pfeile: Seite wechseln, +/-: Zoom</span>
+        </div>
+
+        <h2>Produktkern</h2>
+        <div class="grid3">
+          <div>
+            <label>Hersteller</label>
+            <select name="manufacturer_id" class="{% if fe.get('manufacturer_id') %}is-error{% endif %}">
+              <option value="0">Bitte wählen</option>
+              {% set selected_manufacturer = f.old(fd, 'manufacturer_id', 0) | int %}
+              {% for row in manufacturers %}
+              <option value="{{ row.id }}" {% if selected_manufacturer == row.id %}selected{% endif %}>{{ row.name }}</option>
+              {% endfor %}
+            </select>
+            {{ f.field_error(fe, 'manufacturer_id') }}
+          </div>
+          <div>
+            <label>Geräteart</label>
+            <select name="device_kind_id" class="{% if fe.get('device_kind_id') %}is-error{% endif %}">
+              <option value="0">Bitte wählen</option>
+              {% set selected_kind = f.old(fd, 'device_kind_id', 0) | int %}
+              {% for row in kinds %}
+              <option value="{{ row.id }}" {% if selected_kind == row.id %}selected{% endif %}>{{ row.name }}</option>
+              {% endfor %}
+            </select>
+            {{ f.field_error(fe, 'device_kind_id') }}
+          </div>
+          <div>
+            <label>EAN</label>
+            <input type="text" name="ean" value="{{ f.old(fd, 'ean', '') }}" class="{% if fe.get('ean') %}is-error{% endif %}">
+            {{ f.field_error(fe, 'ean') }}
+          </div>
+          <div>
+            <label>Verkaufsbezeichnung</label>
+            <input type="text" name="sales_name" value="{{ f.old(fd, 'sales_name', '') }}" class="{% if fe.get('sales_name') %}is-error{% endif %}">
+            {{ f.field_error(fe, 'sales_name') }}
+          </div>
+          <div>
+            <label>Materialnummer</label>
+            <input type="text" name="material_no" value="{{ f.old(fd, 'material_no', '') }}" class="{% if fe.get('material_no') %}is-error{% endif %}">
+            {{ f.field_error(fe, 'material_no') }}
+          </div>
+          <div>
+            <label>Produkttitel 1</label>
+            <input type="text" name="product_title_1" value="{{ f.old(fd, 'product_title_1', '') }}">
+          </div>
+          <div>
+            <label>Produkttitel 2</label>
+            <input type="text" name="product_title_2" value="{{ f.old(fd, 'product_title_2', '') }}">
+          </div>
+        </div>
+
+        <label>Beschreibung</label>
+        <textarea name="description" rows="4">{{ f.old(fd, 'description', '') }}</textarea>
+      </div>
+    </div>
+
+    {% if attrs %}
+    <h2>Erkannte Attribute</h2>
+    {% for group_name, group_attrs in attrs_grouped %}
+    <div class="box pdf-review-group" style="margin-top:10px;">
+      <div class="box-title pdf-review-group-title">
+        <span>{{ group_name }}</span>
+        <span class="muted">{{ group_attrs|length }} Merkmale</span>
+      </div>
+      <div class="box-body">
+        {% for a in group_attrs %}
+        <div class="box pdf-marker-field" data-pdf-marker-field data-attr-id="{{ a.id }}" data-attr-name="{{ a.name }}" data-pdf-marker-required="{% if a.is_required %}1{% else %}0{% endif %}" style="margin-top:{% if loop.first %}0{% else %}10px{% endif %};">
+        <div class="box-title pdf-marker-field-head">
+          <span>{{ a.name }}{% if a.is_required %} *{% endif %}</span>
+          <span class="pdf-marker-chip" data-pdf-marker-chip>Offen</span>
+        </div>
+        <div class="box-body">
+        <input type="hidden" name="marker_{{ a.id }}" value="{{ f.old(fd, 'marker_' ~ a.id, '') }}" data-pdf-marker-input>
+        <div class="row pdf-marker-actions">
+          <button class="btn small" type="button" data-pdf-marker-select>Im PDF markieren</button>
+          <button class="btn small" type="button" data-pdf-marker-open hidden>Zur Markierung</button>
+          <button class="btn small" type="button" data-pdf-marker-clear hidden>Markierung löschen</button>
+          <span class="muted pdf-marker-summary" data-pdf-marker-summary>Keine Markierung</span>
+        </div>
+        <label>Bestätigter Wert</label>
+        {% if a.value_type == 'bool' %}
+        <select name="attr_{{ a.id }}">
+          <option value="">-</option>
+          <option value="true" {% if val_map.get(a.id) == 'true' %}selected{% endif %}>Ja</option>
+          <option value="false" {% if val_map.get(a.id) == 'false' %}selected{% endif %}>Nein</option>
+        </select>
+        {% elif a.value_type == 'number' %}
+        <input type="number" step="any" name="attr_{{ a.id }}" value="{{ val_map.get(a.id, '') }}">
+        {% elif a.value_type == 'enum' and a.is_multi %}
+        <div class="row">
+          {% set selected = val_multi_map.get(a.id, []) %}
+          {% for opt in options_map.get(a.id, []) %}
+          <label class="check">
+            <input type="checkbox" name="attr_{{ a.id }}" value="{{ opt }}" {% if opt in selected %}checked{% endif %}>
+            {{ opt }}
+          </label>
+          {% endfor %}
+        </div>
+        {% elif a.value_type == 'enum' %}
+        <select name="attr_{{ a.id }}">
+          <option value="">-</option>
+          {% for opt in options_map.get(a.id, []) %}
+          <option value="{{ opt }}" {% if val_map.get(a.id) == opt %}selected{% endif %}>{{ opt }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input type="text" name="attr_{{ a.id }}" value="{{ val_map.get(a.id, '') }}">
+        {% endif %}
+        {% if fe.get('attr_' ~ a.id) %}
+        <div class="flash-item flash-error">{{ fe.get('attr_' ~ a.id) }}</div>
+        {% endif %}
+        </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if new_attr_candidates %}
+    <h2>Neue Merkmale direkt aus dem PDF</h2>
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Neue Merkmale definieren</div>
+      <div class="box-body">
+        <div class="muted">Hier kannst du PDF-Treffer direkt einem vorhandenen Merkmal zuordnen oder sofort ein neues Merkmal für diese Geräteart anlegen.</div>
+        {% for candidate in new_attr_candidates %}
+        {% set token = candidate.id %}
+        {% set selected_attr_id = fd.get('candidate_attribute_id_' ~ token, candidate.selected_attribute_id) | int %}
+        <div class="box pdf-marker-field" data-pdf-marker-field data-attr-id="{{ candidate.marker_attr_id }}" data-attr-name="{{ fd.get('candidate_attribute_name_' ~ token, candidate.source_label) or candidate.source_label }}" data-pdf-marker-required="0" style="margin-top:{% if loop.first %}10px{% else %}12px{% endif %};">
+          <div class="box-title pdf-marker-field-head">
+            <span>{{ fd.get('candidate_attribute_name_' ~ token, candidate.source_label) or candidate.source_label }}</span>
+            <span class="pdf-marker-chip" data-pdf-marker-chip>Offen</span>
+          </div>
+          <div class="box-body">
+            <input type="hidden" name="new_attr_candidate_ids" value="{{ token }}">
+            <input type="hidden" name="candidate_seen_{{ token }}" value="1">
+            <input type="hidden" name="candidate_source_label_{{ token }}" value="{{ fd.get('candidate_source_label_' ~ token, candidate.source_label) }}">
+            <input type="hidden" name="candidate_source_value_{{ token }}" value="{{ fd.get('candidate_source_value_' ~ token, candidate.source_value) }}">
+            <input type="hidden" name="marker_new_{{ token }}" value="{{ fd.get('marker_new_' ~ token, '') }}" data-pdf-marker-input>
+
+            <label class="check" style="margin-bottom:8px;">
+              <input type="checkbox" name="candidate_use_{{ token }}" value="1" {% if fd.get('candidate_use_' ~ token, '1') %}checked{% endif %}>
+              Merkmal übernehmen
+            </label>
+
+            <div class="row pdf-marker-actions">
+              <button class="btn small" type="button" data-pdf-marker-select>Im PDF markieren</button>
+              <button class="btn small" type="button" data-pdf-marker-open hidden>Zur Markierung</button>
+              <button class="btn small" type="button" data-pdf-marker-clear hidden>Markierung löschen</button>
+              <span class="muted pdf-marker-summary" data-pdf-marker-summary>Keine Markierung</span>
+            </div>
+
+            <div class="grid2">
+              <div>
+                <label>PDF-Name</label>
+                <input type="text" value="{{ fd.get('candidate_source_label_' ~ token, candidate.source_label) }}" readonly>
+              </div>
+              <div>
+                <label>PDF-Wert</label>
+                <input type="text" value="{{ fd.get('candidate_source_value_' ~ token, candidate.source_value) }}" readonly>
+              </div>
+            </div>
+
+            <div class="grid2" style="margin-top:8px;">
+              <div>
+                <label>Vorhandenes Merkmal zuordnen</label>
+                <select name="candidate_attribute_id_{{ token }}">
+                  <option value="0">Neues Merkmal anlegen</option>
+                  {% for row in attribute_choice_rows %}
+                  <option value="{{ row.id }}" {% if selected_attr_id == row.id %}selected{% endif %}>{{ row.label }}</option>
+                  {% endfor %}
+                </select>
+                {% if fe.get('candidate_attribute_id_' ~ token) %}
+                <div class="flash-item flash-error">{{ fe.get('candidate_attribute_id_' ~ token) }}</div>
+                {% endif %}
+              </div>
+              <div>
+                <label>Bestätigter Wert</label>
+                <input type="text" name="candidate_confirmed_value_{{ token }}" value="{{ fd.get('candidate_confirmed_value_' ~ token, candidate.source_value) }}">
+                {% if fe.get('candidate_confirmed_value_' ~ token) %}
+                <div class="flash-item flash-error">{{ fe.get('candidate_confirmed_value_' ~ token) }}</div>
+                {% endif %}
+              </div>
+            </div>
+
+            <div class="grid3" style="margin-top:8px;">
+              <div>
+                <label>Neuer Merkmalname</label>
+                <input type="text" name="candidate_attribute_name_{{ token }}" value="{{ fd.get('candidate_attribute_name_' ~ token, candidate.source_label) }}">
+                {% if fe.get('candidate_attribute_name_' ~ token) %}
+                <div class="flash-item flash-error">{{ fe.get('candidate_attribute_name_' ~ token) }}</div>
+                {% endif %}
+              </div>
+              <div>
+                <label>Typ</label>
+                <select name="candidate_value_type_{{ token }}">
+                  {% set selected_type = fd.get('candidate_value_type_' ~ token, 'text') %}
+                  {% for option in ['text', 'number', 'bool', 'enum'] %}
+                  <option value="{{ option }}" {% if selected_type == option %}selected{% endif %}>{{ option }}</option>
+                  {% endfor %}
+                </select>
+                {% if fe.get('candidate_value_type_' ~ token) %}
+                <div class="flash-item flash-error">{{ fe.get('candidate_value_type_' ~ token) }}</div>
+                {% endif %}
+              </div>
+              <div>
+                <label>Gruppe</label>
+                <input type="text" name="candidate_group_name_{{ token }}" value="{{ fd.get('candidate_group_name_' ~ token, '') }}" placeholder="z. B. Energie & Verbrauch">
+              </div>
+            </div>
+
+            <label style="margin-top:8px;">Enum-Optionen</label>
+            <textarea name="candidate_enum_options_{{ token }}" rows="2" placeholder="Eine Option pro Zeile oder kommasepariert">{{ fd.get('candidate_enum_options_' ~ token, '') }}</textarea>
+
+            <div class="row" style="margin-top:6px;">
+              <label class="check">
+                <input type="checkbox" name="candidate_is_required_{{ token }}" value="1" {% if fd.get('candidate_is_required_' ~ token) %}checked{% endif %}>
+                Pflichtmerkmal
+              </label>
+              <label class="check">
+                <input type="checkbox" name="candidate_is_multi_{{ token }}" value="1" {% if fd.get('candidate_is_multi_' ~ token) %}checked{% endif %}>
+                Mehrfachauswahl
+              </label>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if not attrs and not new_attr_candidates %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Attribute</div>
+      <div class="box-body">
+        <div class="muted">Für die aktuell erkannte Geräteart wurden noch keine Merkmale aus dem PDF geladen.</div>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="row pdf-review-submit-bar" style="margin-top:12px;">
+      <button class="btn primary" type="submit">Import bestätigen</button>
+      <a class="btn" href="/catalog/products/new">Neu analysieren</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Hier prüfst du die automatisch gelesenen Werte und kannst die passenden Stellen direkt im PDF markieren.</li>
+  <li>Neue Merkmale kannst du direkt hier anlegen oder einem vorhandenen Merkmal zuordnen.</li>
+  <li>Wenn ein bestehendes Produkt erkannt wurde, läuft die Bestätigung als Update.</li>
+  <li>Nach dem Bestätigen liegt das Datenblatt lokal am Produkt und bleibt dort direkt abrufbar.</li>
+</ul>
+{% endblock %}

@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Asset-Linkregeln</h1>
+  <div class="hint">Regeln definieren freigegebene URL-Muster für Bilder und PDFs. Zusätzlich zeigt die Seite beobachtete Muster aus vorhandenen Asset-Quellen, damit daraus gezielt Regeln entstehen können.</div>
+
+  <form method="get" action="/catalog/asset-link-rules" class="form compact" style="margin-top:10px;">
+    <div class="grid3">
+      <div>
+        <label>Hersteller</label>
+        <select name="manufacturer_id">
+          <option value="0">Alle</option>
+          {% for row in manufacturers %}
+          <option value="{{ row.id }}" {% if selected_manufacturer_id == row.id %}selected{% endif %}>{{ row.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="row right" style="align-items:flex-end;">
+        <button class="btn primary" type="submit">Filtern</button>
+        <a class="btn" href="/catalog/asset-link-rules">Zurücksetzen</a>
+        <a class="btn" href="/catalog/import/profiles">Importprofile</a>
+      </div>
+    </div>
+  </form>
+
+  <details class="box collapse-box" style="margin-top:10px;" open>
+    <summary class="box-title">Beobachtete Muster</summary>
+    <div class="box-body">
+      {% if observed_candidates %}
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 180px 140px 180px 1fr;">
+          <div>Hersteller</div>
+          <div>Asset</div>
+          <div>Quellfelder</div>
+          <div>Beobachtetes Template</div>
+        </div>
+        {% for row in observed_candidates %}
+        <div class="tr" style="grid-template-columns: 180px 140px 180px 1fr;">
+          <div>{{ row.manufacturer_name }}<div class="muted">{{ row.count }} Treffer</div></div>
+          <div>{{ row.asset_type }}</div>
+          <div>{{ row.source_fields|join(', ') }}</div>
+          <div>
+            <div class="mono">{{ row.url_template }}</div>
+            <div class="muted">Beispiel: {{ row.example_url }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="muted">Noch keine wiederkehrenden Muster erkannt.</div>
+      {% endif %}
+    </div>
+  </details>
+
+  <details class="box collapse-box" style="margin-top:10px;" open>
+    <summary class="box-title">Neue Regel anlegen</summary>
+    <div class="box-body">
+      <form method="post" action="/catalog/asset-link-rules/add" class="form compact">
+        <div class="grid3">
+          <div>
+            <label>Hersteller</label>
+            <select name="manufacturer_id">
+              <option value="0">Global</option>
+              {% for row in manufacturers %}
+              <option value="{{ row.id }}">{{ row.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Asset-Typ</label>
+            <select name="asset_type" required>
+              {% for value in asset_type_choices %}
+              <option value="{{ value }}">{{ value }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Quellfeld</label>
+            <select name="source_field" required>
+              {% for value in source_field_choices %}
+              <option value="{{ value }}">{{ value }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Priorität</label>
+            <input type="number" name="priority" value="100">
+          </div>
+          <div>
+            <label>Aktiv</label>
+            <label class="check"><input type="checkbox" name="active" checked> Regel aktiv</label>
+          </div>
+        </div>
+        <label>URL-Template</label>
+        <input type="text" name="url_template" placeholder="https://beispiel.tld/{% raw %}{{ material_no }}{% endraw %}/manual.pdf" required>
+        <label>Notizen</label>
+        <textarea name="notes" rows="2"></textarea>
+        <button class="btn primary" type="submit">Regel speichern</button>
+      </form>
+    </div>
+  </details>
+
+  {% if rows %}
+  <div class="table" style="margin-top:10px;">
+    <div class="tr th" style="grid-template-columns: 1fr 140px 140px 90px 90px 180px;">
+      <div>Regel</div>
+      <div>Hersteller</div>
+      <div>Asset</div>
+      <div>Quelle</div>
+      <div>Priorität</div>
+      <div>Aktion</div>
+    </div>
+    {% for row in rows %}
+    <div class="tr" style="grid-template-columns: 1fr;">
+      <div>
+        <form method="post" action="/catalog/asset-link-rules/{{ row.id }}/edit" class="form compact">
+          <div class="grid3" style="grid-template-columns: 1.4fr 140px 140px 120px 90px 110px;">
+            <div>
+              <label>URL-Template</label>
+              <input type="text" name="url_template" value="{{ row.url_template }}" required>
+            </div>
+            <div>
+              <label>Hersteller</label>
+              <select name="manufacturer_id">
+                <option value="0" {% if not row.manufacturer_id %}selected{% endif %}>Global</option>
+                {% for item in manufacturers %}
+                <option value="{{ item.id }}" {% if row.manufacturer_id == item.id %}selected{% endif %}>{{ item.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label>Asset</label>
+              <select name="asset_type">
+                {% for value in asset_type_choices %}
+                <option value="{{ value }}" {% if row.asset_type == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label>Quellfeld</label>
+              <select name="source_field">
+                {% for value in source_field_choices %}
+                <option value="{{ value }}" {% if row.source_field == value %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label>Priorität</label>
+              <input type="number" name="priority" value="{{ row.priority or 100 }}">
+            </div>
+            <div>
+              <label>Aktiv</label>
+              <label class="check"><input type="checkbox" name="active" {% if row.active %}checked{% endif %}> aktiv</label>
+            </div>
+          </div>
+          <label>Notizen</label>
+          <textarea name="notes" rows="2">{{ row.notes or '' }}</textarea>
+          <button class="btn small" type="submit">Speichern</button>
+          <div class="muted">
+            {% if row.manufacturer_id %}{{ manufacturer_name_map.get(row.manufacturer_id, 'Hersteller #' ~ row.manufacturer_id) }}{% else %}Global{% endif %}
+            | {{ row.asset_type }} | {{ row.source_field }} | Priorität {{ row.priority or 100 }}
+          </div>
+        </form>
+        <form method="post" action="/catalog/asset-link-rules/{{ row.id }}/delete" class="inline" onsubmit="return confirm('Regel wirklich löschen?');" style="margin-top:8px;">
+          <button class="btn small danger" type="submit">Löschen</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="muted" style="margin-top:10px;">Keine Asset-Linkregeln vorhanden.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Beobachtete Muster zeigen wiederkehrende URLs aus vorhandenen Assets, ohne automatisch Live-Links zu erzeugen.</li>
+  <li>Regeln arbeiten nur mit freigegebenen Kernfeldern wie EAN, Materialnummer und Produkttiteln.</li>
+</ul>
+{% endblock %}

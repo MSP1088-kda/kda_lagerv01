@@ -105,7 +105,7 @@ DEFAULT_ITEM_TYPE_RULES = {
         "name": {"visible": False, "required": False},
         "material_no": {"visible": True, "required": True},
         "sales_name": {"visible": True, "required": True},
-        "manufacturer_name": {"visible": True, "required": False},
+        "manufacturer_name": {"visible": False, "required": False},
         "product_title_1": {"visible": True, "required": False},
         "product_title_2": {"visible": True, "required": False},
         "manufacturer_id": {"visible": True, "required": True},

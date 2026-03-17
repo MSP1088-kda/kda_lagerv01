@@ -14,26 +14,28 @@
   </div>
 
   <div class="table" style="margin-top:10px;">
-    <div class="tr th" style="grid-template-columns: 130px 190px 160px 1fr 180px 220px;">
-      <div>Typ</div>
-      <div>Nummer</div>
-      <div>Status</div>
-      <div>Serviceauftrag</div>
-      <div>Aktualisiert</div>
-      <div>Aktionen</div>
+      <div class="tr th" style="grid-template-columns: {% if internal_service_orders_enabled %}130px 190px 160px 1fr 180px 220px{% else %}130px 190px 160px 180px 220px{% endif %};">
+        <div>Typ</div>
+        <div>Nummer</div>
+        <div>Status</div>
+        {% if internal_service_orders_enabled %}<div>Serviceauftrag</div>{% endif %}
+        <div>Aktualisiert</div>
+        <div>Aktionen</div>
     </div>
     {% for item in rows %}
-      <div class="tr" style="grid-template-columns: 130px 190px 160px 1fr 180px 220px; align-items:start;">
-        <div>{{ item.type_label }}</div>
+      <div class="tr" style="grid-template-columns: {% if internal_service_orders_enabled %}130px 190px 160px 1fr 180px 220px{% else %}130px 190px 160px 180px 220px{% endif %}; align-items:start;">
+        <div>{{ item.type_label }}<div class="muted">{% if item.source == 'sevdesk_live' %}Live{% else %}Lokal{% endif %}</div></div>
         <div><a href="{{ item.detail_url }}"><b>{{ item.number_label }}</b></a></div>
         <div>{{ item.status_label }}</div>
-        <div>
-          {% if item.crm_case %}
-            <a href="/serviceauftraege/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
-          {% else %}
-            -
-          {% endif %}
-        </div>
+        {% if internal_service_orders_enabled %}
+          <div>
+            {% if item.crm_case %}
+              <a href="/serviceauftraege/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
+            {% else %}
+              -
+            {% endif %}
+          </div>
+        {% endif %}
         <div>{{ format_date(item.updated_at) if item.updated_at else '-' }}</div>
         <div class="row" style="gap:8px; flex-wrap:wrap;">
           <a class="btn small" href="{{ item.detail_url }}">Details</a>
@@ -42,14 +44,14 @@
         </div>
       </div>
     {% endfor %}
-    {% if not rows %}<div class="muted">Noch keine lokalen sevDesk-Angebote oder Rechnungen an diesem Kunden vorhanden.</div>{% endif %}
+    {% if not rows %}<div class="muted">Noch keine sevDesk-Angebote oder Rechnungen an diesem Kunden vorhanden.</div>{% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Die Liste bündelt lokale Angebote und Rechnungen mit Bezug zu sevDesk.</li>
-  <li>Öffne zuerst die lokale Detailseite, von dort aus bei Bedarf PDF oder sevDesk-Link.</li>
+  <li>Die Liste bündelt lokale Belege mit live aus sevDesk geladenen Angeboten und Rechnungen.</li>
+  <li>Live-Einträge öffnen in einer lokalen Detailansicht, ohne dass pro Klick neue Browserfenster nötig sind.</li>
 </ul>
 {% endblock %}

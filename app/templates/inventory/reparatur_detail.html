@@ -40,6 +40,9 @@
         <button class="btn" type="submit" form="repairActionSForm" {% if not can_reserve %}disabled{% endif %}>S Reservieren</button>
         <button class="btn" type="submit" form="repairOutsmartForm" {% if not outsmart_ready %}disabled{% endif %}>An OutSmart senden</button>
       </div>
+      {% if not outsmart_write_enabled %}
+        <div class="hint" style="margin-top:8px;">OutSmart ist aktuell nur im Lesezugriff aktiv. Neue Reparaturaufträge werden nicht exportiert.</div>
+      {% endif %}
     </div>
   </div>
 

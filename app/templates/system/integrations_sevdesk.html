@@ -2,6 +2,9 @@
 {% block content %}
 <div class="panel">
   <h1>Integration: sevDesk</h1>
+  {% if settings.enabled and settings.push_blocked %}
+    <div class="flash info" style="margin-bottom:10px;">sevDesk ist aktuell im Read-only-Modus. Lesen und Abgleich bleiben aktiv, Export und Schreiben sind deaktiviert.</div>
+  {% endif %}
 
   <div class="grid2" style="align-items:start;">
     <div class="box">
@@ -9,6 +12,8 @@
       <div class="box-body">
         <form method="post" action="/system/integrationen/sevdesk" class="form">
           <label><input type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %}> Aktiv</label>
+          <label><input type="checkbox" name="write_enabled" {% if settings.write_requested %}checked{% endif %}> Schreibzugriffe freigeben</label>
+          <div class="hint">Deaktiviert = nur lesen, importieren und abgleichen. Aktiviert = Export, Versand und Buchung nach sevDesk erlauben.</div>
           <label>Base-URL</label>
           <input type="text" name="base_url" value="{{ settings.base_url or 'https://my.sevdesk.de/api/v1' }}">
           <label>API-Token</label>
@@ -44,6 +49,11 @@
       <div class="box-body">
         <div><b>Aktiv:</b> {{ 'Ja' if settings.enabled else 'Nein' }}</div>
         <div><b>Token:</b> {{ 'Gesetzt' if settings.api_token_set else 'Fehlt' }}</div>
+        <div><b>Schreibfreigabe:</b> {{ 'Ein' if settings.write_requested else 'Aus' }}</div>
+        <div><b>Schreibzugriff:</b> {{ 'Freigegeben' if settings.write_enabled else 'Deaktiviert (Read-only)' }}</div>
+        {% if settings.write_blocked_by_customer_init and settings.write_requested %}
+          <div class="hint">Kunden-Initialisierung ist aktiv. Schreibzugriffe bleiben daher vorübergehend gesperrt.</div>
+        {% endif %}
         <div><b>Bookkeeping-Version:</b> {{ settings.bookkeeping_system_version or '-' }}</div>
         <div><b>Export-Job-Historie:</b> {{ export_jobs|length }}</div>
         {% if test_result %}

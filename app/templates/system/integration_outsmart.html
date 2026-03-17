@@ -7,17 +7,30 @@
   {% set fe = form_errors or {} %}
 
   {{ f.render_errors(fe) }}
+  {% if settings.enabled and settings.push_blocked %}
+  <div class="flash info" style="margin-bottom:10px;">OutSmart ist aktuell im Read-only-Modus. Lesen und Abgleich bleiben aktiv, Export und Schreiben sind deaktiviert.</div>
+  {% endif %}
 
-  <form method="post" action="/system/integrationen/outsmart" class="form" data-first-error="{% if fe.get('host') %}outsmart_host{% endif %}">
+  <form method="post" action="/system/integrationen/outsmart" class="form" data-first-error="{% if fe.get('host') %}outsmart_host{% elif fe.get('portal_url') %}outsmart_portal_url{% endif %}">
     <label class="check">
       <input type="checkbox" name="enabled" {% if f.is_checked(fd, 'enabled', settings.enabled) %}checked{% endif %}>
       OutSmart aktivieren
     </label>
+    <label class="check">
+      <input type="checkbox" name="write_enabled" {% if f.is_checked(fd, 'write_enabled', settings.write_requested) %}checked{% endif %}>
+      Schreibzugriffe freigeben
+    </label>
+    <div class="hint">Deaktiviert = nur lesen, importieren und abgleichen. Aktiviert = Export und Push nach OutSmart erlauben.</div>
 
     <label for="outsmart_host">Basis-URL</label>
     <input id="outsmart_host" type="url" name="host" value="{{ f.old(fd, 'host', settings.host) }}" placeholder="https://app.out-smart.com/openapi/8" class="{% if fe.get('host') %}is-error{% endif %}">
     {{ f.field_error(fe, 'host') }}
     <div class="hint">Letzter erfolgreicher Abgleich: {{ settings.last_sync_at or '-' }}</div>
+
+    <label for="outsmart_portal_url">Portal-URL für Web-Deep-Links</label>
+    <input id="outsmart_portal_url" type="url" name="portal_url" value="{{ f.old(fd, 'portal_url', settings.portal_url) }}" placeholder="https://app.out-smart.com/portal-new/dein-portal" class="{% if fe.get('portal_url') %}is-error{% endif %}">
+    {{ f.field_error(fe, 'portal_url') }}
+    <div class="hint">Optional. Ohne diese URL werden keine unsicheren Fallback-Links wie <code>/workorders/&lt;id&gt;</code> mehr angezeigt.</div>
 
     <label for="outsmart_bearer">Konten-Bearer-Token</label>
     <input id="outsmart_bearer" type="password" name="bearer" value="" placeholder="Leer lassen = unverändert" autocomplete="off">
@@ -49,6 +62,12 @@
         <div><b>Bearer:</b> {{ 'gesetzt' if settings.bearer_set else 'nicht gesetzt' }}</div>
         <div><b>Token:</b> {{ 'gesetzt' if settings.token_set else 'nicht gesetzt' }}</div>
         <div><b>Software-Token:</b> {{ 'gesetzt' if settings.software_token_set else 'nicht gesetzt' }}</div>
+        <div><b>Schreibfreigabe:</b> {{ 'Ein' if settings.write_requested else 'Aus' }}</div>
+        <div><b>Schreibzugriff:</b> {{ 'Freigegeben' if settings.write_enabled else 'Deaktiviert (Read-only)' }}</div>
+        {% if settings.write_blocked_by_customer_init and settings.write_requested %}
+        <div class="hint">Kunden-Initialisierung ist aktiv. Schreibzugriffe bleiben daher vorübergehend gesperrt.</div>
+        {% endif %}
+        <div><b>Portal-URL:</b> {{ settings.portal_url or 'nicht gesetzt' }}</div>
       </div>
     </div>
     <div class="box">

@@ -1,42 +1,72 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Dokumenteneingang</h1>
-  <div class="row" style="margin-bottom:10px;">
+  <h1>Beleg-Entwurfspool</h1>
+  <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
     <form method="post" action="/einkauf/dokumente/abrufen" class="inline">
       <button class="btn primary" type="submit">Aus Paperless abrufen</button>
     </form>
+    <form method="post" action="/einkauf/dokumente/upload-inbox" enctype="multipart/form-data" class="inline row" style="gap:8px; flex-wrap:wrap;">
+      <input type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required>
+      <button class="btn" type="submit">PDF/JPG/PNG hochladen</button>
+    </form>
+    <a class="btn" href="/einkauf/buchungskonten">Buchungskonten</a>
     <a class="btn" href="/system/integrationen/paperless">Paperless-Einstellungen</a>
   </div>
-  <div class="hint">Modus: {{ paperless_mode_label }}</div>
+  <div class="hint">Quellen: Paperless, manueller Upload und automatisch importierte E-Mail-Anhänge. Modus: {{ paperless_mode_label }}</div>
   <div class="table" style="margin-top:10px;">
-    <div class="tr th" style="grid-template-columns: 120px 1.8fr 1fr 1fr 140px 150px;">
+    <div class="tr th" style="grid-template-columns: 120px 1.5fr 1fr 180px 160px 150px 220px;">
       <div>Paperless-ID</div>
       <div>Titel</div>
-      <div>Korrespondent</div>
-      <div>Dokumenttyp</div>
+      <div>Quelle</div>
+      <div>Belegtyp</div>
+      <div>Workflow</div>
       <div>Status</div>
       <div>Aktion</div>
     </div>
-    {% for row in rows %}
-      <div class="tr" style="grid-template-columns: 120px 1.8fr 1fr 1fr 140px 150px;">
+    {% for item in rows %}
+      {% set row = item.row %}
+      {% set source = item.overview.source %}
+      {% set next_action = item.overview.next_action %}
+      <div class="tr" style="grid-template-columns: 120px 1.5fr 1fr 180px 160px 150px 220px;">
         <div>{{ row.paperless_document_id }}</div>
-        <div>{{ row.title or '-' }}</div>
-        <div>{{ row.correspondent or '-' }}</div>
-        <div>{{ row.document_type or '-' }}</div>
+        <div>
+          <div>{{ row.title or '-' }}</div>
+          {% if row.correspondent %}<div class="hint">{{ row.correspondent }}</div>{% endif %}
+          {% if source and source.detail %}<div class="hint">{{ source.detail }}</div>{% endif %}
+        </div>
+        <div>
+          {% if source %}
+            <span class="status-pill status-{{ source.tone }}">{{ source.label }}</span>
+            {% if source.mail_url %}<div style="margin-top:6px;"><a href="{{ source.mail_url }}">Mail öffnen</a></div>{% endif %}
+          {% else %}
+            -
+          {% endif %}
+        </div>
+        <div>
+          <div>{{ item.overview.draft_kind_label }}</div>
+          {% if not item.overview.draft_kind and item.overview.suggested_kind_label %}<div class="hint">Vorschlag: {{ item.overview.suggested_kind_label }}</div>{% endif %}
+          {% if row.document_type %}<div class="hint">Paperless: {{ row.document_type }}</div>{% endif %}
+        </div>
+        <div>{{ item.overview.workflow_label }}</div>
         <div>{{ document_inbox_status_label(row.status) }}</div>
-        <div><a class="btn small" href="/einkauf/dokumente/{{ row.id }}">Zuordnen</a></div>
+        <div class="row" style="margin-top:0; gap:8px; flex-wrap:wrap;">
+          <a class="btn small" href="/einkauf/dokumente/{{ row.id }}">Prüfen</a>
+          {% if next_action.url %}<a class="btn small" href="{{ next_action.url }}">{{ next_action.label }}</a>{% endif %}
+        </div>
       </div>
     {% endfor %}
-    {% if not rows %}<div class="muted">Keine Dokumente im Dokumenteneingang.</div>{% endif %}
+    {% if not rows %}<div class="muted">Keine Beleg-Entwürfe im Pool.</div>{% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Paperless bleibt Eingang und Archiv; hier werden nur Fachzuordnungen gepflegt.</li>
-  <li>Neue Dokumente werden beim Abruf in den Dokumenteneingang gespiegelt.</li>
-  <li>Von der Detailseite aus kannst du Bestellung, Wareneingang, Rechnung oder Lieferant zuordnen.</li>
+  <li>Jeder Eingang landet zuerst als Beleg-Entwurf im Pool, unabhängig von der Quelle.</li>
+  <li>Der lokale Belegtyp ist unabhängig vom Paperless-Dokumenttyp und steuert den weiteren Erfassungsweg.</li>
+  <li>Upload und Mail-Anhänge laufen Paperless-first in diesen Eingang und können danach fachlich geprüft werden.</li>
+  <li>Spam-markierte Mails werden beim automatischen Einkaufsimport übersprungen.</li>
+  <li>Von der Detailseite aus kannst du Bestellung, Wareneingang, Rechnung, Lieferant oder direkt die Voucher-Vorbereitung öffnen.</li>
 </ul>
 {% endblock %}

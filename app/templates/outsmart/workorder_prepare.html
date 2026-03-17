@@ -4,17 +4,18 @@
   <h1>OutSmart-Einplanung vorbereiten: {{ row.case_no }}</h1>
 
   <div class="row" style="margin-bottom:10px; flex-wrap:wrap;">
-    <a class="btn" href="/serviceauftraege/{{ row.id }}">Zurück zum Serviceauftrag</a>
+    <a class="btn" href="/serviceauftraege/{{ row.id }}">Zurück zum Auftrag</a>
     {% if outsmart_workorder %}<a class="btn" href="/outsmart/arbeitsauftraege/{{ outsmart_workorder.id }}">Lokalen OutSmart-Arbeitsauftrag öffnen</a>{% endif %}
     {% if outsmart_project_link and outsmart_project_link.deep_link_url %}<a class="btn" href="{{ outsmart_project_link.deep_link_url }}" target="_blank" rel="noopener">Projekt in OutSmart öffnen</a>{% endif %}
   </div>
 
   <div class="grid2">
     <div class="box">
-      <div class="box-title">Interner Serviceauftrag</div>
+      <div class="box-title">Auftrag</div>
       <div class="box-body">
         <div><b>Titel:</b> {{ row.title }}</div>
         <div><b>Status:</b> {{ crm_case_status_label(row.status) }}</div>
+        <div><b>Auftragsart:</b> {{ crm_case_order_type_label(row.order_type) }}</div>
         <div><b>Auftraggeber:</b> {{ ordering_party.party.display_name if ordering_party and ordering_party.party else '-' }}</div>
         <div><b>Leistungsort:</b> {{ service_location.location_label if service_location else '-' }}</div>
         <div><b>Rechnungsempfänger:</b> {{ invoice_recipient.party.display_name if invoice_recipient and invoice_recipient.party else '-' }}</div>
@@ -27,12 +28,15 @@
       <div class="box-title">Sendeablauf</div>
       <div class="box-body">
         <div>1. Kunde als Relation nach OutSmart spiegeln</div>
-        <div>2. Serviceauftrag als Projekt spiegeln</div>
-        <div>3. Arbeitsauftrag für die Einplanung erzeugen</div>
-        <div class="muted" style="margin-top:8px;">Danach kannst du direkt nach OutSmart springen und den Auftrag in die Plantafel ziehen.</div>
+        <div>2. Auftrag als Projekt spiegeln</div>
+        <div>3. Arbeitsauftrag für Plantafel oder Einplanungsliste erzeugen</div>
+        <div class="muted" style="margin-top:8px;">Falls ein Terminvorschlag gepflegt ist, wird er bereits mit an OutSmart gegeben.</div>
         <form method="post" action="/serviceauftraege/{{ row.id }}/outsmart/senden" style="margin-top:10px;">
-          <button class="btn primary" type="submit">Jetzt zur Einplanung nach OutSmart senden</button>
+          <button class="btn primary" type="submit" {% if not outsmart_write_enabled %}disabled title="OutSmart-Schreiben ist derzeit deaktiviert."{% endif %}>Jetzt zur Einplanung nach OutSmart senden</button>
         </form>
+        {% if not outsmart_write_enabled %}
+          <div class="flash info" style="margin-top:10px;">OutSmart läuft derzeit im Read-only-Modus. Diese Seite zeigt nur die Vorschau; ein Export ist deaktiviert.</div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -67,6 +71,8 @@
       <div class="box-title">Arbeitsauftrag in OutSmart</div>
       <div class="box-body">
         <div><b>Arbeitsauftragsnummer:</b> {{ workorder_payload.WorkorderNo or '-' }}</div>
+        <div><b>Art:</b> {{ workorder_payload.TypeOfWork or '-' }}</div>
+        <div><b>Status:</b> {{ workorder_payload.Status or '-' }}</div>
         <div><b>Kurztext:</b> {{ workorder_payload.ShortWorkDescription or '-' }}</div>
         <div><b>Ansprechpartner:</b> {{ workorder_payload.CustomerContactPerson or '-' }}</div>
         <div><b>Telefon:</b> {{ workorder_payload.CustomerPhone or '-' }}</div>
@@ -76,6 +82,13 @@
         <div><b>Ort:</b> {{ workorder_payload.CustomerZipCode or '-' }} {{ workorder_payload.CustomerCity or '' }}</div>
         <div><b>Objektcode:</b> {{ workorder_payload.ObjectCode or '-' }}</div>
         <div><b>Seriennummer:</b> {{ workorder_payload.SerialNo or '-' }}</div>
+        <div><b>Terminvorschlag:</b>
+          {% if workorder_payload.PlannedStart or workorder_payload.PlannedEnd %}
+            {{ workorder_payload.PlannedStart or '-' }}{% if workorder_payload.PlannedEnd %} bis {{ workorder_payload.PlannedEnd }}{% endif %}
+          {% else %}
+            -
+          {% endif %}
+        </div>
       </div>
     </div>
   </div>
@@ -85,7 +98,12 @@
       <div class="box-title">Einsatzinhalt</div>
       <div class="box-body">
         <div><b>Fehlerbild:</b><br>{{ row.customer_issue or 'Nicht erfasst.' }}</div>
+        <div style="margin-top:8px;"><b>Sichtbar für Kunde / Techniker:</b><br>{{ row.customer_visible_note or 'Nicht erfasst.' }}</div>
         <div style="margin-top:8px;"><b>Arbeitsauftrag intern:</b><br>{{ row.work_instructions or 'Nicht erfasst.' }}</div>
+        <div style="margin-top:8px;"><b>Material / Vorabbedarf:</b><br>{{ row.material_summary or 'Nicht erfasst.' }}</div>
+        <div style="margin-top:8px;"><b>Ersatzteilstatus:</b> {{ crm_case_spare_part_status_label(row.spare_part_status) }}</div>
+        <div style="margin-top:8px;"><b>Ersatzteilhinweis:</b><br>{{ row.spare_part_note or 'Nicht erfasst.' }}</div>
+        <div style="margin-top:8px;"><b>Termin-/Routenhinweis:</b><br>{{ row.schedule_hint or 'Nicht erfasst.' }}</div>
         <div style="margin-top:8px;"><b>Interne Hinweise:</b><br>{{ row.note or 'Nicht erfasst.' }}</div>
       </div>
     </div>
@@ -116,7 +134,7 @@
 {% block help %}
 <ul>
   <li>Diese Vorschau zeigt die fachlichen Datenblöcke vor dem Export nach OutSmart.</li>
-  <li>Die eigentliche Terminierung passiert danach in OutSmart auf der Plantafel.</li>
-  <li>Der interne Serviceauftrag bleibt im System der führende Datensatz für Kommunikation, Dokumente und Nachverfolgung.</li>
+  <li>Die eigentliche Terminierung passiert danach in OutSmart auf der Plantafel oder in der Liste einzuplanender Arbeit.</li>
+  <li>Der Auftrag bleibt im System die führende Akte für Kommunikation, Dokumente und Nachverfolgung.</li>
 </ul>
 {% endblock %}

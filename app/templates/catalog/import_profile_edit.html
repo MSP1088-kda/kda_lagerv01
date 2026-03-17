@@ -25,38 +25,28 @@
 
     <div class="grid3">
       <div>
-        <label>EAN-Spalte</label>
-        <input type="text" name="ean_column" value="{{ profile.ean_column }}" required>
+        <label>EAN-/GTIN-Spalte (Pflicht)</label>
+        <input type="text" name="ean_column" value="{{ profile.ean_column or '' }}">
       </div>
       <div>
         <label class="check"><input type="checkbox" name="has_header" {% if profile.has_header %}checked{% endif %}> Erste Zeile enthält Header</label>
       </div>
     </div>
 
-    <h2>Bestehende Zuordnungen</h2>
+    <h2>Bestehende Kernzuordnungen</h2>
     {% if maps %}
     <div class="table">
-      <div class="tr th" style="grid-template-columns: 90px 140px 1fr 1fr 120px 100px;">
+      <div class="tr th" style="grid-template-columns: 90px 1fr 1fr 100px;">
         <div>ID</div>
-        <div>Typ</div>
-        <div>Ziel</div>
-        <div>Quelle</div>
-        <div>Typ/Option</div>
+        <div>Zielfeld</div>
+        <div>CSV-Spalte</div>
         <div>Löschen</div>
       </div>
       {% for row in maps %}
-      {% set map_type_label = row.map_type %}
-      {% if row.map_type == 'product_field' %}{% set map_type_label = 'Produktfeld' %}{% endif %}
-      {% if row.map_type == 'feature' %}{% set map_type_label = 'Merkmal' %}{% endif %}
-      {% if row.map_type == 'accessory' %}{% set map_type_label = 'Zubehör' %}{% endif %}
-      <div class="tr" style="grid-template-columns: 90px 140px 1fr 1fr 120px 100px;">
+      <div class="tr" style="grid-template-columns: 90px 1fr 1fr 100px;">
         <div>#{{ row.id }}</div>
-        <div>{{ map_type_label }}</div>
         <div>{{ row.target_key }}</div>
         <div><input type="text" name="source_column_{{ row.id }}" value="{{ row.source_column }}"></div>
-        <div>
-          <input type="text" name="data_type_{{ row.id }}" value="{{ row.data_type or '' }}" placeholder="z. B. text/auto">
-        </div>
         <div><label class="check"><input type="checkbox" name="delete_map_{{ row.id }}"> Ja</label></div>
       </div>
       {% endfor %}
@@ -66,25 +56,22 @@
     {% endif %}
 
     <h2>Neue Zuordnung hinzufügen</h2>
+    <div class="hint">Erlaubt sind nur `manufacturer_name`, `device_kind_name`, `sales_name`, `material_no`, `product_title_1`, `product_title_2` und `image_url_1` bis `image_url_10`. Das Datenblatt wird danach aus der Hersteller-Linklogik gebaut.</div>
     <div class="table">
-      <div class="tr th" style="grid-template-columns: 140px 1fr 1fr 120px;">
+      <div class="tr th" style="grid-template-columns: 140px 1fr 1fr;">
         <div>Typ</div>
         <div>Ziel</div>
         <div>Quelle</div>
-        <div>Typ/Option</div>
       </div>
-      <div class="tr" style="grid-template-columns: 140px 1fr 1fr 120px;">
+      <div class="tr" style="grid-template-columns: 140px 1fr 1fr;">
         <div>
           <select name="new_map_type">
             <option value="">-</option>
             <option value="product_field">Produktfeld</option>
-            <option value="feature">Merkmal</option>
-            <option value="accessory">Zubehör</option>
           </select>
         </div>
-        <div><input type="text" name="new_target_key" placeholder="z. B. sales_name oder energieklasse"></div>
+        <div><input type="text" name="new_target_key" placeholder="z. B. sales_name"></div>
         <div><input type="text" name="new_source_column" placeholder="CSV-Spalte"></div>
-        <div><input type="text" name="new_data_type" placeholder="z. B. text/auto"></div>
       </div>
     </div>
 
@@ -98,8 +85,7 @@
 
 {% block help %}
 <ul>
-  <li>Du kannst Profilname, CSV-Format und Zuordnungen dauerhaft anpassen.</li>
-  <li>Bei Zubehör ist das Ziel immer „accessory_list“; als Option ist der Trennmodus möglich.</li>
-  <li>Gelöschte Zuordnungen werden erst beim Speichern entfernt.</li>
+  <li>Profile speichern nur Kern, Hersteller-/Geräteart-Mapping und Bild 1-10 dauerhaft.</li>
+  <li>EAN bleibt die führende Identifikation für automatische Updates.</li>
 </ul>
 {% endblock %}

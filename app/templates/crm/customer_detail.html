@@ -17,6 +17,7 @@
             <div class="customer-side-item-body">
               <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:8px;">
                 {% if item.detail_url %}<a class="btn small" href="{{ item.detail_url }}">Im System oeffnen</a>{% endif %}
+                {% if item.pdf_url %}<a class="btn small" href="{{ item.pdf_url }}">PDF oeffnen</a>{% endif %}
                 {% if item.external_url %}<a class="btn small" href="{{ item.external_url }}" target="_blank" rel="noopener">Extern oeffnen</a>{% endif %}
               </div>
               {% if item.iframe_url %}
@@ -42,7 +43,7 @@
         <div class="customer-inline-actions">
           {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/bearbeiten">Bearbeiten</a>{% endif %}
           <a class="btn" href="{{ mail_compose_url(customer_id=customer.id, to_email=primary_email) }}">Mail schreiben</a>
-          <a class="btn" href="/serviceauftraege/neu?customer_id={{ customer.id }}">Serviceauftrag</a>
+          {% if internal_service_orders_enabled %}<a class="btn" href="/serviceauftraege/neu?customer_id={{ customer.id }}">Auftrag anlegen</a>{% endif %}
         </div>
       </div>
       <div class="customer-profile-grid">
@@ -50,6 +51,9 @@
           <span class="label">Adresse</span>
           {% if header_summary.address_lines %}
             {% for line in header_summary.address_lines %}<div>{{ line }}</div>{% endfor %}
+            {% if default_address and default_address.address_validation_status %}
+              <div class="hint">Adresscheck: {{ crm_quality_status_label(default_address.address_validation_status) }}{% if default_address.address_validation_message %} | {{ default_address.address_validation_message }}{% endif %}</div>
+            {% endif %}
           {% else %}
             <div class="muted">Keine Hauptadresse gepflegt.</div>
           {% endif %}
@@ -71,7 +75,12 @@
           {% if header_summary.emails %}
             <div class="customer-email-list">
               {% for item in header_summary.emails %}
-                <a class="customer-email-pill" href="{{ mail_compose_url(customer_id=customer.id, to_email=item.email) }}">{{ item.email }}</a>
+                <div>
+                  <a class="customer-email-pill" href="{{ mail_compose_url(customer_id=customer.id, to_email=item.email) }}">{{ item.email }}</a>
+                  {% if item.quality_status and item.quality_status != 'valid' %}
+                    <div class="hint">{{ crm_quality_status_label(item.quality_status) }}{% if item.quality_message %} | {{ item.quality_message }}{% endif %}</div>
+                  {% endif %}
+                </div>
               {% endfor %}
             </div>
           {% else %}
@@ -131,6 +140,10 @@
               <div>
                 {% if item.detail_url %}<a href="{{ item.detail_url }}"><b>{{ item.number_label }}</b></a>{% else %}<b>{{ item.number_label }}</b>{% endif %}
                 <div class="muted">{{ item.status_label }}{% if item.due_date %} | faellig {{ format_date(item.due_date) }}{% endif %}</div>
+                <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px;">
+                  {% if item.pdf_url %}<a class="btn small" href="{{ item.pdf_url }}">PDF</a>{% endif %}
+                  {% if item.external_url %}<a class="btn small" href="{{ item.external_url }}" target="_blank" rel="noopener">sevDesk</a>{% endif %}
+                </div>
               </div>
               <div class="amount">{{ item.open_amount_cents|eur_cents }}</div>
             </div>
@@ -145,12 +158,14 @@
   <div class="customer-action-strip">
     <a class="btn" href="/crm/angebote/neu?customer_id={{ customer.id }}">Angebot vorbereiten</a>
     <a class="btn" href="/crm/rechnungen/neu?customer_id={{ customer.id }}">Rechnung vorbereiten</a>
-    <a class="btn" href="/serviceauftraege/neu?customer_id={{ customer.id }}">Auftrag fuer OutSmart vorbereiten</a>
+    {% if internal_service_orders_enabled %}<a class="btn" href="/serviceauftraege/neu?customer_id={{ customer.id }}">Auftrag fuer OutSmart vorbereiten</a>{% endif %}
     <a class="btn" href="/crm/kunden/{{ customer.id }}/aufgaben/neu?entry_type=note">Notiz</a>
+    <a class="btn" href="/crm/kunden/{{ customer.id }}/aufgaben/neu?entry_type=phone_note">Telefonnotiz</a>
     <a class="btn" href="/crm/kunden/{{ customer.id }}/aufgaben/neu?entry_type=task">Aufgabe</a>
     <a class="btn" href="/crm/kunden/{{ customer.id }}/vertraege/neu">Vertrag</a>
     <a class="btn" href="/crm/kunden/{{ customer.id }}/objekte">Objekte / Geraete</a>
     <form method="post" action="/crm/kunden/{{ customer.id }}/paperless/pruefen" class="inline"><button class="btn" type="submit">Paperless pruefen</button></form>
+    <form method="post" action="/crm/kunden/{{ customer.id }}/datenqualitaet/pruefen" class="inline"><button class="btn" type="submit">Datenqualitaet pruefen</button></form>
     {% if role_flags.is_admin %}<a class="btn" href="/crm/kunden/{{ customer.id }}/zusammenfuehren">Dubletten pruefen</a>{% endif %}
   </div>
 
@@ -171,6 +186,12 @@
                 {% if item.contact_name %}<div>z. Hd. {{ item.contact_name }}</div>{% endif %}
                 {% if item.email %}<div><a href="{{ mail_compose_url(customer_id=customer.id, to_email=item.email) }}">{{ item.email }}</a></div>{% endif %}
                 {% if item.phone %}<div><a href="tel:{{ item.phone }}">{{ item.phone }}</a></div>{% endif %}
+                {% if item.address_validation_status and item.address_validation_status != 'valid' %}
+                  <div class="hint">Adresscheck: {{ crm_quality_status_label(item.address_validation_status) }}{% if item.address_validation_message %} | {{ item.address_validation_message }}{% endif %}</div>
+                {% endif %}
+                {% if item.email_validation_status and item.email_validation_status != 'valid' %}
+                  <div class="hint">E-Mail: {{ crm_quality_status_label(item.email_validation_status) }}{% if item.email_validation_message %} | {{ item.email_validation_message }}{% endif %}</div>
+                {% endif %}
                 {% if item.edit_url %}<div style="margin-top:8px;"><a class="btn small" href="{{ item.edit_url }}">Bearbeiten</a></div>{% endif %}
               </div>
             {% endfor %}
@@ -203,6 +224,12 @@
                   <div><span class="label">Telefon</span><div>{% if item.contact_phone %}<a href="tel:{{ item.contact_phone }}">{{ item.contact_phone }}</a>{% else %}-{% endif %}</div></div>
                   <div><span class="label">E-Mail</span><div>{% if item.contact_email %}<a href="{{ mail_compose_url(customer_id=customer.id, to_email=item.contact_email) }}">{{ item.contact_email }}</a>{% else %}-{% endif %}</div></div>
                 </div>
+                {% if item.address and item.address.address_validation_status and item.address.address_validation_status != 'valid' %}
+                  <div class="hint">Adresscheck: {{ crm_quality_status_label(item.address.address_validation_status) }}{% if item.address.address_validation_message %} | {{ item.address.address_validation_message }}{% endif %}</div>
+                {% endif %}
+                {% if item.row.contact_email_validation_status and item.row.contact_email_validation_status != 'valid' %}
+                  <div class="hint">Kontakt-E-Mail: {{ crm_quality_status_label(item.row.contact_email_validation_status) }}{% if item.row.contact_email_validation_message %} | {{ item.row.contact_email_validation_message }}{% endif %}</div>
+                {% endif %}
                 <div class="customer-location-objects">
                   <span class="label">Objekte / Geraete</span>
                   {% if item.objects %}
@@ -231,27 +258,29 @@
         {% endif %}
       </section>
 
-      <section class="customer-section" id="customer-service-orders">
-        <div class="customer-section-head">
-          <h2>Neueste Serviceauftraege</h2>
-          <a class="btn small" href="/serviceauftraege?customer_id={{ customer.id }}">Alle Serviceauftraege</a>
-        </div>
-        {% if recent_case_rows %}
-          <div class="customer-simple-list">
-            {% for item in recent_case_rows %}
-              <div class="customer-simple-row">
-                <div>
-                  <a href="/serviceauftraege/{{ item.row.id }}"><b>{{ item.row.case_no }}</b> | {{ item.row.title }}</a>
-                  <div class="muted">{{ item.role_label }} | {{ crm_case_status_label(item.row.status) }}</div>
-                </div>
-                <div class="muted">{{ format_date(item.row.updated_at or item.row.created_at) }}</div>
-              </div>
-            {% endfor %}
+      {% if internal_service_orders_enabled %}
+        <section class="customer-section" id="customer-service-orders">
+          <div class="customer-section-head">
+            <h2>Neueste Serviceauftraege</h2>
+            <a class="btn small" href="/serviceauftraege?customer_id={{ customer.id }}">Alle Serviceauftraege</a>
           </div>
-        {% else %}
-          <div class="muted">Noch keine Serviceauftraege vorhanden.</div>
-        {% endif %}
-      </section>
+          {% if recent_case_rows %}
+            <div class="customer-simple-list">
+              {% for item in recent_case_rows %}
+                <div class="customer-simple-row">
+                  <div>
+                    <a href="/serviceauftraege/{{ item.row.id }}"><b>{{ item.row.case_no }}</b> | {{ item.row.title }}</a>
+                    <div class="muted">{{ item.role_label }} | {{ crm_case_status_label(item.row.status) }}</div>
+                  </div>
+                  <div class="muted">{{ format_date(item.row.updated_at or item.row.created_at) }}</div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="muted">Noch keine Serviceauftraege vorhanden.</div>
+          {% endif %}
+        </section>
+      {% endif %}
 
       <section class="customer-section" id="customer-objects">
         <div class="customer-section-head">
@@ -261,8 +290,9 @@
         {% if customer_objects %}
           <div class="customer-device-grid">
             {% for item in customer_objects %}
+              {% set device_label = ((item.brand_label ~ ' ' ~ item.model_label)|trim) if item.brand_label and item.model_label else (item.model_label or item.brand_label or item.type_label or item.external_object_code or 'Objekt') %}
               <div class="customer-device-card">
-                <div><a href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ item.id }}"><b>{{ item.brand_label or item.supplier_label or 'Objekt' }}</b> {{ item.model_label or item.type_label or item.external_object_code }}</a></div>
+                <div><a href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ item.id }}"><b>{{ device_label }}</b></a></div>
                 <div class="muted">{{ item.type_label or '-' }}</div>
                 <div>Seriennummer: {{ item.serial_no or '-' }}</div>
                 {% if item.warranty_until %}<div>Garantie bis {{ format_date(item.warranty_until) }}</div>{% endif %}
@@ -307,6 +337,7 @@
           <h2>Notizen und Aufgaben</h2>
           <div class="row" style="gap:8px; flex-wrap:wrap;">
             <a class="btn small" href="/crm/kunden/{{ customer.id }}/aufgaben/neu?entry_type=note">Notiz</a>
+            <a class="btn small" href="/crm/kunden/{{ customer.id }}/aufgaben/neu?entry_type=phone_note">Telefonnotiz</a>
             <a class="btn small" href="/crm/kunden/{{ customer.id }}/aufgaben/neu?entry_type=task">Aufgabe</a>
           </div>
         </div>
@@ -364,7 +395,7 @@
                     <b>{{ item.row.title or item.row.paperless_document_id }}</b>
                     <div class="muted">{{ item.row.document_type or '-' }} | {{ item.row.correspondent or '-' }}{% if item.row.created_date %} | {{ format_date(item.row.created_date) }}{% endif %}</div>
                     {% if item.scan.get('matched_name') or item.scan.get('matched_ref') %}
-                      <div class="hint">Match: {% if item.scan.get('matched_name') %}Name {{ item.scan.get('matched_name') }}{% endif %}{% if item.scan.get('matched_name') and item.scan.get('matched_ref') %} | {% endif %}{% if item.scan.get('matched_ref') %}AF/SA {{ item.scan.get('matched_ref') }}{% endif %}</div>
+                      <div class="hint">Match: {% if item.scan.get('matched_name') %}Name {{ item.scan.get('matched_name') }}{% endif %}{% if item.scan.get('matched_name') and item.scan.get('matched_ref') %} | {% endif %}{% if item.scan.get('matched_ref') %}AF {{ item.scan.get('matched_ref') }}{% endif %}</div>
                     {% endif %}
                   </div>
                   <div class="row" style="gap:8px; flex-wrap:wrap;">
@@ -392,9 +423,30 @@
       </section>
       {% endif %}
 
+      {% if quality_rows %}
+      <section class="customer-section" id="customer-quality">
+        <div class="customer-section-head">
+          <h2>Datenqualitaet</h2>
+          <form method="post" action="/crm/kunden/{{ customer.id }}/datenqualitaet/pruefen" class="inline"><button class="btn small" type="submit">Erneut pruefen</button></form>
+        </div>
+        <div class="customer-simple-list">
+          {% for item in quality_rows %}
+            <div class="customer-simple-row">
+              <div>
+                <b>{{ item.title }}</b>
+                <div class="muted">{{ item.scope|title }} | {{ item.status_label }}</div>
+                {% if item.message %}<div>{{ item.message }}</div>{% endif %}
+              </div>
+              <div>{% if item.edit_url %}<a class="btn small" href="{{ item.edit_url }}">Bearbeiten</a>{% endif %}</div>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
       <section class="customer-section" id="customer-activity">
         <div class="customer-section-head">
-          <h2>Kommunikations- und Vorgangsverlauf</h2>
+          <h2>Kommunikations- und Aktivitaetsverlauf</h2>
         </div>
         {% if activity_rows %}
           <div class="customer-activity-feed">
@@ -422,14 +474,14 @@
           <div class="customer-simple-list">
             <div class="customer-simple-row"><div>Externe Identitaeten</div><div>{{ identities|length }}</div></div>
             <div class="customer-simple-row"><div>OutSmart-Arbeitsauftraege</div><div>{{ outsmart_workorders_total }} lokal / {{ outsmart_stage_workorders_total }} Initialimport</div></div>
-            <div class="customer-simple-row"><div>sevDesk-Belege</div><div>{{ sevdesk_documents_total }} lokal / {{ sevdesk_stage_documents_total }} Initialimport</div></div>
+            <div class="customer-simple-row"><div>sevDesk-Belege</div><div>{{ sevdesk_documents_total }} aktuell / {{ sevdesk_stage_documents_total }} Initialimport</div></div>
           </div>
           <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
             <a class="btn small" href="/crm/kunden/{{ customer.id }}/arbeitsauftraege">OutSmart-Arbeitsauftraege</a>
             <a class="btn small" href="/crm/kunden/{{ customer.id }}/initialisierung/outsmart-workorders">OutSmart-Initialimport</a>
             <a class="btn small" href="/crm/kunden/{{ customer.id }}/sevdesk-belege">sevDesk-Belege</a>
             <a class="btn small" href="/crm/kunden/{{ customer.id }}/initialisierung/sevdesk-belege">sevDesk-Initialimport</a>
-            {% if outsmart_relation_link and outsmart_relation_link.deep_link_url %}<a class="btn small" href="{{ outsmart_relation_link.deep_link_url }}" target="_blank" rel="noopener">In OutSmart oeffnen</a>{% endif %}
+            {% if outsmart_relation_url %}<a class="btn small" href="{{ outsmart_relation_url }}" target="_blank" rel="noopener">In OutSmart oeffnen</a>{% endif %}
           </div>
         </div>
       </details>

@@ -1,6 +1,8 @@
 # Lokale Laufzeitdaten
 /data/db.sqlite
 /data/*.sqlite
+/data/*.sqlite-*
+/data/*.db
 /data/backups/*
 !/data/backups/.gitkeep
 /data/tmp/*

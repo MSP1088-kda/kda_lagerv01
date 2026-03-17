@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Merkmalskandidaten</h1>
+  <div class="hint">Hier landen unbekannte CSV-Spalten und aus PDFs extrahierte Merkmalspaare. Erst nach Freigabe werden sie als echte Merkmale auf Produkte angewendet.</div>
+
+  <form method="get" action="/catalog/feature-candidates" class="form compact" style="margin-top:10px;">
+    <div class="grid3">
+      <div>
+        <label>Geräteart</label>
+        <select name="kind_id">
+          <option value="0">Alle</option>
+          {% for row in kinds %}
+          <option value="{{ row.id }}" {% if selected_kind_id == row.id %}selected{% endif %}>{{ row.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Hersteller</label>
+        <select name="manufacturer_id">
+          <option value="0">Alle</option>
+          {% for row in manufacturers %}
+          <option value="{{ row.id }}" {% if selected_manufacturer_id == row.id %}selected{% endif %}>{{ row.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status">
+          <option value="proposed" {% if status_filter == 'proposed' %}selected{% endif %}>Offen ({{ status_counts.get('proposed', 0) }})</option>
+          <option value="accepted" {% if status_filter == 'accepted' %}selected{% endif %}>Übernommen ({{ status_counts.get('accepted', 0) }})</option>
+          <option value="merged" {% if status_filter == 'merged' %}selected{% endif %}>Zusammengeführt ({{ status_counts.get('merged', 0) }})</option>
+          <option value="ignored" {% if status_filter == 'ignored' %}selected{% endif %}>Ignoriert ({{ status_counts.get('ignored', 0) }})</option>
+        </select>
+      </div>
+      <div>
+        <label>Quelle</label>
+        <select name="source_kind">
+          <option value="" {% if not source_filter %}selected{% endif %}>Alle</option>
+          <option value="csv" {% if source_filter == 'csv' %}selected{% endif %}>CSV</option>
+          <option value="pdf" {% if source_filter == 'pdf' %}selected{% endif %}>PDF</option>
+        </select>
+      </div>
+      <div>
+        <label>Ansicht</label>
+        <div class="row" style="margin-top:0;">
+          <button class="btn primary" type="submit">Filtern</button>
+          <a class="btn" href="/catalog/feature-candidates">Zurücksetzen</a>
+          <a class="btn" href="/catalog/features{% if selected_kind_id %}?kind_id={{ selected_kind_id }}{% endif %}">Freigegebene Merkmale</a>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  {% if rows %}
+  {% for entry in rows %}
+  {% set candidate = entry.row %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">
+      {{ candidate.raw_name }}
+      | {{ kind_name_map.get(candidate.device_kind_id, 'Geräteart #' ~ candidate.device_kind_id) }}
+      {% if candidate.manufacturer_id %}| {{ manufacturer_name_map.get(candidate.manufacturer_id, 'Hersteller #' ~ candidate.manufacturer_id) }}{% endif %}
+      | {{ feature_candidate_status_label(candidate.status) }}
+    </div>
+    <div class="box-body">
+      <div class="grid3">
+        <div>
+          <div><strong>Normalisiert:</strong> {{ candidate.normalized_name }}</div>
+          <div><strong>Quelle:</strong> {{ candidate.source_kind }}</div>
+        </div>
+        <div>
+          <div><strong>Datentyp-Vorschlag:</strong> {{ candidate.data_type_guess or 'text' }}</div>
+          <div><strong>Häufigkeit:</strong> {{ candidate.frequency or 0 }}</div>
+        </div>
+        <div>
+          <div><strong>Confidence:</strong> {{ '%.2f'|format(candidate.confidence or 0) }}</div>
+          <div><strong>Beispiele:</strong> {{ entry.example_values|join(', ') if entry.example_values else '-' }}</div>
+        </div>
+      </div>
+
+      {% if candidate.status in ('proposed', '') %}
+      <form method="post" action="/catalog/feature-candidates/{{ candidate.id }}/accept" class="form compact" style="margin-top:10px;">
+        <div class="grid3">
+          <div>
+            <label>Bestehendes Merkmal verwenden</label>
+            <select name="feature_def_id">
+              <option value="0">Neues Merkmal anlegen</option>
+              {% for choice in entry.feature_choices %}
+              <option value="{{ choice.id }}">{{ choice.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Bezeichnung</label>
+            <input type="text" name="label_de" value="{{ entry.default_label }}" required>
+          </div>
+          <div>
+            <label>Datentyp</label>
+            <select name="data_type">
+              <option value="text" {% if entry.default_data_type == 'text' %}selected{% endif %}>Text</option>
+              <option value="number" {% if entry.default_data_type == 'number' %}selected{% endif %}>Zahl</option>
+              <option value="bool" {% if entry.default_data_type == 'bool' %}selected{% endif %}>Ja/Nein</option>
+            </select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <label class="check"><input type="checkbox" name="filterable" checked> Im Katalog filterbar</label>
+        </div>
+        <div class="row">
+          <button class="btn primary" type="submit">Übernehmen</button>
+        </div>
+      </form>
+      <form method="post" action="/catalog/feature-candidates/{{ candidate.id }}/ignore" class="inline" style="margin-top:8px;">
+        <button class="btn" type="submit">Ignorieren</button>
+      </form>
+      {% else %}
+      <div class="hint" style="margin-top:10px;">
+        {% if candidate.feature_def_id %}Verknüpft mit Merkmal-ID {{ candidate.feature_def_id }}.{% endif %}
+        {% if candidate.accepted_label %} Ziel: {{ candidate.accepted_label }}.{% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="hint" style="margin-top:10px;">Keine Merkmalskandidaten für den aktuellen Filter.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>CSV-Rohspalten und PDF-Analyse laufen in dieselbe Kandidatenliste.</li>
+  <li>Mit "Übernehmen" wird ein bestehendes Merkmal wiederverwendet oder ein neues angelegt und auf passende Produkte angewendet.</li>
+  <li>Ignorierte Kandidaten bleiben dokumentiert, tauchen aber nicht mehr in der offenen Liste auf.</li>
+</ul>
+{% endblock %}

@@ -29,7 +29,7 @@
               {% if item.customer or item.crm_case %}
                 <div><b>Bereits erkannt:</b></div>
                 {% if item.customer %}<div>Kunde: {{ item.customer.customer_no_internal }}</div>{% endif %}
-                {% if item.crm_case %}<div>Vorgang: {{ item.crm_case.case_no }}</div>{% endif %}
+                {% if internal_service_orders_enabled and item.crm_case %}<div>Vorgang: {{ item.crm_case.case_no }}</div>{% endif %}
               {% else %}
                 <div class="muted">Noch keine eindeutige Zuordnung gespeichert.</div>
               {% endif %}
@@ -38,8 +38,10 @@
           {% if latest and latest.snippet %}<div style="margin-top:8px;">{{ latest.snippet }}</div>{% endif %}
           <div class="row" style="margin-top:10px; flex-wrap:wrap; gap:8px;">
             <a class="btn primary" href="/mail/threads/{{ item.thread.id }}#assign-thread">Kunde zuweisen</a>
-            <a class="btn" href="/mail/threads/{{ item.thread.id }}#assign-thread">Vorgang zuweisen</a>
-            <a class="btn" href="/mail/threads/{{ item.thread.id }}#new-case">Neuen Vorgang anlegen</a>
+            {% if internal_service_orders_enabled %}
+              <a class="btn" href="/mail/threads/{{ item.thread.id }}#assign-thread">Vorgang zuweisen</a>
+              <a class="btn" href="/mail/threads/{{ item.thread.id }}#new-case">Neuen Vorgang anlegen</a>
+            {% endif %}
           </div>
         </div>
       </div>

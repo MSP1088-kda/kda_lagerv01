@@ -17,10 +17,27 @@
     Übersprungen: {{ skipped_count }}<br>
     Hinweise: {{ warning_count }}<br>
     Fehler: {{ error_count }}<br>
-    Zubehör verknüpft: {{ accessory_linked_count }}<br>
-    Zubehör offen: {{ accessory_open_count }}<br>
-    Später aufgelöst: {{ resolved_accessory_count }}<br>
+    Snapshots: {{ snapshot_count }}<br>
+    Direkt befüllte Merkmale: {{ attribute_update_count }}<br>
   </div>
+
+  {% if description_columns_used or analysis_notes %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">CSV-Analyse</div>
+    <div class="box-body">
+      {% if description_columns_used %}
+      <div>Beschreibung aus: <b>{{ description_columns_used|join(', ') }}</b></div>
+      {% endif %}
+      {% if analysis_notes %}
+      <div class="muted" style="margin-top:6px;">
+        {% for note in analysis_notes %}
+        <div>- {{ note }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 
   {% if profile_updated %}
   <div class="hint">Profil wurde aktualisiert.</div>
@@ -61,26 +78,6 @@
   <div class="muted">Keine Fehler aufgetreten.</div>
   {% endif %}
 
-  <h2>Offene Zubehörreferenzen (maximal 50)</h2>
-  {% if open_accessory_preview %}
-  <div class="table">
-    <div class="tr th" style="grid-template-columns: 120px 1fr 140px;">
-      <div>Produkt-ID</div>
-      <div>Wert</div>
-      <div>Status</div>
-    </div>
-    {% for row in open_accessory_preview %}
-    <div class="tr" style="grid-template-columns: 120px 1fr 140px;">
-      <div>{{ row.product_id }}</div>
-      <div>{{ row.token }}</div>
-      <div>{{ row.status }}</div>
-    </div>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="muted">Keine offenen Zubehörreferenzen.</div>
-  {% endif %}
-
   <div class="row">
     <a class="btn primary" href="/catalog/products">Zum Produktkatalog</a>
     <a class="btn" href="/catalog/import">Noch einen Import starten</a>
@@ -91,8 +88,7 @@
 
 {% block help %}
 <ul>
-  <li>Die Kennzahlen zeigen, was neu, aktualisiert, übersprungen oder fehlerhaft war.</li>
-  <li>Offene Zubehörreferenzen bleiben sichtbar und können später automatisch oder manuell geklärt werden.</li>
-  <li>Der Entwurf bleibt erhalten und ist über „Entwurf erneut öffnen“ direkt erreichbar.</li>
+  <li>Der CSV-Lauf analysiert je Hersteller und Geräteart die genutzten Spalten und füllt definierte Merkmale direkt.</li>
+  <li>Die Produktbeschreibung wird automatisch aus mehreren passenden CSV-Spalten aufgebaut.</li>
 </ul>
 {% endblock %}

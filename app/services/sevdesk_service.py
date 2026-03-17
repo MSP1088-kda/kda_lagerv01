@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from urllib import error as url_error, request as url_request
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 
 def _sevdesk_url(base_url: str, path: str) -> str:
@@ -64,7 +64,7 @@ def first_value(payload, keys: tuple[str, ...]) -> str:
 
 def _ensure_push_allowed(settings: dict[str, str | bool]) -> None:
     if bool(settings.get("push_blocked")):
-        raise ValueError("sevDesk-Push ist während der Kunden-Initialisierung gesperrt.")
+        raise ValueError("sevDesk-Schreibzugriff ist deaktiviert. Es sind aktuell nur Lesezugriffe erlaubt.")
 
 
 def request_json(
@@ -143,6 +143,37 @@ def build_api_url(settings: dict[str, str | bool], path: str) -> str:
     if not base_url:
         return ""
     return _sevdesk_url(base_url, path)
+
+
+def build_web_url(
+    settings: dict[str, str | bool],
+    *,
+    entity_type: str,
+    object_id: str | int | None = None,
+    document_type: str | None = None,
+) -> str:
+    raw_id = str(object_id or "").strip()
+    if not raw_id:
+        return ""
+    base_url = str(settings.get("base_url") or "https://my.sevdesk.de/api/v1").strip()
+    if not base_url:
+        return ""
+    parts = urlsplit(base_url)
+    path = (parts.path or "").rstrip("/")
+    for suffix in ("/api/v1", "/api"):
+        if path.endswith(suffix):
+            path = path[: -len(suffix)]
+            break
+    base = f"{parts.scheme}://{parts.netloc}{path}".rstrip("/")
+    if not base:
+        return ""
+    entity = str(entity_type or "").strip().lower()
+    document_key = str(document_type or "").strip().upper()
+    if entity == "invoice":
+        return f"{base}/fi/detail/type/{document_key or 'RE'}/id/{raw_id}"
+    if entity in {"offer", "order"}:
+        return f"{base}/om/detail/type/{document_key or 'AN'}/id/{raw_id}"
+    return ""
 
 
 def test_connection(settings: dict[str, str | bool]):
@@ -243,7 +274,7 @@ def create_invoice(settings: dict[str, str | bool], payload_row: dict):
     return _request_candidates(
         settings,
         method="POST",
-        paths=("/Invoice", "/Invoice/Factory/save"),
+        paths=("/Invoice/Factory/saveInvoice", "/Invoice/Factory/save", "/Invoice"),
         payload=payload_row,
     )
 
@@ -267,7 +298,7 @@ def create_voucher(settings: dict[str, str | bool], payload_row: dict):
     return _request_candidates(
         settings,
         method="POST",
-        paths=("/Voucher", "/Voucher/Factory/save"),
+        paths=("/Voucher/Factory/saveVoucher", "/Voucher/Factory/save", "/Voucher"),
         payload=payload_row,
     )
 
@@ -276,7 +307,7 @@ def book_voucher(settings: dict[str, str | bool], voucher_id: str | int, payload
     _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
-        method="POST",
+        method="PUT",
         paths=(
             f"/Voucher/{voucher_id}/bookAmount",
             f"/Voucher/{voucher_id}/Factory/bookAmount",
@@ -289,7 +320,7 @@ def book_invoice(settings: dict[str, str | bool], invoice_id: str | int, payload
     _ensure_push_allowed(settings)
     return _request_candidates(
         settings,
-        method="POST",
+        method="PUT",
         paths=(
             f"/Invoice/{invoice_id}/bookAmount",
             f"/Invoice/{invoice_id}/Factory/bookAmount",
@@ -316,26 +347,53 @@ def get_transactions(
     end_date: str = "",
     amount: str = "",
     search: str = "",
+    is_booked: bool | None = None,
+    only_credit: bool | None = None,
+    only_debit: bool | None = None,
     limit: int = 120,
 ):
     query: dict[str, str | int] = {"limit": max(1, int(limit))}
     if str(check_account_id or "").strip():
         query["checkAccount[id]"] = str(check_account_id)
+        query["checkAccount[objectName]"] = "CheckAccount"
     if start_date:
         query["startDate"] = start_date
     if end_date:
         query["endDate"] = end_date
-    if amount:
-        query["amount"] = amount
     if search:
-        query["search"] = search
+        query["payeePayerName"] = search
+        query["paymtPurpose"] = search
+    if is_booked is not None:
+        query["isBooked"] = "true" if is_booked else "false"
+    if only_credit is not None:
+        query["onlyCredit"] = "true" if only_credit else "false"
+    if only_debit is not None:
+        query["onlyDebit"] = "true" if only_debit else "false"
     payload = _request_candidates(
         settings,
         method="GET",
         paths=("/CheckAccountTransaction", "/CheckAccountTransaction/Factory/getList"),
         query=query,
     )
-    return _extract_rows(payload)
+    rows = _extract_rows(payload)
+    if str(amount or "").strip():
+        target = str(amount or "").strip().replace(" ", "").replace(",", ".")
+        try:
+            target_value = abs(round(float(target), 2))
+        except Exception:
+            target_value = None
+        if target_value is not None:
+            filtered: list[dict] = []
+            for row in rows:
+                raw_amount = first_value(row, ("amount", "sum", "value", "Value"))
+                try:
+                    amount_value = abs(round(float(str(raw_amount or "0").replace(" ", "").replace(",", ".")), 2))
+                except Exception:
+                    amount_value = None
+                if amount_value is not None and abs(amount_value - target_value) < 0.01:
+                    filtered.append(row)
+            rows = filtered
+    return rows
 
 
 def create_transaction(settings: dict[str, str | bool], payload_row: dict):
@@ -346,6 +404,52 @@ def create_transaction(settings: dict[str, str | bool], payload_row: dict):
         paths=("/CheckAccountTransaction", "/CheckAccountTransaction/Factory/save"),
         payload=payload_row,
     )
+
+
+def get_receipt_guidance_accounts(
+    settings: dict[str, str | bool],
+    *,
+    receipt_kind: str = "",
+    account_number: str = "",
+    tax_rule: str = "",
+) -> list[dict]:
+    kind = str(receipt_kind or "").strip().lower()
+    if str(account_number or "").strip():
+        payload = _request_candidates(
+            settings,
+            method="GET",
+            paths=("/ReceiptGuidance/forAccountNumber",),
+            query={"accountNumber": str(account_number).strip()},
+        )
+        return _extract_rows(payload)
+    if str(tax_rule or "").strip():
+        payload = _request_candidates(
+            settings,
+            method="GET",
+            paths=("/ReceiptGuidance/forTaxRule",),
+            query={"taxRule": str(tax_rule).strip()},
+        )
+        return _extract_rows(payload)
+    if kind == "expense":
+        payload = _request_candidates(
+            settings,
+            method="GET",
+            paths=("/ReceiptGuidance/forExpense", "/ReceiptGuidance/forAllAccounts"),
+        )
+        return _extract_rows(payload)
+    if kind == "revenue":
+        payload = _request_candidates(
+            settings,
+            method="GET",
+            paths=("/ReceiptGuidance/forRevenue", "/ReceiptGuidance/forAllAccounts"),
+        )
+        return _extract_rows(payload)
+    payload = _request_candidates(
+        settings,
+        method="GET",
+        paths=("/ReceiptGuidance/forAllAccounts",),
+    )
+    return _extract_rows(payload)
 
 
 def get_next_customer_number(settings: dict[str, str | bool]) -> str:

@@ -62,6 +62,67 @@ Hinweis: Browser/OS können manche Alt-Kombos abfangen. Dann halt Tab benutzen w
 - Hostname/mDNS wird im Setup nur gespeichert (Automatisierung ist host-abhängig).
 - Merkmalswerte werden beim Import über kanonische Optionen und Aliase normalisiert.
 
+## Katalog V1
+
+Die neue Kataloglogik ist direkt in den bestehenden Katalog integriert, nicht als Nebenprojekt.
+
+Wichtige Pfade:
+
+- `/catalog/products`
+- `/catalog/import`
+- `/catalog/features`
+- `/catalog/feature-candidates`
+- `/catalog/asset-link-rules`
+
+Fachlich gilt jetzt:
+
+- Produktkern bleibt schlank: Hersteller, Geräteart, Materialnummer, Verkaufsbezeichnung, Produkttitel, optionale EAN/GTIN
+- Bilder und PDFs laufen über `product_assets` und werden lokal unter `data/uploads/catalog_assets/` gespeichert
+- CSV-Import mappt nur Kernfelder und Asset-Referenzen; unbekannte Spalten landen als `ImportRowSnapshot`
+- PDF-Texte werden bei textbasierten PDFs extrahiert und speisen Merkmalskandidaten
+- Merkmalskandidaten werden unter `/catalog/feature-candidates` geprüft und erst danach als echte Merkmale auf Produkte angewendet
+
+Für den Betrieb nötig:
+
+- Alembic-Migration bis `20260314_0024_catalog_v1_integration`
+- danach App normal starten; zusätzliche Worker sind für V1 nicht nötig, der CSV-Import läuft über den vorhandenen Hintergrundjob
+
+Legacy-Backfill für Altbestände:
+
+```bash
+DATA_DIR=/opt/kda_lager_docker/data python scripts/backfill_catalog_v1_legacy.py
+```
+
+Im produktiven Docker-Setup sollte der Backfill bevorzugt im App-Container laufen:
+
+```bash
+docker compose exec -T lager python scripts/backfill_catalog_v1_legacy.py
+```
+
+Optional mit lokalem Materialisieren der Legacy-Datenblätter:
+
+```bash
+docker compose exec -T lager python scripts/backfill_catalog_v1_legacy.py --materialize-documents
+```
+
+Authentifizierter Smoke-Test der integrierten Katalog-V1-Seiten:
+
+```bash
+docker compose exec -T lager python scripts/smoke_catalog_v1.py
+```
+
+Der Backfill macht drei Dinge:
+
+- überführt alte Bild-URLs und vorhandene lokale Datenblätter in `product_assets`
+- legt markierte Legacy-Snapshots für bestehende Produkte an
+- erzeugt erste Merkmalskandidaten aus bereits vorhandenen textbasierten PDF-Datenblättern
+- kann Legacy-Datenblatt-URLs zusätzlich lokal ziehen und direkt für die PDF-Analyse aufbereiten
+
+Bewusst noch offen:
+
+- Asset-Linkregeln sind vorbereitend und manuell pflegbar, aber noch keine aggressive Vollautomatik
+- Bild-/PDF-Analyse basiert in V1 nur auf vorhandenem Text, nicht auf OCR
+
 ## Einkauf & Integrationen
 
 Der Bereich `Einkauf` deckt jetzt ab:

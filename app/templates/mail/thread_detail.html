@@ -5,9 +5,9 @@
 
   <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
     <a class="btn" href="/mail/eingang">Zurück zum Mail-Eingang</a>
-    <a class="btn" href="/mail/verfassen?thread_id={{ thread.id }}&customer_id={{ customer.id if customer else 0 }}&case_id={{ crm_case.id if crm_case else 0 }}&to_email={{ reply_to|urlencode }}">Antwort verfassen</a>
+    <a class="btn" href="/mail/verfassen?thread_id={{ thread.id }}&customer_id={{ customer.id if customer else 0 }}{% if internal_service_orders_enabled and crm_case %}&case_id={{ crm_case.id }}{% endif %}&to_email={{ reply_to|urlencode }}">Antwort verfassen</a>
     {% if customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}">Kunde öffnen</a>{% endif %}
-    {% if crm_case %}<a class="btn" href="/crm/vorgaenge/{{ crm_case.id }}">Vorgang öffnen</a>{% endif %}
+    {% if internal_service_orders_enabled and crm_case %}<a class="btn" href="/crm/vorgaenge/{{ crm_case.id }}">Vorgang öffnen</a>{% endif %}
   </div>
 
   <div class="grid3" style="align-items:start;">
@@ -16,16 +16,18 @@
       <div class="box-body">
         <div><b>Status:</b> {{ mail_thread_status_label(thread.status) }}</div>
         <div><b>Kunde:</b> {% if customer %}{{ customer.customer_no_internal }} | {{ customer_party.display_name if customer_party else '-' }}{% elif selected_customer_label %}{{ selected_customer_label }}{% else %}-{% endif %}</div>
-        <div><b>Vorgang:</b> {% if crm_case %}{{ crm_case.case_no }} | {{ crm_case.title }}{% elif selected_case_label %}{{ selected_case_label }}{% else %}-{% endif %}</div>
+        {% if internal_service_orders_enabled %}<div><b>Vorgang:</b> {% if crm_case %}{{ crm_case.case_no }} | {{ crm_case.title }}{% elif selected_case_label %}{{ selected_case_label }}{% else %}-{% endif %}</div>{% endif %}
         {% if thread_spam_reason %}<div class="hint" style="margin-top:8px;">Spam-Hinweis: {{ thread_spam_reason }}</div>{% endif %}
 
         <form method="get" action="/mail/threads/{{ thread.id }}#assign-thread" class="form" style="margin-top:10px;">
           <input type="hidden" name="assign_customer_id" value="{{ selected_customer_id }}">
-          <input type="hidden" name="assign_case_id" value="{{ selected_case_id }}">
+          {% if internal_service_orders_enabled %}<input type="hidden" name="assign_case_id" value="{{ selected_case_id }}">{% endif %}
           <label>Kunde suchen</label>
           <input type="text" name="assign_q" value="{{ customer_search_query }}" placeholder="Kundennummer, Name, Mail, Telefon">
-          <label>Vorgang suchen</label>
-          <input type="text" name="assign_case_q" value="{{ case_search_query }}" placeholder="Vorgangsnummer oder Titel">
+          {% if internal_service_orders_enabled %}
+            <label>Vorgang suchen</label>
+            <input type="text" name="assign_case_q" value="{{ case_search_query }}" placeholder="Vorgangsnummer oder Titel">
+          {% endif %}
           <button class="btn" type="submit">Treffer aktualisieren</button>
         </form>
 
@@ -36,9 +38,9 @@
               <div>{{ item.label }}</div>
               <form method="get" action="/mail/threads/{{ thread.id }}#assign-thread" class="inline">
                 <input type="hidden" name="assign_q" value="{{ customer_search_query }}">
-                <input type="hidden" name="assign_case_q" value="{{ case_search_query }}">
+                {% if internal_service_orders_enabled %}<input type="hidden" name="assign_case_q" value="{{ case_search_query }}">{% endif %}
                 <input type="hidden" name="assign_customer_id" value="{{ item.id }}">
-                <input type="hidden" name="assign_case_id" value="0">
+                {% if internal_service_orders_enabled %}<input type="hidden" name="assign_case_id" value="0">{% endif %}
                 <button class="btn small" type="submit">Kunden wählen</button>
               </form>
             </div>
@@ -47,27 +49,29 @@
           <div class="muted" style="margin-top:6px;">Noch keine Kundentreffer geladen.</div>
         {% endif %}
 
-        <div style="margin-top:10px;"><b>Vorgangstreffer</b></div>
-        {% if case_search_rows %}
-          {% for item in case_search_rows %}
-            <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:6px;">
-              <div>{{ item.label }}</div>
-              <form method="get" action="/mail/threads/{{ thread.id }}#assign-thread" class="inline">
-                <input type="hidden" name="assign_q" value="{{ customer_search_query }}">
-                <input type="hidden" name="assign_case_q" value="{{ case_search_query }}">
-                <input type="hidden" name="assign_customer_id" value="{{ selected_customer_id }}">
-                <input type="hidden" name="assign_case_id" value="{{ item.id }}">
-                <button class="btn small" type="submit">Vorgang wählen</button>
-              </form>
-            </div>
-          {% endfor %}
-        {% else %}
-          <div class="muted" style="margin-top:6px;">Noch keine Vorgangstreffer geladen.</div>
+        {% if internal_service_orders_enabled %}
+          <div style="margin-top:10px;"><b>Vorgangstreffer</b></div>
+          {% if case_search_rows %}
+            {% for item in case_search_rows %}
+              <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:6px;">
+                <div>{{ item.label }}</div>
+                <form method="get" action="/mail/threads/{{ thread.id }}#assign-thread" class="inline">
+                  <input type="hidden" name="assign_q" value="{{ customer_search_query }}">
+                  <input type="hidden" name="assign_case_q" value="{{ case_search_query }}">
+                  <input type="hidden" name="assign_customer_id" value="{{ selected_customer_id }}">
+                  <input type="hidden" name="assign_case_id" value="{{ item.id }}">
+                  <button class="btn small" type="submit">Vorgang wählen</button>
+                </form>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="muted" style="margin-top:6px;">Noch keine Vorgangstreffer geladen.</div>
+          {% endif %}
         {% endif %}
 
         <form method="post" action="/mail/threads/{{ thread.id }}/zuweisen" class="form" style="margin-top:10px;">
           <input type="hidden" name="customer_id" value="{{ selected_customer_id }}">
-          <input type="hidden" name="case_id" value="{{ selected_case_id }}">
+          {% if internal_service_orders_enabled %}<input type="hidden" name="case_id" value="{{ selected_case_id }}">{% endif %}
           <button class="btn primary" type="submit">Auswahl speichern</button>
         </form>
       </div>
@@ -84,13 +88,13 @@
                 <div>{{ suggestion_customer_labels.get(customer_id, customer_id) }}</div>
                 <form method="post" action="/mail/threads/{{ thread.id }}/zuweisen" class="inline">
                   <input type="hidden" name="customer_id" value="{{ customer_id }}">
-                  <input type="hidden" name="case_id" value="{{ selected_case_id }}">
+                  {% if internal_service_orders_enabled %}<input type="hidden" name="case_id" value="{{ selected_case_id }}">{% endif %}
                   <button class="btn small" type="submit">Übernehmen</button>
                 </form>
               </div>
             {% endfor %}
           {% endif %}
-          {% if suggestion_case_ids %}
+          {% if internal_service_orders_enabled and suggestion_case_ids %}
             <div style="margin-top:10px;"><b>Vorgangskandidaten</b></div>
             {% for case_id in suggestion_case_ids %}
               <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:6px;">
@@ -114,18 +118,20 @@
     </div>
 
     <div class="box" id="new-case">
-      <div class="box-title">Neuen Vorgang anlegen</div>
+      <div class="box-title">{% if internal_service_orders_enabled %}Neuen Vorgang anlegen{% else %}Thread-Status{% endif %}</div>
       <div class="box-body">
-        <form method="post" action="/mail/nachrichten/{{ last_message_row.id if last_message_row else 0 }}/vorgang-neu" class="form">
-          <input type="hidden" name="customer_id" value="{{ selected_customer_id }}">
-          <label>Kunde</label>
-          <div class="hint">{{ selected_customer_label or 'Noch kein Kunde gewählt' }}</div>
-          <label>Titel</label>
-          <input type="text" name="title" value="{{ thread_subject }}">
-          <button class="btn" type="submit">Vorgang anlegen</button>
-        </form>
+        {% if internal_service_orders_enabled %}
+          <form method="post" action="/mail/nachrichten/{{ last_message_row.id if last_message_row else 0 }}/vorgang-neu" class="form">
+            <input type="hidden" name="customer_id" value="{{ selected_customer_id }}">
+            <label>Kunde</label>
+            <div class="hint">{{ selected_customer_label or 'Noch kein Kunde gewählt' }}</div>
+            <label>Titel</label>
+            <input type="text" name="title" value="{{ thread_subject }}">
+            <button class="btn" type="submit">Vorgang anlegen</button>
+          </form>
+        {% endif %}
 
-        <form method="post" action="/mail/threads/{{ thread.id }}/status" class="form" style="margin-top:10px;">
+        <form method="post" action="/mail/threads/{{ thread.id }}/status" class="form" style="margin-top:{% if internal_service_orders_enabled %}10px{% else %}0{% endif %};">
           <label>Thread-Status</label>
           <select name="status">
             <option value="open"{% if thread.status == 'open' %} selected{% endif %}>Offen</option>
@@ -151,7 +157,7 @@
           <div style="margin-top:8px;"><b>Kundenkandidaten</b></div>
           {% for customer_id in ai_output.customer_candidates %}<div>{{ customer_label_map.get(customer_id, customer_id) }}</div>{% endfor %}
         {% endif %}
-        {% if ai_output.case_candidates %}
+        {% if internal_service_orders_enabled and ai_output.case_candidates %}
           <div style="margin-top:8px;"><b>Vorgangskandidaten</b></div>
           {% for case_id in ai_output.case_candidates %}<div>{{ case_label_map.get(case_id, case_id) }}</div>{% endfor %}
         {% endif %}
@@ -228,12 +234,12 @@
           {% endfor %}
         {% endif %}
 
-        {% if item.suggestion.customer_ids or item.suggestion.case_ids %}
+        {% if item.suggestion.customer_ids or (internal_service_orders_enabled and item.suggestion.case_ids) %}
           <div style="margin-top:10px;"><b>Vorschläge für diese Nachricht</b></div>
           {% if item.suggestion.customer_ids %}
             <div class="hint">Kunden: {% for customer_id in item.suggestion.customer_ids %}{{ customer_label_map.get(customer_id, customer_id) }}{% if not loop.last %} | {% endif %}{% endfor %}</div>
           {% endif %}
-          {% if item.suggestion.case_ids %}
+          {% if internal_service_orders_enabled and item.suggestion.case_ids %}
             <div class="hint">Vorgänge: {% for case_id in item.suggestion.case_ids %}{{ case_label_map.get(case_id, case_id) }}{% if not loop.last %} | {% endif %}{% endfor %}</div>
           {% endif %}
         {% endif %}
@@ -245,7 +251,7 @@
               <form method="post" action="/mail/nachrichten/{{ row.id }}/zuweisen" class="inline">
                 <input type="hidden" name="apply_to_thread" value="1">
                 <input type="hidden" name="customer_id" value="{{ selected_customer_id }}">
-                <input type="hidden" name="case_id" value="{{ selected_case_id }}">
+                {% if internal_service_orders_enabled %}<input type="hidden" name="case_id" value="{{ selected_case_id }}">{% endif %}
                 <button class="btn small" type="submit">Aktuelle Auswahl übernehmen</button>
               </form>
             {% endif %}

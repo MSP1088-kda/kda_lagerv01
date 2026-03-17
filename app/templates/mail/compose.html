@@ -9,7 +9,8 @@
       <div class="box-body">
         <div><b>Thread:</b> {% if thread %}<a href="/mail/threads/{{ thread.id }}">#{{ thread.id }}</a>{% else %}-{% endif %}</div>
         <div><b>Kunde:</b> {% if customer %}<a href="/crm/kunden/{{ customer.id }}">{{ customer.customer_no_internal }}</a>{% else %}-{% endif %}</div>
-        <div><b>Vorgang:</b> {% if crm_case %}<a href="/crm/vorgaenge/{{ crm_case.id }}">{{ crm_case.case_no }}</a>{% else %}-{% endif %}</div>
+        {% if internal_service_orders_enabled %}<div><b>Vorgang:</b> {% if crm_case %}<a href="/crm/vorgaenge/{{ crm_case.id }}">{{ crm_case.case_no }}</a>{% else %}-{% endif %}</div>{% endif %}
+        <div><b>Angebot:</b> {% if offer_draft %}<a href="/crm/angebote/{{ offer_draft.id }}">{{ offer_draft.sevdesk_order_number or ('ANG-' ~ '%04d'|format(offer_draft.id)) }}</a>{% else %}-{% endif %}</div>
         <div><b>Rechnung:</b> {% if invoice %}{{ invoice.invoice_no }}{% elif invoice_draft %}<a href="/crm/rechnungen/{{ invoice_draft.id }}">{{ invoice_draft.sevdesk_invoice_number or ('RE-ENTW-' ~ '%04d'|format(invoice_draft.id)) }}</a>{% else %}-{% endif %}</div>
       </div>
     </div>
@@ -18,7 +19,7 @@
       <div class="box-body">
         {% for row in templates_rows %}
           <div style="margin-bottom:6px;">
-            <a href="/mail/verfassen?thread_id={{ form_data.thread_id }}&customer_id={{ form_data.customer_id }}&case_id={{ form_data.case_id }}&purchase_invoice_id={{ form_data.purchase_invoice_id }}&template_key={{ row.template_key }}">{{ row.name }}</a>
+            <a href="/mail/verfassen?thread_id={{ form_data.thread_id }}&customer_id={{ form_data.customer_id }}{% if internal_service_orders_enabled and form_data.case_id %}&case_id={{ form_data.case_id }}{% endif %}&offer_draft_id={{ form_data.offer_draft_id }}&purchase_invoice_id={{ form_data.purchase_invoice_id }}&invoice_draft_id={{ form_data.invoice_draft_id }}&template_key={{ row.template_key }}">{{ row.name }}</a>
           </div>
         {% endfor %}
         {% if role_flags.is_admin %}<div style="margin-top:8px;"><a class="btn small" href="/mail/vorlagen">Vorlagen pflegen</a></div>{% endif %}
@@ -29,7 +30,8 @@
   <form method="post" action="/mail/verfassen" class="form" style="margin-top:10px;">
     <input type="hidden" name="thread_id" value="{{ form_data.thread_id }}">
     <input type="hidden" name="customer_id" value="{{ form_data.customer_id }}">
-    <input type="hidden" name="case_id" value="{{ form_data.case_id }}">
+    {% if internal_service_orders_enabled %}<input type="hidden" name="case_id" value="{{ form_data.case_id }}">{% endif %}
+    <input type="hidden" name="offer_draft_id" value="{{ form_data.offer_draft_id }}">
     <input type="hidden" name="purchase_invoice_id" value="{{ form_data.purchase_invoice_id }}">
     <input type="hidden" name="invoice_draft_id" value="{{ form_data.invoice_draft_id }}">
 

@@ -43,9 +43,13 @@
       </div>
       <div>
         <label for="crm_location_contact_email">E-Mail</label>
-        <input id="crm_location_contact_email" type="email" name="contact_email" value="{{ f.old(fd, 'contact_email', row.contact_email if row else '') }}">
+        <input id="crm_location_contact_email" type="email" name="contact_email" value="{{ f.old(fd, 'contact_email', row.contact_email if row else '') }}" class="{% if fe.get('contact_email') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'contact_email') }}
       </div>
     </div>
+    {% if row and row.contact_email_validation_status %}
+      <div class="hint" style="margin-top:10px;">Kontakt-E-Mail: {{ crm_quality_status_label(row.contact_email_validation_status) }}{% if row.contact_email_validation_message %} | {{ row.contact_email_validation_message }}{% endif %}</div>
+    {% endif %}
 
     <label for="crm_location_note">Notiz</label>
     <textarea id="crm_location_note" name="note" rows="2">{{ f.old(fd, 'note', row.note if row else '') }}</textarea>
@@ -80,7 +84,8 @@
       </div>
       <div>
         <label for="crm_location_email">E-Mail</label>
-        <input id="crm_location_email" type="email" name="address_email" value="{{ f.old(fd, 'address_email', address_row.email if address_row else '') }}">
+        <input id="crm_location_email" type="email" name="address_email" value="{{ f.old(fd, 'address_email', address_row.email if address_row else '') }}" class="{% if fe.get('address_email') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'address_email') }}
       </div>
       <div>
         <label for="crm_location_phone">Telefon</label>
@@ -90,6 +95,13 @@
         <label class="check"><input type="checkbox" name="active" {{ f.is_checked(fd, 'active', row.active if row else True) }}> Aktiv</label>
       </div>
     </div>
+    {% if address_row and (address_row.address_validation_status or address_row.email_validation_status) %}
+      <div class="hint" style="margin-top:10px;">
+        {% if address_row.address_validation_status %}Adresscheck: {{ crm_quality_status_label(address_row.address_validation_status) }}{% if address_row.address_validation_message %} | {{ address_row.address_validation_message }}{% endif %}{% endif %}
+        {% if address_row.address_validation_status and address_row.email_validation_status %}<br>{% endif %}
+        {% if address_row.email_validation_status %}Adress-E-Mail: {{ crm_quality_status_label(address_row.email_validation_status) }}{% if address_row.email_validation_message %} | {{ address_row.email_validation_message }}{% endif %}{% endif %}
+      </div>
+    {% endif %}
 
     <div class="row" style="margin-top:10px;">
       <button class="btn primary" type="submit">Speichern</button>
@@ -102,6 +114,6 @@
 {% block help %}
 <ul>
   <li>Ein Standort kann eine bestehende Kundenadresse nutzen oder eine eigene Adresse bekommen.</li>
-  <li>Im Vorgang wählst du den Leistungsort später direkt aus diesen Standorten aus.</li>
+  <li>Im Arbeitsauftrag und in Belegen nutzt du den Leistungsort später direkt aus diesen Standorten heraus.</li>
 </ul>
 {% endblock %}

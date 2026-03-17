@@ -142,6 +142,32 @@ def _extract_text_with_pypdf(path: Path) -> str:
     return ""
 
 
+def _extract_text_with_pymupdf(path: Path) -> str:
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        return ""
+    try:
+        document = fitz.open(str(path))
+    except Exception:
+        return ""
+    try:
+        parts: list[str] = []
+        for page in document:
+            try:
+                text = page.get_text("text") or ""
+            except Exception:
+                text = ""
+            if text.strip():
+                parts.append(text)
+        return _clean_extracted_text("\n".join(parts))
+    finally:
+        try:
+            document.close()
+        except Exception:
+            pass
+
+
 def _extract_text_with_pdftotext(path: Path) -> str:
     if not shutil.which("pdftotext"):
         return ""
@@ -161,7 +187,7 @@ def extract_pdf_text(path: str | Path) -> str:
     file_path = Path(path)
     if not file_path.is_file():
         raise ValueError("Quelldatei wurde nicht gefunden.")
-    for extractor in (_extract_text_with_pypdf, _extract_text_with_pdftotext):
+    for extractor in (_extract_text_with_pymupdf, _extract_text_with_pypdf, _extract_text_with_pdftotext):
         text = extractor(file_path)
         if text:
             return text

@@ -6,7 +6,18 @@
   {% set fd = form_data or {} %}
   {% set fe = form_errors or {} %}
   {{ f.render_errors(fe) }}
+  {% if document_inbox_item %}
+    <div class="box" style="margin-bottom:10px;">
+      <div class="box-title">Beleg-Entwurf</div>
+      <div class="box-body">
+        <div><b>{{ document_source.label if document_source else 'Dokument' }}</b> | {{ document_inbox_item.title or '-' }}</div>
+        {% if document_source and document_source.detail %}<div class="hint">{{ document_source.detail }}</div>{% endif %}
+        <div style="margin-top:8px;"><a class="btn small" href="/einkauf/dokumente/{{ document_inbox_item.id }}">Zur Dokumentprüfung</a></div>
+      </div>
+    </div>
+  {% endif %}
   <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+    <input type="hidden" name="document_inbox_id" value="{{ fd.get('document_inbox_id', document_inbox_id or '') }}">
     <div class="grid3">
       <div>
         <label>Lieferant</label>

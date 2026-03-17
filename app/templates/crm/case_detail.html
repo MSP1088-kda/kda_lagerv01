@@ -5,25 +5,42 @@
 
   <div class="row" style="margin-bottom:10px; flex-wrap:wrap;">
     {% if role_flags.is_admin %}<a class="btn" href="/serviceauftraege/{{ row.id }}/bearbeiten">Bearbeiten</a>{% endif %}
-    {% if role_flags.is_admin and outsmart_enabled %}<a class="btn" href="/serviceauftraege/{{ row.id }}/outsmart/vorbereiten">Zur Einplanung nach OutSmart senden</a>{% endif %}
+    {% if role_flags.is_admin %}
+      <form method="get" action="/serviceauftraege/{{ row.id }}/outsmart/vorbereiten" class="inline">
+        <button class="btn" type="submit" {% if not outsmart_write_enabled %}disabled title="OutSmart-Schreiben ist derzeit deaktiviert."{% endif %}>Zur Einplanung nach OutSmart senden</button>
+      </form>
+    {% endif %}
     <a class="btn" href="/mail/verfassen?case_id={{ row.id }}">Mail schreiben</a>
     <a class="btn" href="/crm/dokumente/upload?object_type=case&object_id={{ row.id }}">Dokument hochladen</a>
     {% if outsmart_workorder %}<a class="btn" href="/outsmart/arbeitsauftraege/{{ outsmart_workorder.id }}">OutSmart-Arbeitsauftrag öffnen</a>{% endif %}
     {% if outsmart_case_workorder_link and outsmart_case_workorder_link.deep_link_url %}<a class="btn" href="{{ outsmart_case_workorder_link.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}
     <a class="btn" href="/serviceauftraege">Zurück zur Liste</a>
   </div>
+  {% if role_flags.is_admin and not outsmart_write_enabled %}
+    <div class="hint" style="margin-bottom:10px;">OutSmart-Schreiben ist derzeit deaktiviert. Export und Einplanung bleiben gesperrt.</div>
+  {% endif %}
 
   <div class="grid3">
     <div class="box">
-      <div class="box-title">Serviceauftrag</div>
+      <div class="box-title">Auftrag</div>
       <div class="box-body">
         <div><b>Status:</b> {{ crm_case_status_label(row.status) }}</div>
         <div><b>Priorität:</b> {{ crm_case_priority_label(row.priority) }}</div>
+        <div><b>Auftragsart:</b> {{ crm_case_order_type_label(row.order_type) }}</div>
+        <div><b>Nächster Schritt:</b> {{ crm_case_next_step_label(row.next_step) }}</div>
         <div><b>Quelle:</b> {{ row.source_system|replace('_', ' ')|title }}</div>
         <div><b>Wunschtermin:</b>
           {% if row.requested_start_at or row.requested_end_at %}
             {% if row.requested_start_at %}{{ format_datetime(row.requested_start_at) }}{% else %}-{% endif %}
             {% if row.requested_end_at %} bis {{ format_datetime(row.requested_end_at) }}{% endif %}
+          {% else %}
+            -
+          {% endif %}
+        </div>
+        <div><b>Terminvorschlag:</b>
+          {% if row.proposed_start_at or row.proposed_end_at %}
+            {% if row.proposed_start_at %}{{ format_datetime(row.proposed_start_at) }}{% else %}-{% endif %}
+            {% if row.proposed_end_at %} bis {{ format_datetime(row.proposed_end_at) }}{% endif %}
           {% else %}
             -
           {% endif %}
@@ -48,10 +65,12 @@
       <div class="box-title">OutSmart</div>
       <div class="box-body">
         <div><b>Aktiv:</b> {{ 'Ja' if outsmart_enabled else 'Nein' }}</div>
+        <div><b>Schreibzugriff:</b> {{ 'Freigegeben' if outsmart_write_enabled else 'Read-only' }}</div>
         <div><b>Projekt:</b> {% if outsmart_project_link %}{{ outsmart_project_link.external_key }}{% else %}-{% endif %}</div>
         <div><b>Arbeitsauftrag:</b> {% if outsmart_workorder %}{{ outsmart_workorder.workorder_no }}{% else %}-{% endif %}</div>
-        <div><b>Status:</b> {{ outsmart_workorder.status if outsmart_workorder else '-' }}</div>
-        <div><b>Geplanter Termin:</b> {% if outsmart_workorder and outsmart_workorder.scheduled_start %}{{ format_datetime(outsmart_workorder.scheduled_start) }}{% else %}-{% endif %}</div>
+        <div><b>Status:</b> {{ outsmart_feedback.status_label if outsmart_feedback else '-' }}</div>
+        <div><b>Typ:</b> {{ outsmart_feedback.type_label if outsmart_feedback else '-' }}</div>
+        <div><b>Geplanter Termin:</b> {{ outsmart_feedback.schedule_label if outsmart_feedback else '-' }}</div>
       </div>
     </div>
   </div>
@@ -120,11 +139,12 @@
       <div class="box-title">Fehlerbild</div>
       <div class="box-body">
         <div>{{ row.customer_issue or 'Keine Fehlerangabe erfasst.' }}</div>
+        <div style="margin-top:8px;"><b>Sichtbar für Kunde / Techniker:</b><br>{{ row.customer_visible_note or '-' }}</div>
       </div>
     </div>
   </div>
 
-  <div class="grid2" style="margin-top:10px;">
+  <div class="grid3" style="margin-top:10px;">
     <div class="box">
       <div class="box-title">Arbeitsauftrag intern</div>
       <div class="box-body">
@@ -132,12 +152,64 @@
       </div>
     </div>
     <div class="box">
-      <div class="box-title">Interne Hinweise</div>
+      <div class="box-title">Material / Ersatzteil</div>
       <div class="box-body">
-        <div>{{ row.note or 'Keine internen Hinweise erfasst.' }}</div>
+        <div><b>Material:</b><br>{{ row.material_summary or '-' }}</div>
+        <div style="margin-top:8px;"><b>Ersatzteilstatus:</b> {{ crm_case_spare_part_status_label(row.spare_part_status) }}</div>
+        <div style="margin-top:8px;"><b>Ersatzteilhinweis:</b><br>{{ row.spare_part_note or '-' }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Termin / intern</div>
+      <div class="box-body">
+        <div><b>Termin-/Routenhinweis:</b><br>{{ row.schedule_hint or '-' }}</div>
+        <div style="margin-top:8px;"><b>Interne Hinweise:</b><br>{{ row.note or '-' }}</div>
       </div>
     </div>
   </div>
+
+  {% if outsmart_feedback %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Rückmeldung aus OutSmart</div>
+      <div class="box-body">
+        <div class="customer-kpi-grid">
+          <div class="customer-kpi"><span class="label">Status</span><strong>{{ outsmart_feedback.status_label }}</strong></div>
+          <div class="customer-kpi"><span class="label">Techniker</span><strong>{{ outsmart_feedback.technician_label }}</strong></div>
+          <div class="customer-kpi"><span class="label">Material</span><strong>{{ outsmart_feedback.material_count }}</strong></div>
+          <div class="customer-kpi"><span class="label">Umsatzpotenzial</span><strong>{{ outsmart_feedback.material_total_gross_label }}</strong></div>
+        </div>
+        <div class="grid2" style="margin-top:10px;">
+          <div>
+            <div><b>Objekt:</b> {{ outsmart_feedback.object_label }}</div>
+            <div style="margin-top:8px;"><b>Fehlerbild:</b><br>{{ outsmart_feedback.customer_issue }}</div>
+          </div>
+          <div>
+            <div><b>Arbeitsgang:</b><br>{{ outsmart_feedback.work_steps }}</div>
+          </div>
+        </div>
+        {% if role_flags.is_admin %}
+          <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+            <form method="post" action="/serviceauftraege/{{ row.id }}/weiter" class="inline">
+              <input type="hidden" name="action" value="invoice">
+              <button class="btn small" type="submit">Rechnung vorbereiten</button>
+            </form>
+            <form method="post" action="/serviceauftraege/{{ row.id }}/weiter" class="inline">
+              <input type="hidden" name="action" value="spare_part">
+              <button class="btn small" type="submit">Ersatzteil markieren</button>
+            </form>
+            <form method="post" action="/serviceauftraege/{{ row.id }}/weiter" class="inline">
+              <input type="hidden" name="action" value="replacement_offer">
+              <button class="btn small" type="submit">Neugerät-Angebot</button>
+            </form>
+            <form method="post" action="/serviceauftraege/{{ row.id }}/weiter" class="inline">
+              <input type="hidden" name="action" value="none">
+              <button class="btn small" type="submit">Weiteren Schritt löschen</button>
+            </form>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
 
   {% if ai_role_result %}
     {% set ai_role = ai_role_result.output %}
@@ -226,8 +298,8 @@
 
 {% block help %}
 <ul>
-  <li>Der Serviceauftrag ist der interne Steuerdatensatz für E-Mail, Dokumente, Paperless, Kundenbezug und Nachverfolgung.</li>
-  <li>OutSmart bleibt das führende System für Terminierung, Plantafel und Außendienstausführung.</li>
-  <li>Über die OutSmart-Vorschau siehst du vor dem Export, welche Daten an den Arbeitsauftrag übergeben werden.</li>
+  <li>Der Auftrag bleibt die eine führende Akte; OutSmart liefert Termin-, Techniker- und Materialrückmeldungen in dieselbe Timeline zurück.</li>
+  <li>Über die Schnellaktionen leitest du abgeschlossene Einsätze direkt in Rechnung, Ersatzteil- oder Neugerät-Folgeprozess weiter.</li>
+  <li>Die Timeline bleibt kurz und fokussiert, Detaildaten liegen im verknüpften OutSmart-Arbeitsauftrag.</li>
 </ul>
 {% endblock %}

@@ -1,54 +1,143 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Zahlung vorbereiten</h1>
-  <div class="box"><div class="box-body">
-    <div><b>Ziel:</b> {{ target_label }}</div>
-    <div><b>sevDesk-ID:</b> {{ sevdesk_object_id or '-' }}</div>
-    <div><b>Vorschlagsbetrag:</b> {{ amount_cents|eur_cents }}</div>
-  </div></div>
-
-  <form method="post" action="/finanzen/zahlungen/vorbereiten" class="form" style="margin-top:10px;">
-    <input type="hidden" name="target_type" value="{{ target_type }}">
-    <input type="hidden" name="target_id" value="{{ target.id }}">
-    <div class="grid2">
-      <div>
-        <label>Konto</label>
-        <select name="check_account_id">
-          <option value="">-</option>
-          {% for row in check_accounts %}
-            {% set account_id = row.id or row.ID or row.objectId %}
-            <option value="{{ account_id }}">{{ row.name or row.displayName or account_id }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Vorhandene Transaktion</label>
-        <select name="transaction_id">
-          <option value="">-</option>
-          {% for row in transactions %}
-            {% set tx_id = row.id or row.ID %}
-            <option value="{{ tx_id }}">{{ row.payeeName or row.text or row.reference or tx_id }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </div>
-    <div class="grid3">
-      <div><label>Datum</label><input type="date" name="booking_date" value="{{ booking_date_value or '' }}"></div>
-      <div><label>Betrag</label><input type="text" name="amount" value="{{ amount_cents|eur_cents|replace(' €', '') }}"></div>
-      <div>
-        <label>Typ</label>
-        <select name="booking_type">
-          {% for key in booking_type_choices %}
-            <option value="{{ key }}">{{ sevdesk_payment_type_label(key) }}</option>
-          {% endfor %}
-        </select>
-      </div>
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>Zahlung vorbereiten</h1>
+      <div class="hint">sevDesk-Zahlung aus diesem Tool fernsteuern, inklusive Transaktionsvorschlägen und Abgleich.</div>
     </div>
     <div class="row" style="gap:8px; flex-wrap:wrap;">
-      <button class="btn primary" type="submit">In sevDesk buchen</button>
+      {% if target_type == 'voucher' %}<a class="btn" href="/einkauf/voucher/{{ target.id }}">Zum Voucher</a>{% endif %}
+      {% if target_type == 'invoice_draft' %}<a class="btn" href="/crm/rechnungen/{{ target.id }}">Zur Rechnung</a>{% endif %}
+      {% if selected_transaction_id %}<a class="btn" href="/finanzen/transaktionen/{{ selected_transaction_id }}{% if document_inbox_id %}?document_inbox_id={{ document_inbox_id }}{% endif %}">Zur Transaktion</a>{% endif %}
       <a class="btn" href="/finanzen/zahlungen">Zurück</a>
     </div>
-  </form>
+  </div>
+
+  {% if not sevdesk_object_id %}
+    <div class="flash error" style="margin-top:10px;">Das Ziel ist lokal angelegt, aber noch nicht in sevDesk erzeugt. Der Abgleich kann vorbereitet werden, die Buchung selbst funktioniert erst nach dem Push.</div>
+  {% endif %}
+  {% if not sevdesk_write_enabled %}
+    <div class="flash info" style="margin-top:10px;">sevDesk läuft aktuell im Read-only-Modus. Transaktionen und Vorschläge bleiben sichtbar, die Buchung ist deaktiviert.</div>
+  {% endif %}
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div>
+      {% if document_inbox_item %}
+      <div class="box"><div class="box-title">Belegkontext</div><div class="box-body">
+        <div><b>Quelle:</b> {{ document_source.label if document_source else '-' }}</div>
+        <div><b>Belegtyp:</b> {{ document_classification.draft_kind_label if document_classification else '-' }}</div>
+        <div><b>Workflow:</b> {{ document_classification.workflow_label if document_classification else '-' }}</div>
+        <div><b>Titel:</b> {{ document_inbox_item.title or '-' }}</div>
+        {% if document_source and document_source.subject %}<div><b>Mail-Betreff:</b> {{ document_source.subject }}</div>{% endif %}
+        {% if stored_payment_match %}<div><b>Gespeicherter Match:</b> <a href="{{ stored_payment_match.url }}">{{ stored_payment_match.tx_id }}</a>{% if stored_payment_match.check_account_id %} | {{ stored_payment_match.check_account_id }}{% endif %}</div>{% endif %}
+        <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+          <a class="btn small" href="/einkauf/dokumente/{{ document_inbox_item.id }}">Zum Entwurf</a>
+          {% if document_preview_url %}<a class="btn small" target="_blank" rel="noopener" href="{{ document_preview_url }}">Quelldatei</a>{% endif %}
+        </div>
+      </div></div>
+      {% endif %}
+
+      <div class="box"><div class="box-title">Ziel</div><div class="box-body">
+        <div><b>Ziel:</b> {{ target_label }}</div>
+        <div><b>Typ:</b> {{ 'Eingangsbeleg' if target_type == 'voucher' else 'Ausgangsrechnung' }}</div>
+        <div><b>sevDesk-ID:</b> {{ sevdesk_object_id or '-' }}</div>
+        <div><b>Vorschlagsbetrag:</b> {{ amount_cents|eur_cents }}</div>
+      </div></div>
+
+      {% if payment_match and payment_match.error %}
+        <div class="box" style="margin-top:10px;"><div class="box-title">Abgleich</div><div class="box-body">
+          <div class="flash error">{{ payment_match.error }}</div>
+        </div></div>
+      {% endif %}
+
+      {% if payment_match and payment_match.auto_candidate %}
+        <div class="box" style="margin-top:10px;"><div class="box-title">Auto-Kandidat</div><div class="box-body">
+          <div><b>Transaktion:</b> {{ payment_match.auto_candidate.text or payment_match.auto_candidate.tx_id or '-' }}</div>
+          <div><b>Konto:</b> {{ payment_match.auto_candidate.check_account_label or payment_match.auto_candidate.check_account_id or '-' }}</div>
+          <div><b>Betrag:</b> {{ payment_match.auto_candidate.amount_cents|eur_cents }}</div>
+          <div><b>Gründe:</b> {{ payment_match.auto_candidate.reasons|join(', ') if payment_match.auto_candidate.reasons else '-' }}</div>
+        </div></div>
+      {% endif %}
+
+      {% if payment_match and payment_match.rows %}
+        <div class="box" style="margin-top:10px;"><div class="box-title">Transaktionskandidaten</div><div class="box-body">
+          <div class="table">
+            <div class="tr th" style="grid-template-columns: 110px 1.5fr 1fr;">
+              <div>Betrag</div><div>Transaktion</div><div>Treffer</div>
+            </div>
+            {% for item in payment_match.rows %}
+              <div class="tr" style="grid-template-columns: 110px 1.5fr 1fr;">
+                <div>{{ item.amount_cents|eur_cents }}</div>
+                <div>
+                  <div>{{ item.text or item.tx_id or '-' }}</div>
+                  <div class="hint">{{ format_date(item.date) }} | {{ item.check_account_label or item.check_account_id or '-' }}</div>
+                </div>
+                <div>{{ item.reasons|join(', ') if item.reasons else '-' }}</div>
+              </div>
+            {% endfor %}
+          </div>
+        </div></div>
+      {% endif %}
+
+      {% if avis_candidate %}
+        <div class="box" style="margin-top:10px;"><div class="box-title">Avis</div><div class="box-body">
+          <div><b>Gesamtsumme:</b> {{ avis_candidate.total_cents|eur_cents }}</div>
+          <div><b>Voucher:</b> {{ avis_candidate.rows|length }}</div>
+          <div><b>Hinweis:</b> {{ avis_candidate.reason_text or '-' }}</div>
+          <div class="hint" style="margin-top:8px;">Eine Sammelbuchung für Avis erfolgt über die Transaktionsdetailseite.</div>
+          {% if selected_transaction_id %}<div style="margin-top:8px;"><a class="btn small" href="/finanzen/transaktionen/{{ selected_transaction_id }}{% if document_inbox_id %}?document_inbox_id={{ document_inbox_id }}{% endif %}">Transaktionsdetails</a></div>{% endif %}
+        </div></div>
+      {% endif %}
+    </div>
+
+    <div>
+      <div class="box"><div class="box-title">Buchung</div><div class="box-body">
+        <form method="post" action="/finanzen/zahlungen/vorbereiten" class="form">
+          <input type="hidden" name="target_type" value="{{ target_type }}">
+          <input type="hidden" name="target_id" value="{{ target.id }}">
+          {% if document_inbox_id %}<input type="hidden" name="document_inbox_id" value="{{ document_inbox_id }}">{% endif %}
+          <div class="grid2">
+            <div>
+              <label>Konto</label>
+              <select name="check_account_id">
+                <option value="">-</option>
+                {% for row in check_accounts %}
+                  {% set account_id = row.id or row.ID or row.objectId %}
+                  <option value="{{ account_id }}" {% if selected_check_account_id == account_id|string %}selected{% endif %}>{{ row.name or row.displayName or account_id }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label>Vorhandene Transaktion</label>
+              <select name="transaction_id">
+                <option value="">-</option>
+                {% for row in transactions %}
+                  {% set tx_id = row.id or row.ID %}
+                  <option value="{{ tx_id }}" {% if selected_transaction_id == tx_id|string %}selected{% endif %}>{{ row.payeeName or row.text or row.reference or tx_id }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="grid3">
+            <div><label>Datum</label><input type="date" name="booking_date" value="{{ booking_date_value or '' }}"></div>
+            <div><label>Betrag</label><input type="text" name="amount" value="{{ amount_cents|eur_cents|replace(' €', '') }}"></div>
+            <div>
+              <label>Typ</label>
+              <select name="booking_type">
+                {% for key in booking_type_choices %}
+                  <option value="{{ key }}">{{ sevdesk_payment_type_label(key) }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="row" style="gap:8px; flex-wrap:wrap;">
+            <button class="btn primary" type="submit" {% if not sevdesk_write_enabled %}disabled{% endif %}>In sevDesk buchen</button>
+            {% if selected_transaction_id %}<a class="btn" href="/finanzen/transaktionen/{{ selected_transaction_id }}{% if document_inbox_id %}?document_inbox_id={{ document_inbox_id }}{% endif %}">Transaktion prüfen</a>{% endif %}
+          </div>
+        </form>
+      </div></div>
+    </div>
+  </div>
 </div>
 {% endblock %}

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Serviceaufträge</h1>
+  <h1>Aufträge</h1>
 
   <form method="get" action="/serviceauftraege" class="form compact">
     <div class="grid4">
@@ -29,7 +29,7 @@
       </div>
       <div class="row" style="align-items:end;">
         <button class="btn primary" type="submit">Filtern</button>
-        {% if role_flags.is_admin %}<a class="btn" href="/serviceauftraege/neu">Serviceauftrag anlegen</a>{% endif %}
+        {% if role_flags.is_admin %}<a class="btn" href="/serviceauftraege/neu">Auftrag anlegen</a>{% endif %}
       </div>
     </div>
   </form>
@@ -62,19 +62,19 @@
         </div>
         <div>
           <div>{{ crm_case_status_label(item.row.status) }}</div>
-          <div class="muted">{{ crm_case_priority_label(item.row.priority) }}</div>
+          <div class="muted">{{ crm_case_order_type_label(item.row.order_type) }} | {{ crm_case_priority_label(item.row.priority) }}</div>
         </div>
         <div><a class="btn small" href="/serviceauftraege/{{ item.row.id }}">Details</a></div>
       </div>
     {% endfor %}
-    {% if not rows %}<div class="muted">Keine Serviceaufträge gefunden.</div>{% endif %}
+    {% if not rows %}<div class="muted">Keine Aufträge gefunden.</div>{% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Serviceaufträge sind die internen Einsatzdatensätze vor der Einplanung in OutSmart.</li>
+  <li>Aufträge sind die führenden Einsatzakten vor und nach der Einplanung in OutSmart.</li>
   <li>Die Suche berücksichtigt auch Gerät, Fehlerbild, Ansprechpartner und Kontaktdaten.</li>
 </ul>
 {% endblock %}

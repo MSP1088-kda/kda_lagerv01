@@ -5,7 +5,7 @@
 
   <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
     <form method="get" action="/mail/eingang" class="inline row" style="gap:8px; flex-wrap:wrap;">
-      <input type="text" name="q" value="{{ q }}" placeholder="Betreff, Absender, Kunde, Vorgang">
+      <input type="text" name="q" value="{{ q }}" placeholder="Betreff, Absender, Kunde{% if internal_service_orders_enabled %}, Vorgang{% endif %}">
       <select name="status">
         <option value="">Alle Thread-Status</option>
         <option value="open"{% if status == 'open' %} selected{% endif %}>Offen</option>
@@ -30,17 +30,17 @@
   </div>
 
   <div class="table">
-    <div class="tr th" style="grid-template-columns: 2fr 1.2fr 1.2fr 140px 140px 140px;">
+    <div class="tr th" style="grid-template-columns: {% if internal_service_orders_enabled %}2fr 1.2fr 1.2fr 140px 140px 140px{% else %}2fr 1.4fr 140px 140px 140px{% endif %};">
       <div>Thread</div>
       <div>Kunde</div>
-      <div>Vorgang</div>
+      {% if internal_service_orders_enabled %}<div>Vorgang</div>{% endif %}
       <div>Zuordnung</div>
       <div>Status</div>
       <div>Aktion</div>
     </div>
     {% for item in rows %}
       {% set latest = item.latest %}
-      <div class="tr" style="grid-template-columns: 2fr 1.2fr 1.2fr 140px 140px 140px; align-items:start;">
+      <div class="tr" style="grid-template-columns: {% if internal_service_orders_enabled %}2fr 1.2fr 1.2fr 140px 140px 140px{% else %}2fr 1.4fr 140px 140px 140px{% endif %}; align-items:start;">
         <div>
           <div><b>{{ latest.subject or item.thread.subject_normalized or '(ohne Betreff)' }}</b></div>
           <div class="muted">{{ format_date(item.thread.last_message_at) }}</div>
@@ -55,14 +55,16 @@
             <span class="muted">-</span>
           {% endif %}
         </div>
-        <div>
-          {% if item.crm_case %}
-            <a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
-            <div class="muted">{{ item.crm_case.title }}</div>
-          {% else %}
-            <span class="muted">-</span>
-          {% endif %}
-        </div>
+        {% if internal_service_orders_enabled %}
+          <div>
+            {% if item.crm_case %}
+              <a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
+              <div class="muted">{{ item.crm_case.title }}</div>
+            {% else %}
+              <span class="muted">-</span>
+            {% endif %}
+          </div>
+        {% endif %}
         <div>{{ mail_assignment_status_label(latest.assignment_status if latest else 'unassigned') }}</div>
         <div>{{ mail_thread_status_label(item.thread.status) }}</div>
         <div><a class="btn small" href="/mail/threads/{{ item.thread.id }}">Öffnen</a></div>

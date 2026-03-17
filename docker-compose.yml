@@ -12,6 +12,18 @@ services:
       - BUILD_DATE=${BUILD_DATE:-}
     expose:
       - "8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,sys,urllib.request; port=os.environ.get('APP_PORT','8080'); url=f'http://127.0.0.1:{port}/meta/version'; sys.exit(0 if urllib.request.urlopen(url, timeout=3).status == 200 else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -20,7 +32,8 @@ services:
     image: caddy:2-alpine
     container_name: kda_lager_proxy
     depends_on:
-      - lager
+      lager:
+        condition: service_healthy
     ports:
       - "${HTTP_PORT:-8080}:80"
       - "${HTTPS_PORT:-8443}:443"

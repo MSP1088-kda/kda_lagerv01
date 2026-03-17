@@ -5,11 +5,10 @@
 
   <div class="hint">
     Entwurf: <b>#{{ draft.id }}</b> |
-    Hersteller: <b>{{ manufacturer.name }}</b> |
-    Geräteart: <b>{{ selected_kind.name }}</b> |
+    Erkannter Hersteller: <b>{{ resolved_manufacturer_name or (manufacturer.name if manufacturer else '-') }}</b> |
+    Erkannte Geräteart: <b>{{ resolved_device_kind_name or (selected_kind.name if selected_kind else '-') }}</b> |
     Zeilen: <b>{{ total_rows }}</b> |
-    Trennzeichen: <b>{{ delimiter }}</b> |
-    Encoding: <b>{{ encoding }}</b>
+    Format: <b>{{ delimiter }}</b> / <b>{{ encoding }}</b>
   </div>
 
   {% set errors = validation_errors or {'global_errors': [], 'field_errors': {}} %}
@@ -20,42 +19,8 @@
     {% endfor %}
   </div>
   {% endif %}
-  <div id="mapDuplicateWarning" class="import-warn-block" hidden></div>
 
-  {% if active_profile %}
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Profil</div>
-    <div class="box-body">
-      <div>Profil: <b>{{ active_profile.name }}</b></div>
-      {% if unmapped_columns %}
-      <div class="hint">Neue Spalten erkannt: {{ unmapped_columns[:8]|join(', ') }}{% if unmapped_columns|length > 8 %}, ...{% endif %}</div>
-      {% endif %}
-      <div class="row">
-        <a class="btn small" href="/catalog/import/profiles/{{ active_profile.id }}/edit">Profil bearbeiten</a>
-      </div>
-    </div>
-  </div>
-  {% endif %}
-
-  {% if matched_profiles %}
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Profil-Autodetektion</div>
-    <div class="box-body">
-      {% if auto_profile_id %}
-      <div class="hint">Passendes Profil wurde vorausgewählt.</div>
-      {% else %}
-      <div class="hint">Mehrere Profile passen. Bitte Profil auswählen oder Namen für neues Profil setzen.</div>
-      {% endif %}
-      <div class="mono">
-        {% for row in matched_profiles[:5] %}
-        #{{ row.profile.id }} {{ row.profile.name }} (Score {{ row.score }})<br>
-        {% endfor %}
-      </div>
-    </div>
-  </div>
-  {% endif %}
-
-  <h2>Vorschau (erste 10 Zeilen)</h2>
+  <h2>Vorschau</h2>
   {% if preview_rows %}
   <div class="mono">
     {{ columns|join(' | ') }}<br>
@@ -67,38 +32,61 @@
   <div class="muted">Keine Datenzeilen erkannt.</div>
   {% endif %}
 
+  {% if analysis_notes %}
+  <div class="hint" style="margin-top:10px;">
+    {% for note in analysis_notes %}
+    <div>- {{ note }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <form method="post" action="/catalog/import/{{ draft.id }}/map" class="form" data-import-map-form="1">
-    <h2>Profil</h2>
-    <label>Bestehendes Profil</label>
-    <select name="profile_id">
-      <option value="0">Neues Profil erstellen</option>
-      {% for row in matched_profiles %}
-      <option value="{{ row.profile.id }}" {% if selected_profile_id == row.profile.id %}selected{% endif %}>{{ row.profile.name }}</option>
-      {% endfor %}
-    </select>
-    {% if errors.field_errors.get('profile_id') %}
-    <div class="import-inline-error">{{ errors.field_errors.get('profile_id') }}</div>
-    {% endif %}
+    <input type="hidden" name="profile_id" value="{{ selected_profile_id or 0 }}">
+    <input type="hidden" name="profile_name" value="{{ profile_name_value }}">
+    {% if profile_update_default %}<input type="hidden" name="update_profile" value="on">{% endif %}
 
-    <label>Profilname (für neues Profil)</label>
-    <input type="text" name="profile_name" value="{{ profile_name_value }}" placeholder="z. B. Bosch Geschirrspüler">
+    <h2>Kernfelder</h2>
+    <div class="hint">
+      Gemappt werden nur Kernfelder und Bild 1-10. Das Datenblatt wird danach automatisch über die Hersteller-Linklogik gebaut, lokal gespeichert und ausgewertet.
+    </div>
 
-    <label class="check"><input type="checkbox" name="update_profile" {% if profile_update_default %}checked{% endif %}> Profil nach erfolgreichem Import aktualisieren</label>
-
-    <h2>Pflicht-Mapping</h2>
-    <label>EAN-Spalte (Pflicht)</label>
-    <select name="ean_column" required class="{% if errors.field_errors.get('ean_column') %}import-input-error{% endif %}">
-      <option value="">Bitte wählen</option>
-      {% for c in columns %}
-      <option value="{{ c }}" {% if ean_column == c %}selected{% endif %}>{{ c }}</option>
-      {% endfor %}
-    </select>
-    {% if errors.field_errors.get('ean_column') %}
-    <div class="import-inline-error">{{ errors.field_errors.get('ean_column') }}</div>
-    {% endif %}
-
-    <h2>Produktfelder</h2>
     <div class="grid3">
+      <div>
+        <label>Geräteart</label>
+        <select name="map_device_kind_name" class="{% if errors.field_errors.get('map_device_kind_name') %}import-input-error{% endif %}">
+          <option value="">Bitte wählen</option>
+          {% for c in columns %}
+          <option value="{{ c }}" {% if product_field_map.get('device_kind_name') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.field_errors.get('map_device_kind_name') %}
+        <div class="import-inline-error">{{ errors.field_errors.get('map_device_kind_name') }}</div>
+        {% endif %}
+      </div>
+      <div>
+        <label>Hersteller</label>
+        <select name="map_manufacturer_name" class="{% if errors.field_errors.get('map_manufacturer_name') %}import-input-error{% endif %}">
+          <option value="">Bitte wählen</option>
+          {% for c in columns %}
+          <option value="{{ c }}" {% if product_field_map.get('manufacturer_name') == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.field_errors.get('map_manufacturer_name') %}
+        <div class="import-inline-error">{{ errors.field_errors.get('map_manufacturer_name') }}</div>
+        {% endif %}
+      </div>
+      <div>
+        <label>EAN</label>
+        <select name="ean_column" class="{% if errors.field_errors.get('ean_column') %}import-input-error{% endif %}">
+          <option value="">Bitte wählen</option>
+          {% for c in columns %}
+          <option value="{{ c }}" {% if ean_column == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.field_errors.get('ean_column') %}
+        <div class="import-inline-error">{{ errors.field_errors.get('ean_column') }}</div>
+        {% endif %}
+      </div>
       <div>
         <label>Verkaufsbezeichnung</label>
         <select name="map_sales_name" class="{% if errors.field_errors.get('map_sales_name') %}import-input-error{% endif %}">
@@ -107,10 +95,13 @@
           <option value="{{ c }}" {% if product_field_map.get('sales_name') == c %}selected{% endif %}>{{ c }}</option>
           {% endfor %}
         </select>
+        {% if errors.field_errors.get('map_sales_name') %}
+        <div class="import-inline-error">{{ errors.field_errors.get('map_sales_name') }}</div>
+        {% endif %}
       </div>
       <div>
         <label>Materialnummer</label>
-        <select name="map_material_no" class="{% if errors.field_errors.get('map_material_no') %}import-input-error{% endif %}">
+        <select name="map_material_no">
           <option value="">-</option>
           {% for c in columns %}
           <option value="{{ c }}" {% if product_field_map.get('material_no') == c %}selected{% endif %}>{{ c }}</option>
@@ -118,17 +109,8 @@
         </select>
       </div>
       <div>
-        <label>Herstellerbezeichnung</label>
-        <select name="map_manufacturer_name" class="{% if errors.field_errors.get('map_manufacturer_name') %}import-input-error{% endif %}">
-          <option value="">-</option>
-          {% for c in columns %}
-          <option value="{{ c }}" {% if product_field_map.get('manufacturer_name') == c %}selected{% endif %}>{{ c }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
         <label>Produkttitel 1</label>
-        <select name="map_product_title_1" class="{% if errors.field_errors.get('map_product_title_1') %}import-input-error{% endif %}">
+        <select name="map_product_title_1">
           <option value="">-</option>
           {% for c in columns %}
           <option value="{{ c }}" {% if product_field_map.get('product_title_1') == c %}selected{% endif %}>{{ c }}</option>
@@ -137,49 +119,40 @@
       </div>
       <div>
         <label>Produkttitel 2</label>
-        <select name="map_product_title_2" class="{% if errors.field_errors.get('map_product_title_2') %}import-input-error{% endif %}">
+        <select name="map_product_title_2">
           <option value="">-</option>
           {% for c in columns %}
           <option value="{{ c }}" {% if product_field_map.get('product_title_2') == c %}selected{% endif %}>{{ c }}</option>
           {% endfor %}
         </select>
       </div>
-      <div>
-        <label>Beschreibung</label>
-        <select name="map_description" class="{% if errors.field_errors.get('map_description') %}import-input-error{% endif %}">
-          <option value="">-</option>
-          {% for c in columns %}
-          <option value="{{ c }}" {% if product_field_map.get('description') == c %}selected{% endif %}>{{ c }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Verkaufspreis (brutto)</label>
-        <select name="map_sale_price" class="{% if errors.field_errors.get('map_sale_price') %}import-input-error{% endif %}">
-          <option value="">-</option>
-          {% for c in columns %}
-          <option value="{{ c }}" {% if product_field_map.get('sale_price') == c %}selected{% endif %}>{{ c }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Bild 1 (direkt)</label>
-        <select name="map_image_url" class="{% if errors.field_errors.get('map_image_url') %}import-input-error{% endif %}">
-          <option value="">-</option>
-          {% for c in columns %}
-          <option value="{{ c }}" {% if product_field_map.get('image_url') == c %}selected{% endif %}>{{ c }}</option>
-          {% endfor %}
-        </select>
+    </div>
+
+    <h2>Beschreibung</h2>
+    <div class="hint">
+      Mehrere CSV-Spalten können zusammen in die Produktbeschreibung laufen. In der Detailseite werden diese Werte logisch strukturiert angezeigt.
+    </div>
+    <div class="box" style="margin-top:8px;">
+      <div class="box-title">Beschreibung aus CSV-Spalten</div>
+      <div class="box-body">
+        <div class="grid3">
+        {% for c in columns %}
+        <label class="check">
+          <input type="checkbox" name="description_columns" value="{{ c }}" {% if c in description_columns %}checked{% endif %}>
+          {{ c }}
+        </label>
+        {% endfor %}
+        </div>
       </div>
     </div>
 
-    <h3>Bilder (optional)</h3>
+    <h2>Bilder 1-10</h2>
     <div class="grid3">
       {% for idx in image_field_indices %}
       {% set key = 'image_url_' ~ idx %}
       <div>
         <label>Bild {{ idx }}</label>
-        <select name="map_{{ key }}" class="{% if errors.field_errors.get('map_' ~ key) %}import-input-error{% endif %}">
+        <select name="map_{{ key }}">
           <option value="">-</option>
           {% for c in columns %}
           <option value="{{ c }}" {% if product_field_map.get(key) == c %}selected{% endif %}>{{ c }}</option>
@@ -189,78 +162,9 @@
       {% endfor %}
     </div>
 
-    <h2>Zubehör</h2>
-    <div class="grid3">
-      <div>
-        <label>Zubehörliste (CSV-Spalte)</label>
-        <select name="map_accessory_list" class="{% if errors.field_errors.get('map_accessory_list') %}import-input-error{% endif %}">
-          <option value="">-</option>
-          {% for c in columns %}
-          <option value="{{ c }}" {% if accessory_source_column == c %}selected{% endif %}>{{ c }}</option>
-          {% endfor %}
-        </select>
-        {% if errors.field_errors.get('map_accessory_list') %}
-        <div class="import-inline-error">{{ errors.field_errors.get('map_accessory_list') }}</div>
-        {% endif %}
-      </div>
-      <div>
-        <label>Trennmodus</label>
-        <select name="accessory_separator_mode">
-          <option value="auto" {% if accessory_separator_mode == 'auto' %}selected{% endif %}>Automatisch (, und ;)</option>
-          <option value="semicolon" {% if accessory_separator_mode == 'semicolon' %}selected{% endif %}>Nur Semikolon (;)</option>
-          <option value="comma" {% if accessory_separator_mode == 'comma' %}selected{% endif %}>Nur Komma (,)</option>
-        </select>
-      </div>
-    </div>
-
-    <h2>Merkmale aus CSV</h2>
-    <div class="table">
-      <div class="tr th" style="grid-template-columns: 1fr 120px 1.2fr 1fr 1fr;">
-        <div>CSV-Spalte</div>
-        <div>Importieren</div>
-        <div>Merkmal</div>
-        <div>Neuer Merkmalname</div>
-        <div>Datentyp</div>
-      </div>
-      {% for c in columns %}
-      {% set pre = feature_prefill_by_column.get(c, {}) %}
-      {% set use_checked = pre and pre.get('feature_key') %}
-      {% set idx = loop.index0 %}
-      {% set row_name = pre.get('row_name') or ('feature_row_' ~ idx) %}
-      {% set row_error = errors.field_errors.get(row_name) %}
-      <div class="tr import-map-row {% if row_error %}import-map-row-error{% endif %}" style="grid-template-columns: 1fr 120px 1.2fr 1fr 1fr;" data-feature-row="1">
-        <div>{{ c }}</div>
-        <div><label class="check"><input type="checkbox" name="feature_use_{{ idx }}" {% if use_checked %}checked{% endif %}> Ja</label></div>
-        <div>
-          <select name="feature_existing_key_{{ idx }}" data-feature-existing="1">
-            <option value="">(bestehend)</option>
-            {% for f in feature_defs %}
-            <option value="{{ f.key }}" {% if pre.get('is_existing') == '1' and pre.get('feature_key') == f.key %}selected{% endif %}>{{ f.label_de }} ({{ f.key }})</option>
-            {% endfor %}
-            <option value="__neu__" {% if pre.get('is_existing') == '0' %}selected{% endif %}>Neues Merkmal</option>
-          </select>
-        </div>
-        <div>
-          <input type="text" name="feature_new_label_{{ idx }}" value="{{ pre.get('new_label','') }}" placeholder="nur bei neuem Merkmal">
-        </div>
-        <div>
-          <select name="feature_data_type_{{ idx }}">
-            <option value="text" {% if pre.get('data_type','text') == 'text' %}selected{% endif %}>Text</option>
-            <option value="number" {% if pre.get('data_type') == 'number' %}selected{% endif %}>Zahl</option>
-            <option value="bool" {% if pre.get('data_type') == 'bool' %}selected{% endif %}>Ja/Nein</option>
-          </select>
-        </div>
-      </div>
-      {% if row_error %}
-      <div class="import-inline-error" style="margin:0 10px 8px 10px;">{{ row_error }}</div>
-      {% endif %}
-      {% endfor %}
-    </div>
-
     <div class="row">
-      <button class="btn primary" type="submit">Mapping prüfen und weiter</button>
+      <button class="btn primary" type="submit">Mapping prüfen</button>
       <a class="btn" href="/catalog/import">Zurück</a>
-      <a class="btn" href="/catalog/import/profiles">Profile verwalten</a>
     </div>
   </form>
 </div>
@@ -268,8 +172,10 @@
 
 {% block help %}
 <ul>
-  <li>Bei Fehlern bleiben Datei und Zuordnungen im Entwurf erhalten.</li>
-  <li>Doppelte Merkmalzuordnungen werden direkt in den betroffenen Zeilen markiert.</li>
-  <li>Zubehör wird über „Zubehörliste“ als Produktverknüpfung vorbereitet.</li>
+  <li>Pflicht sind Geräteart, Hersteller und EAN.</li>
+  <li>Verkaufsbezeichnung, Materialnummer und Produkttitel ergänzen den Produktkern.</li>
+  <li>Die Beschreibung kann aus mehreren CSV-Spalten zusammengesetzt werden.</li>
+  <li>Bild 1-10 wird direkt aus der CSV übernommen. Das Datenblatt wird nicht gemappt, sondern aus der hinterlegten Herstellerlogik gebaut.</li>
+  <li>Definierte Merkmale der Geräteart werden danach direkt aus den CSV-Spalten und Beschreibungstexten abgeleitet.</li>
 </ul>
 {% endblock %}

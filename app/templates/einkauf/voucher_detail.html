@@ -3,14 +3,24 @@
 <div class="panel">
   <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
     <div>
-      <h1>Voucher {{ row.sevdesk_voucher_id or ('VOU-' ~ '%04d'|format(row.id)) }}</h1>
+      <h1>Beleg {{ row.sevdesk_voucher_id or ('VOU-' ~ '%04d'|format(row.id)) }}</h1>
       <div class="hint">{{ incoming_voucher_status_label(row.status) }}</div>
     </div>
     <div class="row" style="gap:8px; flex-wrap:wrap;">
-      {% if role_flags.is_admin %}<form method="post" action="/einkauf/voucher/{{ row.id }}/sevdesk" class="inline"><button class="btn primary" type="submit">In sevDesk erzeugen</button></form>{% endif %}
-      {% if role_flags.is_admin %}<a class="btn" href="/finanzen/zahlungen/vorbereiten?target_type=voucher&target_id={{ row.id }}">Zahlung buchen</a>{% endif %}
+      {% if role_flags.is_admin and not row.sevdesk_voucher_id %}<a class="btn" href="/einkauf/voucher/{{ row.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+      {% if role_flags.is_admin %}<form method="post" action="/einkauf/voucher/{{ row.id }}/sevdesk" class="inline"><button class="btn primary" type="submit" {% if not sevdesk_write_enabled %}disabled title="sevDesk-Schreiben ist derzeit deaktiviert."{% endif %}>In sevDesk erzeugen</button></form>{% endif %}
+      {% if role_flags.is_admin %}
+      <form method="get" action="/finanzen/zahlungen/vorbereiten" class="inline">
+        <input type="hidden" name="target_type" value="voucher">
+        <input type="hidden" name="target_id" value="{{ row.id }}">
+        <button class="btn" type="submit" {% if not sevdesk_write_enabled %}disabled title="sevDesk-Schreiben ist derzeit deaktiviert."{% endif %}>Zahlung buchen</button>
+      </form>
+      {% endif %}
       <a class="btn" href="/einkauf/voucher">Zurück</a>
     </div>
+    {% if role_flags.is_admin and not sevdesk_write_enabled %}
+      <div class="hint" style="margin-top:8px;">sevDesk-Schreiben ist derzeit deaktiviert. Export und Zahlungsbuchung bleiben gesperrt.</div>
+    {% endif %}
   </div>
 
   <div class="grid2" style="margin-top:10px; align-items:start;">
@@ -28,7 +38,47 @@
       <div><b>Voucher-ID:</b> {{ row.sevdesk_voucher_id or '-' }}</div>
       <div><b>Status:</b> {{ row.sevdesk_voucher_status or '-' }}</div>
       <div><b>Paperless:</b> {{ row.paperless_document_id or '-' }}</div>
+      <div><b>Statuscode:</b> {{ stage_row.status_code if stage_row else '-' }}</div>
+      <div><b>Bezahlt am:</b> {{ format_date(stage_row.pay_date) if stage_row and stage_row.pay_date else '-' }}</div>
+      <div><b>Zahlziel:</b> {{ format_date(stage_row.payment_deadline) if stage_row and stage_row.payment_deadline else '-' }}</div>
+      <div><b>Enshrined:</b> {{ format_date(stage_row.enshrined_at) if stage_row and stage_row.enshrined_at else '-' }}</div>
       <div><b>Link:</b> {% if external_link and external_link.deep_link_url %}<a href="{{ external_link.deep_link_url }}" target="_blank" rel="noopener">sevDesk API</a>{% else %}-{% endif %}</div>
+    </div></div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div class="box"><div class="box-title">Dokument</div><div class="box-body">
+      <div><b>Dokumenteingang:</b> {% if document_inbox_item %}<a href="/einkauf/dokumente/{{ document_inbox_item.id }}">{{ document_inbox_item.title or ('Dokument ' ~ document_inbox_item.id) }}</a>{% else %}-{% endif %}</div>
+      <div><b>Paperless-ID:</b> {{ document_inbox_item.paperless_document_id if document_inbox_item else (row.paperless_document_id or '-') }}</div>
+      <div><b>Korrespondent:</b> {{ document_inbox_item.correspondent if document_inbox_item else '-' }}</div>
+      {% if document_inbox_item %}<div style="margin-top:8px;"><a class="btn small" href="/einkauf/dokumente/{{ document_inbox_item.id }}/quelle" target="_blank" rel="noopener">Quelldatei öffnen</a></div>{% endif %}
+    </div></div>
+
+    <div class="box"><div class="box-title">Zahlungsabgleich</div><div class="box-body">
+      {% if payment_match.error %}
+        <div class="flash error">{{ payment_match.error }}</div>
+      {% endif %}
+      {% if payment_match_auto %}
+        <div><b>Auto-Kandidat:</b> {{ payment_match_auto.text or payment_match_auto.tx_id or '-' }}</div>
+        <div><b>Konto:</b> {{ payment_match_auto.check_account_label or payment_match_auto.check_account_id or '-' }}</div>
+        <div><b>Betrag:</b> {{ payment_match_auto.amount_cents|eur_cents }}</div>
+        <div><b>Gründe:</b> {{ payment_match_auto.reasons|join(', ') if payment_match_auto.reasons else '-' }}</div>
+      {% elif payment_match.best %}
+        <div><b>Bester Treffer:</b> {{ payment_match.best.text or payment_match.best.tx_id or '-' }}</div>
+        <div><b>Gründe:</b> {{ payment_match.best.reasons|join(', ') if payment_match.best.reasons else '-' }}</div>
+      {% else %}
+        <div class="hint">Noch kein passender Kontoumsatz vorgeschlagen.</div>
+      {% endif %}
+      {% if avis_candidate %}
+        <div style="margin-top:8px;"><b>Avis:</b> {{ avis_candidate.rows|length }} Voucher ergeben {{ avis_candidate.total_cents|eur_cents }}.</div>
+      {% endif %}
+      <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+        <form method="get" action="/finanzen/zahlungen/vorbereiten" class="inline">
+          <input type="hidden" name="target_type" value="voucher">
+          <input type="hidden" name="target_id" value="{{ row.id }}">
+          <button class="btn small" type="submit" {% if not sevdesk_write_enabled %}disabled title="sevDesk-Schreiben ist derzeit deaktiviert."{% endif %}>Zahlungsmaske öffnen</button>
+        </form>
+      </div>
     </div></div>
   </div>
 

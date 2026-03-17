@@ -27,6 +27,8 @@ STRICT_PRIVACY_ALLOWED_TASKS: tuple[str, ...] = (
     "customer_merge_candidate",
     "customer_init_cluster_review",
     "voucher_accounting_suggestion",
+    "catalog_pdf_extract",
+    "catalog_csv_import_plan",
 )
 
 TASK_RISK_CLASS: dict[str, str] = {
@@ -39,6 +41,8 @@ TASK_RISK_CLASS: dict[str, str] = {
     "customer_merge_candidate": RISK_YELLOW,
     "customer_init_cluster_review": RISK_GREEN,
     "role_assignment_suggestion": RISK_YELLOW,
+    "catalog_pdf_extract": RISK_GREEN,
+    "catalog_csv_import_plan": RISK_GREEN,
 }
 
 PROMPT_DEFAULTS: dict[str, dict[str, str | int]] = {
@@ -95,6 +99,18 @@ PROMPT_DEFAULTS: dict[str, dict[str, str | int]] = {
         "system_prompt": "Du bewertest Rollen im Leistungsdreieck. Liefere vorsichtige Vorschlaege fuer Auftraggeber, Leistungsort und Rechnungsempfaenger.",
         "user_template": "Bewerte die Rollenbelegung fuer den Vorgang und nenne fehlende Angaben.",
         "output_schema_name": "role_assignment_suggestion",
+    },
+    "catalog_pdf_extract": {
+        "version": 1,
+        "system_prompt": "Du pruefst die strukturierte Extraktion aus einem Produktdatenblatt fuer Haushaltsgeraete. Korrigiere nur, wenn der PDF-Text das klar belegt. Keine erfundenen Werte.",
+        "user_template": "Pruefe Hersteller, Geraeteart, Kerndaten und die passenden Attributwerte aus dem Datenblatt.",
+        "output_schema_name": "catalog_pdf_extract",
+    },
+    "catalog_csv_import_plan": {
+        "version": 1,
+        "system_prompt": "Du analysierst Hersteller-CSV-Dateien fuer Haushaltsgeraete. Liefere nur vorsichtige Spaltenzuordnungen fuer vorhandene Merkmale und Beschreibungsfelder. Keine erfundenen Spalten oder Werte.",
+        "user_template": "Analysiere Header und Beispielzeilen fuer Hersteller und Geraeteart. Schlage die besten CSV-Spalten fuer Merkmale, Kernfeld-Fallbacks und die Beschreibung vor.",
+        "output_schema_name": "catalog_csv_import_plan",
     },
 }
 

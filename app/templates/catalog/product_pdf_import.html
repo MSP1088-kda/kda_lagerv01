@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Produkt aus Datenblatt importieren</h1>
+
+  {% if global_errors %}
+  <div class="import-error-block">
+    {% for msg in global_errors %}
+    <div>- {{ msg }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/catalog/products/new/analyze" enctype="multipart/form-data" class="form">
+    <label>Produktdatenblatt (PDF)</label>
+    <input type="file" name="datasheet_upload" accept="application/pdf" required autofocus>
+
+    <div class="hint">
+      Weitere Angaben sind hier nicht nötig. Parser und KI lesen Hersteller, Geräteart, EAN, Produktkern und passende Attribute aus dem Datenblatt.
+      Vor dem Speichern bekommst du eine Prüfseite.
+    </div>
+
+    <div class="row">
+      <button class="btn primary" type="submit">Datenblatt analysieren</button>
+      <a class="btn" href="/catalog/products">Zurück</a>
+      <a class="btn" href="/catalog/products/new?mode=manual">Manuelle Anlage</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Dieser Pfad ist für neue Großgeräte gedacht.</li>
+  <li>Das Produkt wird erst nach deiner Sichtprüfung importiert oder aktualisiert.</li>
+  <li>Verwendet werden am besten textbasierte Produktdatenblätter.</li>
+</ul>
+{% endblock %}

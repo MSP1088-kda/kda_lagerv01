@@ -1,119 +1,674 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="panel">
-  <h1>{{ page_title }}</h1>
-  {% if form_errors %}<div class="flash error">{{ (form_errors.values()|list)[0] }}</div>{% endif %}
-  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
-    <div class="grid3">
-      <div>
-        <label>Quelle</label>
-        <select name="source_type">
-          {% for key in source_type_choices %}
-            <option value="{{ key }}" {% if (form_data.source_type or 'manual') == key %}selected{% endif %}>
-              {% if key == 'manual' %}Manuell{% elif key == 'outsmart_completed' %}OutSmart abgeschlossen{% elif key == 'converted_offer' %}Aus Angebot{% else %}{{ key }}{% endif %}
-            </option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Vorgang</label>
-        <select name="case_id">
-          <option value="0">-</option>
-          {% for option in case_options %}
-            <option value="{{ option.id }}" {% if option.id == selected_case_id %}selected{% endif %}>{{ option.label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Angebot</label>
-        <select name="offer_draft_id">
-          <option value="0">-</option>
-          {% for offer in offer_rows %}
-            <option value="{{ offer.id }}" {% if offer.id == selected_offer_id %}selected{% endif %}>{{ offer.sevdesk_order_number or ('ANG-' ~ '%04d'|format(offer.id)) }}</option>
-          {% endfor %}
-        </select>
-      </div>
+{% set row_id = row.id if row else None %}
+{% if ai_invoice_result and ai_invoice_review and ai_invoice_review.status == 'open' %}
+  <form id="invoice-ai-approve" method="post" action="/system/ki-freigaben/{{ ai_invoice_result.log.id }}" class="inline">
+    <input type="hidden" name="action" value="approve">
+  </form>
+  <form id="invoice-ai-reject" method="post" action="/system/ki-freigaben/{{ ai_invoice_result.log.id }}" class="inline">
+    <input type="hidden" name="action" value="reject">
+  </form>
+{% endif %}
+<div class="panel draft-form-shell">
+  <div class="customer-section-head hero">
+    <div>
+      <h1>{{ page_title }}</h1>
+      <div class="muted">{% if row_id %}Entwurf {{ row_id }}{% else %}Neuer Entwurf{% endif %}</div>
     </div>
-    <div class="grid3">
-      <div>
-        <label>Kunde</label>
-        <select name="master_customer_id">
-          <option value="0">-</option>
-          {% for option in customer_options %}
-            <option value="{{ option.id }}" {% if option.id == selected_customer_id %}selected{% endif %}>{{ option.label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div><label>Rechnungsdatum</label><input type="date" name="invoice_date" value="{{ form_data.invoice_date or '' }}"></div>
-      <div><label>Fällig am</label><input type="date" name="due_date" value="{{ form_data.due_date or '' }}"></div>
+    <div class="customer-inline-actions">
+      <a class="btn" href="{% if row_id %}/crm/rechnungen/{{ row_id }}{% else %}/crm/rechnungen{% endif %}">Zurueck</a>
     </div>
-    {% if case_context %}
-      <div class="box" style="margin-top:10px;"><div class="box-title">Leistungsdreieck</div><div class="box-body">
-        <div><b>Auftraggeber:</b> {{ case_context.ordering_customer.customer_no_internal if case_context.ordering_customer else '-' }}</div>
-        <div><b>Rechnungsempfänger:</b> {{ case_context.invoice_customer.customer_no_internal if case_context.invoice_customer else '-' }}</div>
-        <div><b>Leistungsort:</b> {{ case_context.service_location.location_label if case_context.service_location else '-' }}</div>
-      </div></div>
-    {% endif %}
-    {% if ai_invoice_result %}
-      {% set ai_invoice = ai_invoice_result.output %}
-      <details class="box" style="margin-top:10px;" open>
-        <summary class="box-title">KI-Rechnungsvorschlag</summary>
-        <div class="box-body">
-          <div><b>Status:</b> {{ ai_status_label(ai_invoice_result.log.status) }} | {{ ai_risk_label(ai_invoice_result.risk_class) }}</div>
-          {% if ai_invoice.completeness_check %}<div><b>Vollständigkeit:</b> {{ ai_invoice.completeness_check|join(', ') }}</div>{% endif %}
-          {% if ai_invoice.references %}<div><b>Bezüge:</b> {{ ai_invoice.references|join(', ') }}</div>{% endif %}
-          {% if ai_invoice.flags %}<div><b>Hinweise:</b> {{ ai_invoice.flags|join(', ') }}</div>{% endif %}
-          {% if ai_invoice.proposed_lines %}
-            <div style="margin-top:8px;"><b>Vorgeschlagene Positionen</b></div>
-            {% for item in ai_invoice.proposed_lines %}
-              <div>{{ item.text }} | {{ item.qty }} {{ item.unit }} | {{ item.unit_price_net or '-' }}</div>
-            {% endfor %}
-          {% endif %}
-          {% if ai_invoice_review and ai_invoice_review.status == 'open' %}
-            <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
-              <form method="post" action="/system/ki-freigaben/{{ ai_invoice_result.log.id }}" class="inline">
-                <input type="hidden" name="action" value="approve">
-                <button class="btn small" type="submit">Freigeben</button>
-              </form>
-              <form method="post" action="/system/ki-freigaben/{{ ai_invoice_result.log.id }}" class="inline">
-                <input type="hidden" name="action" value="reject">
-                <button class="btn small" type="submit">Ablehnen</button>
-              </form>
-            </div>
-          {% endif %}
-        </div>
-      </details>
-    {% endif %}
-    <label>Notiz</label>
-    <textarea name="note" rows="3">{{ form_data.note or '' }}</textarea>
+  </div>
 
-    <h2>Positionen</h2>
-    <div class="table">
-      <div class="tr th" style="grid-template-columns: 160px 1.6fr 100px 90px 120px 90px;">
-        <div>Artikel</div><div>Text</div><div>Menge</div><div>Einheit</div><div>Preis netto</div><div>Steuer %</div>
+  {% if form_errors %}
+    <div class="flash-item flash-error">{{ (form_errors.values()|list)[0] }}</div>
+  {% endif %}
+
+  {% if document_inbox_item %}
+    <div class="box" style="margin-bottom:10px;">
+      <div class="box-title">Beleg-Entwurf</div>
+      <div class="box-body">
+        <div><b>{{ document_source.label if document_source else 'Dokument' }}</b> | {{ document_inbox_item.title or '-' }}</div>
+        {% if document_source and document_source.detail %}<div class="hint">{{ document_source.detail }}</div>{% endif %}
+        <div style="margin-top:8px;"><a class="btn small" href="/einkauf/dokumente/{{ document_inbox_item.id }}">Zur Dokumentprüfung</a></div>
       </div>
-      {% for line in line_rows %}
-        <div class="tr" style="grid-template-columns: 160px 1.6fr 100px 90px 120px 90px; align-items:start;">
-          <div>
-            <select name="line_product_id">
-              <option value="0">-</option>
-              {% for product in products %}
-                <option value="{{ product.id }}" {% if product.id|string == line.product_id|string %}selected{% endif %}>{{ product.name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div><input type="text" name="line_text" value="{{ line.text or '' }}"></div>
-          <div><input type="text" name="line_qty" value="{{ line.qty or '' }}"></div>
-          <div><input type="text" name="line_unit" value="{{ line.unit or 'Stk' }}"></div>
-          <div><input type="text" name="line_unit_price_net" value="{{ line.unit_price_net or '' }}"></div>
-          <div><input type="text" name="line_tax_rate" value="{{ line.tax_rate or '19' }}"></div>
-        </div>
-      {% endfor %}
     </div>
-    <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
+  {% endif %}
+
+  <form id="invoice-draft-form" method="post" action="{{ form_action }}" class="form draft-form" data-first-error="{{ first_error_field_id or '' }}">
+    <input type="hidden" name="document_inbox_id" value="{{ form_data.document_inbox_id or document_inbox_id or '' }}">
+    <div class="draft-form-layout">
+      <div class="draft-form-main">
+        <div class="grid2 draft-top-grid">
+          <section class="box">
+            <div class="box-title">Bezug</div>
+            <div class="box-body draft-field-grid">
+              <div class="draft-field">
+                <label for="invoice-source-type">Quelle</label>
+                <select id="invoice-source-type" name="source_type">
+                  {% for key in source_type_choices %}
+                    <option value="{{ key }}" {% if (form_data.source_type or 'manual') == key %}selected{% endif %}>
+                      {% if key == 'manual' %}Manuell{% elif key == 'outsmart_completed' %}OutSmart abgeschlossen{% elif key == 'converted_offer' %}Aus Angebot{% else %}{{ key }}{% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              {% if internal_service_orders_enabled %}
+                <div class="draft-field">
+                  <label for="invoice-case-id">Arbeitsauftrag</label>
+                  <select id="invoice-case-id" name="case_id">
+                    <option value="0">-</option>
+                    {% for option in case_options %}
+                      <option value="{{ option.id }}" {% if option.id == selected_case_id %}selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              {% endif %}
+
+              <div class="draft-field wide">
+                <label for="invoice-offer-search">Angebot</label>
+                <input id="invoice-offer-search" type="search" class="draft-search-input" data-filter-select="invoice-offer-id" placeholder="Angebot suchen" value="">
+                <select id="invoice-offer-id" name="offer_draft_id" data-filterable>
+                  <option value="0">-</option>
+                  {% for offer in offer_options %}
+                    <option value="{{ offer.id }}" data-customer-id="{{ offer.customer_id or '' }}" data-service-location-id="{{ offer.service_location_id or '' }}" {% if offer.id == selected_offer_id %}selected{% endif %}>{{ offer.label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div class="draft-field wide">
+                <label for="invoice-customer-search">Kunde</label>
+                <input id="invoice-customer-search" type="search" class="draft-search-input" data-filter-select="invoice-customer-id" placeholder="Kunde suchen" value="">
+                <select id="invoice-customer-id" name="master_customer_id" data-filterable>
+                  <option value="0">-</option>
+                  {% for option in customer_options %}
+                    <option
+                      value="{{ option.id }}"
+                      data-street="{{ option.street }}"
+                      data-house-no="{{ option.house_no }}"
+                      data-zip-code="{{ option.zip_code }}"
+                      data-city="{{ option.city }}"
+                      data-country-code="{{ option.country_code }}"
+                      data-email="{{ option.email }}"
+                      data-name="{{ option.name }}"
+                      {% if option.id == selected_customer_id %}selected{% endif %}
+                    >{{ option.label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div class="draft-field wide">
+                <label for="invoice-location-search">Leistungsort</label>
+                <input id="invoice-location-search" type="search" class="draft-search-input" data-filter-select="invoice-location-id" placeholder="Leistungsort suchen" value="">
+                <select id="invoice-location-id" name="service_location_id" data-filterable>
+                  <option value="0">-</option>
+                  {% for option in location_options %}
+                    <option value="{{ option.id }}" data-customer-id="{{ option.customer_id or '' }}" {% if option.id == selected_service_location_id %}selected{% endif %}>{{ option.label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <section class="box draft-form-summary">
+            <div class="box-title">Termine und Summe</div>
+            <div class="box-body draft-summary-grid">
+              <div class="draft-field">
+                <label for="invoice-date">Rechnungsdatum</label>
+                <input id="invoice-date" type="date" name="invoice_date" value="{{ form_data.invoice_date or '' }}">
+              </div>
+              <div class="draft-field">
+                <label for="invoice-due-date">Faellig am</label>
+                <input id="invoice-due-date" type="date" name="due_date" value="{{ form_data.due_date or '' }}">
+              </div>
+              <div class="draft-field wide">
+                <label>Preiseingabe</label>
+                <div class="row" style="margin-top:4px;">
+                  <label class="radio"><input type="radio" name="price_mode" value="net" {% if price_mode != 'gross' %}checked{% endif %}> Netto</label>
+                  <label class="radio"><input type="radio" name="price_mode" value="gross" {% if price_mode == 'gross' %}checked{% endif %}> Brutto</label>
+                </div>
+              </div>
+              <div class="draft-summary-kpi">
+                <span class="label">Positionen</span>
+                <strong data-summary-lines>0</strong>
+              </div>
+              <div class="draft-summary-kpi">
+                <span class="label">Netto</span>
+                <strong data-summary-net>0,00 EUR</strong>
+              </div>
+              <div class="draft-summary-kpi wide">
+                <span class="label">Brutto</span>
+                <strong data-summary-gross>0,00 EUR</strong>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        {% if internal_service_orders_enabled and case_context %}
+          <section class="box draft-context-box">
+            <div class="box-title">Leistungsdreieck</div>
+            <div class="box-body draft-context-grid">
+              <div class="draft-context-item">
+                <span class="label">Auftraggeber</span>
+                <strong>{{ case_context.ordering_customer.customer_no_internal if case_context.ordering_customer else '-' }}</strong>
+              </div>
+              <div class="draft-context-item">
+                <span class="label">Rechnungsempfaenger</span>
+                <strong>{{ case_context.invoice_customer.customer_no_internal if case_context.invoice_customer else '-' }}</strong>
+              </div>
+              <div class="draft-context-item">
+                <span class="label">Leistungsort</span>
+                <strong>{{ case_context.service_location.location_label if case_context.service_location else '-' }}</strong>
+              </div>
+            </div>
+          </section>
+        {% endif %}
+
+        <section class="box draft-note-box">
+          <div class="box-title">Rechnungsadresse</div>
+          <div class="box-body">
+            <div class="row" style="justify-content:flex-end; margin-top:0;">
+              <button class="btn small" type="button" data-copy-customer-address="#invoice-customer-id">Kundenadresse uebernehmen</button>
+            </div>
+            <div class="draft-field-grid">
+              <div class="draft-field wide">
+                <label for="invoice-billing-name">Name</label>
+                <input id="invoice-billing-name" type="text" name="billing_name" value="{{ form_data.billing_name or billing_fields.billing_name or '' }}" data-billing-name>
+              </div>
+              <div class="draft-field">
+                <label for="invoice-billing-street">Strasse</label>
+                <input id="invoice-billing-street" type="text" name="billing_street" value="{{ form_data.billing_street or billing_fields.billing_street or '' }}" data-billing-street>
+              </div>
+              <div class="draft-field">
+                <label for="invoice-billing-house-no">Hausnummer</label>
+                <input id="invoice-billing-house-no" type="text" name="billing_house_no" value="{{ form_data.billing_house_no or billing_fields.billing_house_no or '' }}" data-billing-house-no>
+              </div>
+              <div class="draft-field">
+                <label for="invoice-billing-zip">PLZ</label>
+                <input id="invoice-billing-zip" type="text" name="billing_zip_code" value="{{ form_data.billing_zip_code or billing_fields.billing_zip_code or '' }}" data-billing-zip-code>
+              </div>
+              <div class="draft-field">
+                <label for="invoice-billing-city">Ort</label>
+                <input id="invoice-billing-city" type="text" name="billing_city" value="{{ form_data.billing_city or billing_fields.billing_city or '' }}" data-billing-city>
+              </div>
+              <div class="draft-field">
+                <label for="invoice-billing-country">Land</label>
+                <input id="invoice-billing-country" type="text" name="billing_country_code" value="{{ form_data.billing_country_code or billing_fields.billing_country_code or 'DE' }}" data-billing-country-code>
+              </div>
+              <div class="draft-field">
+                <label for="invoice-billing-email">E-Mail</label>
+                <input id="invoice-billing-email" type="email" name="billing_email" value="{{ form_data.billing_email or billing_fields.billing_email or '' }}" data-billing-email>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {% if ai_invoice_result %}
+          {% set ai_invoice = ai_invoice_result.output %}
+          <details class="collapse-box box draft-ai-box">
+            <summary class="box-title">KI-Rechnungsvorschlag</summary>
+            <div class="box-body">
+              <div class="draft-ai-meta">
+                <div><span class="label">Status</span> {{ ai_status_label(ai_invoice_result.log.status) }}</div>
+                <div><span class="label">Risiko</span> {{ ai_risk_label(ai_invoice_result.risk_class) }}</div>
+              </div>
+              {% if ai_invoice.completeness_check %}
+                <div class="draft-inline-hint"><span class="label">Vollstaendigkeit</span> {{ ai_invoice.completeness_check|join(', ') }}</div>
+              {% endif %}
+              {% if ai_invoice.references %}
+                <div class="draft-inline-hint"><span class="label">Bezuege</span> {{ ai_invoice.references|join(', ') }}</div>
+              {% endif %}
+              {% if ai_invoice.flags %}
+                <div class="draft-inline-hint"><span class="label">Hinweise</span> {{ ai_invoice.flags|join(', ') }}</div>
+              {% endif %}
+              {% if ai_invoice.proposed_lines %}
+                <div class="draft-ai-lines">
+                  {% for item in ai_invoice.proposed_lines %}
+                    <div class="draft-ai-line">
+                      <strong>{{ item.text }}</strong>
+                      <span>{{ item.qty }} {{ item.unit }} | {{ item.unit_price_net or '-' }}</span>
+                    </div>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              {% if ai_invoice_review and ai_invoice_review.status == 'open' %}
+                <div class="row draft-ai-actions">
+                  <button class="btn small" type="submit" form="invoice-ai-approve">Freigeben</button>
+                  <button class="btn small" type="submit" form="invoice-ai-reject">Ablehnen</button>
+                </div>
+              {% endif %}
+            </div>
+          </details>
+        {% endif %}
+
+        <section class="box draft-note-box">
+          <div class="box-title">Zusatztext</div>
+          <div class="box-body">
+            <textarea id="invoice-note" name="note" rows="5" placeholder="Zusatztext oder Vermerk fuer die Rechnung">{{ form_data.note or '' }}</textarea>
+          </div>
+        </section>
+
+        <section class="box draft-lines-box">
+          <div class="box-title">Positionen</div>
+          <div class="box-body">
+            <div class="draft-lines-toolbar">
+              <div class="draft-inline-hint">Positionen koennen frei hinzugefuegt werden. Die Eingabe laeuft wahlweise netto oder brutto, Summen werden immer in beiden Sichtweisen gezeigt.</div>
+              <button class="btn" type="button" data-add-line>Position hinzufuegen</button>
+            </div>
+            <div class="draft-line-list" data-draft-line-list>
+              {% for line in line_rows %}
+                <article class="draft-line-card" data-line-row>
+                  <div class="draft-line-head">
+                    <div>
+                      <strong data-line-index>Position {{ loop.index }}</strong>
+                      <div class="muted" data-line-label>Leer</div>
+                    </div>
+                    <div class="draft-line-head-actions">
+                      <div class="draft-line-total" data-line-total>0,00 EUR brutto</div>
+                      <button class="btn small" type="button" data-remove-line>Entfernen</button>
+                    </div>
+                  </div>
+                  <div class="draft-line-grid">
+                    <div class="draft-field">
+                      <label>Artikel</label>
+                      <select name="line_product_id" data-line-product>
+                        <option value="0">-</option>
+                        {% for product in products %}
+                          <option value="{{ product.id }}" data-product-name="{{ product.name }}" {% if product.id|string == line.product_id|string %}selected{% endif %}>{{ product.name }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="draft-field draft-line-text">
+                      <label>Leistungsbeschreibung</label>
+                      <textarea name="line_text" rows="3" data-line-text>{{ line.text or '' }}</textarea>
+                    </div>
+                    <div class="draft-field">
+                      <label>Menge</label>
+                      <input type="text" name="line_qty" value="{{ line.qty or '' }}" data-line-qty inputmode="decimal">
+                    </div>
+                    <div class="draft-field">
+                      <label>Einheit</label>
+                      <input type="text" name="line_unit" value="{{ line.unit or 'Stk' }}" data-line-unit>
+                    </div>
+                    <div class="draft-field">
+                      <label data-price-label>{% if price_mode == 'gross' %}Einzelpreis brutto{% else %}Einzelpreis netto{% endif %}</label>
+                      <input type="text" name="line_unit_price" value="{{ line.unit_price or '' }}" data-line-price inputmode="decimal">
+                    </div>
+                    <div class="draft-field">
+                      <label>Steuer %</label>
+                      <input type="text" name="line_tax_rate" value="{{ line.tax_rate or '19' }}" data-line-tax inputmode="decimal">
+                    </div>
+                  </div>
+                </article>
+              {% endfor %}
+            </div>
+
+            <template id="invoice-line-template">
+              <article class="draft-line-card" data-line-row>
+                <div class="draft-line-head">
+                  <div>
+                    <strong data-line-index>Position</strong>
+                    <div class="muted" data-line-label>Leer</div>
+                  </div>
+                  <div class="draft-line-head-actions">
+                    <div class="draft-line-total" data-line-total>0,00 EUR brutto</div>
+                    <button class="btn small" type="button" data-remove-line>Entfernen</button>
+                  </div>
+                </div>
+                <div class="draft-line-grid">
+                  <div class="draft-field">
+                    <label>Artikel</label>
+                    <select name="line_product_id" data-line-product>
+                      <option value="0">-</option>
+                      {% for product in products %}
+                        <option value="{{ product.id }}" data-product-name="{{ product.name }}">{{ product.name }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  <div class="draft-field draft-line-text">
+                    <label>Leistungsbeschreibung</label>
+                    <textarea name="line_text" rows="3" data-line-text></textarea>
+                  </div>
+                  <div class="draft-field">
+                    <label>Menge</label>
+                    <input type="text" name="line_qty" value="" data-line-qty inputmode="decimal">
+                  </div>
+                  <div class="draft-field">
+                    <label>Einheit</label>
+                    <input type="text" name="line_unit" value="Stk" data-line-unit>
+                  </div>
+                  <div class="draft-field">
+                    <label data-price-label>{% if price_mode == 'gross' %}Einzelpreis brutto{% else %}Einzelpreis netto{% endif %}</label>
+                    <input type="text" name="line_unit_price" value="" data-line-price inputmode="decimal">
+                  </div>
+                  <div class="draft-field">
+                    <label>Steuer %</label>
+                    <input type="text" name="line_tax_rate" value="19" data-line-tax inputmode="decimal">
+                  </div>
+                </div>
+              </article>
+            </template>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="row draft-form-actions">
       <button class="btn primary" type="submit">Speichern</button>
-      <a class="btn" href="/crm/rechnungen">Zurück</a>
+      <a class="btn" href="{% if row_id %}/crm/rechnungen/{{ row_id }}{% else %}/crm/rechnungen{% endif %}">Zurueck</a>
     </div>
   </form>
 </div>
+
+<script>
+(() => {
+  const form = document.getElementById("invoice-draft-form");
+  if (!form) return;
+  const lineList = form.querySelector("[data-draft-line-list]");
+  const lineTemplate = document.getElementById("invoice-line-template");
+  const customerSelect = document.getElementById("invoice-customer-id");
+  const offerSelect = document.getElementById("invoice-offer-id");
+  const locationSelect = document.getElementById("invoice-location-id");
+
+  const parseNumber = (value) => {
+    const raw = String(value || "").trim();
+    const normalized = raw.includes(",") && raw.includes(".")
+      ? raw.replace(/\./g, "").replace(",", ".")
+      : raw.replace(",", ".");
+    const num = Number(normalized);
+    return Number.isFinite(num) ? num : 0;
+  };
+
+  const formatMoney = (value) => {
+    const amount = Number.isFinite(value) ? value : 0;
+    return amount.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " EUR";
+  };
+
+  const activePriceMode = () => {
+    const checked = form.querySelector('input[name="price_mode"]:checked');
+    return checked ? checked.value : "net";
+  };
+
+  const lineInputLabel = () => activePriceMode() === "gross" ? "Einzelpreis brutto" : "Einzelpreis netto";
+
+  const snapshotSelectOptions = (select) => Array.from(select.options).map((option) => ({
+    value: option.value,
+    text: option.text,
+    selected: option.selected,
+    attrs: Array.from(option.attributes).map((attr) => [attr.name, attr.value]),
+  }));
+
+  const applyFilterableSelect = (searchInput) => {
+    const select = document.getElementById(searchInput.dataset.filterSelect || "");
+    if (!select) return;
+    const rebuild = () => {
+      const snapshot = Array.isArray(select._allOptions) ? select._allOptions : snapshotSelectOptions(select);
+      const query = String(searchInput.value || "").trim().toLowerCase();
+      const selectedValue = select.value;
+      select.innerHTML = "";
+      let hasSelected = false;
+      snapshot.forEach((item) => {
+        if (item.value === "0" || !query || item.text.toLowerCase().includes(query) || item.value === selectedValue) {
+          const option = document.createElement("option");
+          item.attrs.forEach(([name, value]) => option.setAttribute(name, value));
+          option.value = item.value;
+          option.textContent = item.text;
+          if (item.value === selectedValue || item.selected && !selectedValue) {
+            option.selected = true;
+            hasSelected = true;
+          }
+          select.appendChild(option);
+        }
+      });
+      if (!hasSelected && select.options.length > 0) {
+        select.options[0].selected = true;
+      }
+    };
+    if (searchInput.dataset.filterBound !== "1") {
+      searchInput.addEventListener("input", rebuild);
+      searchInput.dataset.filterBound = "1";
+    }
+    select._allOptions = snapshotSelectOptions(select);
+    select._rebuildOptions = rebuild;
+    rebuild();
+  };
+
+  const refreshFilterableSelect = (select) => {
+    if (!select) return;
+    select._allOptions = snapshotSelectOptions(select);
+    if (typeof select._rebuildOptions === "function") select._rebuildOptions();
+  };
+
+  const replaceSelectOptions = (select, items, selectedValue, extraAttrs = []) => {
+    if (!select) return;
+    const effectiveValue = String(selectedValue || select.value || "0");
+    select.innerHTML = "";
+    const empty = document.createElement("option");
+    empty.value = "0";
+    empty.textContent = "-";
+    select.appendChild(empty);
+    (Array.isArray(items) ? items : []).forEach((item) => {
+      const option = document.createElement("option");
+      option.value = String(item.id || "");
+      option.textContent = String(item.label || item.id || "");
+      extraAttrs.forEach(([attrName, key]) => {
+        if (item[key]) option.dataset[attrName] = String(item[key]);
+      });
+      select.appendChild(option);
+    });
+    select.value = effectiveValue;
+    if (select.value !== effectiveValue) select.value = "0";
+    refreshFilterableSelect(select);
+  };
+
+  const loadCustomerLocations = async (customerId, preferredValue = "") => {
+    if (!locationSelect) return;
+    const currentValue = String(preferredValue || locationSelect.value || "0");
+    let url = "/api/crm/service-locations?include_id=" + encodeURIComponent(currentValue);
+    if (Number(customerId) > 0) url += "&customer_id=" + encodeURIComponent(customerId);
+    try {
+      const response = await fetch(url, { headers: { accept: "application/json" } });
+      if (!response.ok) return;
+      const payload = await response.json();
+      replaceSelectOptions(locationSelect, Array.isArray(payload.items) ? payload.items : [], currentValue, [["customerId", "customer_id"]]);
+    } catch (_error) {
+      // Keep current options if the lookup is temporarily unavailable.
+    }
+  };
+
+  const loadCustomerOffers = async (customerId, preferredValue = "") => {
+    if (!offerSelect) return;
+    const currentValue = String(preferredValue || offerSelect.value || "0");
+    let url = "/api/crm/offers?include_id=" + encodeURIComponent(currentValue);
+    if (Number(customerId) > 0) url += "&customer_id=" + encodeURIComponent(customerId);
+    try {
+      const response = await fetch(url, { headers: { accept: "application/json" } });
+      if (!response.ok) return;
+      const payload = await response.json();
+      replaceSelectOptions(
+        offerSelect,
+        Array.isArray(payload.items) ? payload.items : [],
+        currentValue,
+        [["customerId", "customer_id"], ["serviceLocationId", "service_location_id"]],
+      );
+    } catch (_error) {
+      // Keep current options if the lookup is temporarily unavailable.
+    }
+  };
+
+  const copyCustomerAddress = () => {
+    const customerSelect = document.getElementById("invoice-customer-id");
+    const option = customerSelect && customerSelect.selectedOptions && customerSelect.selectedOptions.length ? customerSelect.selectedOptions[0] : null;
+    if (!option) return;
+    const mapping = {
+      billingName: option.dataset.name || "",
+      billingStreet: option.dataset.street || "",
+      billingHouseNo: option.dataset.houseNo || "",
+      billingZipCode: option.dataset.zipCode || "",
+      billingCity: option.dataset.city || "",
+      billingCountryCode: option.dataset.countryCode || "DE",
+      billingEmail: option.dataset.email || "",
+    };
+    const targets = {
+      billingName: form.querySelector("[data-billing-name]"),
+      billingStreet: form.querySelector("[data-billing-street]"),
+      billingHouseNo: form.querySelector("[data-billing-house-no]"),
+      billingZipCode: form.querySelector("[data-billing-zip-code]"),
+      billingCity: form.querySelector("[data-billing-city]"),
+      billingCountryCode: form.querySelector("[data-billing-country-code]"),
+      billingEmail: form.querySelector("[data-billing-email]"),
+    };
+    Object.keys(targets).forEach((key) => {
+      if (targets[key]) targets[key].value = mapping[key];
+    });
+  };
+
+  const updatePriceLabels = () => {
+    form.querySelectorAll("[data-price-label]").forEach((label) => {
+      label.textContent = lineInputLabel();
+    });
+  };
+
+  const updateRow = (row) => {
+    const product = row.querySelector("[data-line-product]");
+    const text = row.querySelector("[data-line-text]");
+    const qty = row.querySelector("[data-line-qty]");
+    const price = row.querySelector("[data-line-price]");
+    const tax = row.querySelector("[data-line-tax]");
+    const total = row.querySelector("[data-line-total]");
+    const label = row.querySelector("[data-line-label]");
+    const selectedOption = product && product.selectedOptions && product.selectedOptions.length ? product.selectedOptions[0] : null;
+    const productName = selectedOption ? String(selectedOption.dataset.productName || "").trim() : "";
+    const textValue = String(text ? text.value : "").trim();
+
+    if (productName && text && !textValue) text.value = productName;
+
+    const effectiveLabel = String((text ? text.value : "") || "").trim() || productName || "Leer";
+    if (label) label.textContent = effectiveLabel;
+
+    const qtyValue = parseNumber(qty ? qty.value : "");
+    const priceValue = parseNumber(price ? price.value : "");
+    const taxValue = parseNumber(tax ? tax.value : "");
+    const enteredNet = activePriceMode() === "gross" ? (priceValue / (1 + (taxValue / 100 || 0))) : priceValue;
+    const net = qtyValue * enteredNet;
+    const gross = net * (1 + (taxValue / 100));
+    row.dataset.net = String(net);
+    row.dataset.gross = String(gross);
+    row.dataset.active = effectiveLabel !== "Leer" || qtyValue > 0 || priceValue > 0 || taxValue > 0 || !!productName ? "1" : "0";
+    if (total) total.textContent = formatMoney(gross) + " brutto";
+  };
+
+  const clearRow = (row) => {
+    row.querySelectorAll("input, textarea, select").forEach((field) => {
+      if (field.tagName === "SELECT") {
+        field.value = "0";
+        return;
+      }
+      if (field.hasAttribute("data-line-unit")) {
+        field.value = "Stk";
+        return;
+      }
+      if (field.hasAttribute("data-line-tax")) {
+        field.value = "19";
+        return;
+      }
+      field.value = "";
+    });
+  };
+
+  const renumberRows = () => {
+    const rows = Array.from(form.querySelectorAll("[data-line-row]"));
+    rows.forEach((row, index) => {
+      const indexNode = row.querySelector("[data-line-index]");
+      if (indexNode) indexNode.textContent = "Position " + String(index + 1);
+      const removeButton = row.querySelector("[data-remove-line]");
+      if (removeButton) removeButton.disabled = rows.length <= 1;
+    });
+  };
+
+  const updateSummary = () => {
+    const rows = Array.from(form.querySelectorAll("[data-line-row]"));
+    let lines = 0;
+    let net = 0;
+    let gross = 0;
+    rows.forEach((row) => {
+      updateRow(row);
+      if (row.dataset.active === "1") lines += 1;
+      net += parseNumber(row.dataset.net || 0);
+      gross += parseNumber(row.dataset.gross || 0);
+    });
+    const linesNode = form.querySelector("[data-summary-lines]");
+    const netNode = form.querySelector("[data-summary-net]");
+    const grossNode = form.querySelector("[data-summary-gross]");
+    if (linesNode) linesNode.textContent = String(lines);
+    if (netNode) netNode.textContent = formatMoney(net);
+    if (grossNode) grossNode.textContent = formatMoney(gross);
+    updatePriceLabels();
+    renumberRows();
+  };
+
+  const addLine = () => {
+    if (!lineList || !lineTemplate) return;
+    lineList.appendChild(lineTemplate.content.cloneNode(true));
+    updateSummary();
+  };
+
+  form.querySelectorAll("[data-filter-select]").forEach(applyFilterableSelect);
+
+  form.addEventListener("input", (event) => {
+    if (event.target && event.target.closest("[data-line-row]")) updateSummary();
+  });
+
+  form.addEventListener("change", (event) => {
+    if (event.target && event.target.closest("[data-line-row]")) updateSummary();
+    if (event.target && event.target.id === "invoice-customer-id") {
+      loadCustomerOffers(event.target.value, "0");
+      loadCustomerLocations(event.target.value, "0");
+    }
+    if (event.target && event.target.id === "invoice-offer-id") {
+      const option = event.target.selectedOptions && event.target.selectedOptions.length ? event.target.selectedOptions[0] : null;
+      const offeredLocationId = option ? String(option.dataset.serviceLocationId || "") : "";
+      if (offeredLocationId && locationSelect && String(locationSelect.value || "0") === "0") {
+        loadCustomerLocations(customerSelect ? customerSelect.value : "0", offeredLocationId);
+      }
+    }
+    if (event.target && event.target.name === "price_mode") updateSummary();
+  });
+
+  form.addEventListener("click", (event) => {
+    const addButton = event.target.closest("[data-add-line]");
+    if (addButton) {
+      addLine();
+      return;
+    }
+    const removeButton = event.target.closest("[data-remove-line]");
+    if (removeButton) {
+      const row = removeButton.closest("[data-line-row]");
+      if (!row) return;
+      const rows = Array.from(form.querySelectorAll("[data-line-row]"));
+      if (rows.length <= 1) {
+        clearRow(row);
+      } else {
+        row.remove();
+      }
+      updateSummary();
+      return;
+    }
+    const copyButton = event.target.closest("[data-copy-customer-address]");
+    if (copyButton) {
+      copyCustomerAddress();
+    }
+  });
+
+  updateSummary();
+  refreshFilterableSelect(customerSelect);
+  refreshFilterableSelect(offerSelect);
+  refreshFilterableSelect(locationSelect);
+  if (customerSelect && Number(customerSelect.value) > 0) {
+    loadCustomerOffers(customerSelect.value, offerSelect ? offerSelect.value : "0");
+    loadCustomerLocations(customerSelect.value, locationSelect ? locationSelect.value : "0");
+  }
+})();
+</script>
 {% endblock %}

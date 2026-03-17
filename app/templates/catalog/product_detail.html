@@ -1,108 +1,315 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="panel" data-page="product-detail">
-  {% set title_1 = (product.product_title_1 or '')|trim %}
-  {% set title_2 = (product.product_title_2 or '')|trim %}
-  {% if title_1 and title_2 %}
-  {% set detail_heading = title_1 ~ ' ' ~ title_2 %}
-  {% else %}
-  {% set detail_heading = title_1 or title_2 or product.manufacturer_name or product.sales_name or product.name or ('Produkt #' ~ product.id) %}
-  {% endif %}
-  <h1>{{ detail_heading }}{% if not product.active %} <span class="muted">(archiviert)</span>{% endif %}</h1>
-  {% set ofd = order_form_data or {} %}
+<div class="panel product-detail-shell" data-page="product-detail">
   {% if receipt_saved %}
   <div class="flash-item flash-info">Produkt wurde gespeichert und direkt eingebucht.</div>
   {% endif %}
 
-  <div class="table">
-    <div class="tr th" style="grid-template-columns: 220px 1fr;">
-      <div>Feld</div>
-      <div>Wert</div>
-    </div>
-    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Artikelart</div><div>{{ item_type_labels.get(product.item_type, 'Material') }}</div></div>
-    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Geräteart</div><div>{{ device_kind_name }}</div></div>
-    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Herstellerbezeichnung</div><div>{{ product.manufacturer_name or '-' }}</div></div>
-    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Produkttitel 1</div><div>{{ product.product_title_1 or '-' }}</div></div>
-    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Produkttitel 2</div><div>{{ product.product_title_2 or '-' }}</div></div>
-    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>Materialnummer</div><div>{{ product.material_no or '-' }}</div></div>
-    <div class="tr" style="grid-template-columns: 220px 1fr;"><div>EAN</div><div>{{ product.ean or '-' }}</div></div>
-    {% for row in attribute_detail_rows %}
-    <div class="tr" style="grid-template-columns: 220px 1fr;">
-      <div>{{ row.label }}</div>
-      <div>{{ row.value }}</div>
-    </div>
-    {% endfor %}
-  </div>
+  <section class="product-detail-hero">
+    <div class="product-detail-hero-main">
+      <div class="product-detail-heading">
+        <div>
+          <h1>{{ detail_heading }}</h1>
+          {% if detail_title_lines %}
+          <div class="muted" style="margin-top:6px;">
+            {% for line in detail_title_lines %}
+            <div>{{ line }}</div>
+            {% endfor %}
+          </div>
+          {% endif %}
+          <div class="product-detail-subtitle">
+            <span>{{ manufacturer_name }}</span>
+            <span>&middot;</span>
+            <span>{{ device_kind_name }}</span>
+          </div>
+        </div>
+        <div class="product-detail-status{% if not product.active %} is-archived{% endif %}">
+          {% if product.active %}Aktiv{% else %}Archiviert{% endif %}
+        </div>
+      </div>
 
-  <details class="box collapse-box" style="margin-top:10px;">
-    <summary class="box-title">Artikelbeschreibung</summary>
-    <div class="box-body">
-      {% if description_blocks %}
-      <div class="description-structured">
-        {% for block in description_blocks %}
-          {% if block["kind"] == "heading" %}
-          <h3 class="description-heading">{{ block["text"] }}</h3>
-          {% elif block["kind"] == "kv" %}
-          <div class="description-kv-table">
-            {% for row in block["rows"] %}
-            <div class="description-kv-row">
-              <div class="description-kv-label">{{ row["label"] }}</div>
-              <div>{{ row["value"] }}</div>
+      <div class="product-detail-action-strip">
+        <a class="btn" href="/catalog/products">Zurück zur Produktliste</a>
+        {% if user.role == "admin" %}
+        <a class="btn" id="detailEditBtn" href="/catalog/products/{{ product.id }}/edit">Bearbeiten</a>
+        <form method="post" action="/catalog/products/{{ product.id }}/archive" class="inline" onsubmit="return confirm('{% if product.active %}Produkt wirklich archivieren?{% else %}Produkt wirklich reaktivieren?{% endif %}');">
+          <button class="btn" id="detailArchiveBtn" type="submit">{% if product.active %}Archivieren{% else %}Reaktivieren{% endif %}</button>
+        </form>
+        {% endif %}
+      </div>
+
+      <div class="product-detail-hero-grid">
+        <div class="product-detail-media-card">
+          {% if primary_image_url %}
+          <a class="product-detail-media-main" href="{{ primary_image_url }}" data-product-image-open="1">
+            <img src="{{ primary_image_url }}" alt="{{ detail_heading }}" loading="eager">
+          </a>
+          {% else %}
+          <div class="product-detail-media-placeholder">
+            <div class="product-detail-media-placeholder-title">Kein Produktbild</div>
+            <div class="muted">Die Detailseite bleibt trotzdem vollständig nutzbar. Bilder können später ergänzt werden.</div>
+          </div>
+          {% endif %}
+          <div class="product-detail-kpi-grid">
+            <div class="product-detail-kpi">
+              <span class="label">Bestätigte Merkmale</span>
+              <strong>{{ feature_item_count }}</strong>
+            </div>
+            <div class="product-detail-kpi">
+              <span class="label">Bilder</span>
+              <strong>{{ image_valid_count }}</strong>
+            </div>
+            <div class="product-detail-kpi">
+              <span class="label">Dokumente lokal</span>
+              <strong>{{ document_local_count }}</strong>
+            </div>
+            <div class="product-detail-kpi">
+              <span class="label">Snapshot-Reste</span>
+              <strong>{{ snapshot_unknown_count }}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="product-detail-summary-card">
+          <div class="product-detail-core-grid">
+            {% for row in core_fields %}
+            <div class="product-detail-core-item">
+              <span class="label">{{ row.label }}</span>
+              <strong>{{ row.value }}</strong>
             </div>
             {% endfor %}
           </div>
-          {% elif block["kind"] == "list" %}
-          <ul class="description-list">
-            {% for item in block["items"] %}
-            <li>{{ item }}</li>
-            {% endfor %}
-          </ul>
-          {% else %}
-          <p class="description-paragraph">{{ block["text"] }}</p>
-          {% endif %}
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="muted">Keine Beschreibung hinterlegt.</div>
-      {% endif %}
-    </div>
-  </details>
 
-  <details class="box collapse-box" style="margin-top:10px;">
-    <summary class="box-title">Bilder</summary>
-    <div class="box-body">
-      {% if image_slots %}
-      {% set image_stats = namespace(configured=0, valid=0) %}
-      {% for slot in image_slots %}
-        {% if slot.has_value %}{% set image_stats.configured = image_stats.configured + 1 %}{% endif %}
-        {% if slot.url %}{% set image_stats.valid = image_stats.valid + 1 %}{% endif %}
-      {% endfor %}
-      <div class="hint">Belegt: {{ image_stats.configured }} von {{ image_slots|length }} | Gültig: {{ image_stats.valid }}</div>
-      <div class="image-grid">
-        {% for slot in image_slots %}
-        {% if slot.url %}
-        <a class="image-card" href="{{ slot.url }}" data-product-image-open="1">
-          <img src="{{ slot.url }}" alt="Produktbild {{ slot.index }}" loading="lazy">
-          <span>Bild {{ slot.index }}</span>
-        </a>
-        {% elif slot.has_value %}
-        <div class="image-card image-card-empty">
-          <div class="image-card-empty-note">Ungültiger Bild-Link</div>
-          <span>Bild {{ slot.index }}</span>
+          <div class="product-detail-summary-sections">
+            <div class="product-detail-summary-box">
+              <div class="product-detail-summary-head">
+                <h2>Dokumentzugriff</h2>
+                <span class="muted">{{ document_total_count }} gesamt</span>
+              </div>
+              {% if primary_datasheet_asset %}
+              <div class="product-detail-summary-row">
+                <div>
+                  <strong>Datenblatt</strong>
+                  <div class="muted">{% if primary_datasheet_asset.has_local_file %}Lokal gespeichert{% else %}{{ primary_datasheet_asset.download_status or 'extern' }}{% endif %}</div>
+                </div>
+                <div class="row">
+                  <button
+                    class="btn small"
+                    type="button"
+                    data-product-document-open="1"
+                    data-document-title="{{ primary_datasheet_asset.label }}"
+                    data-document-viewer-url="{{ primary_datasheet_asset.viewer_url }}"
+                    data-document-download-url="{{ primary_datasheet_asset.detail_url }}"
+                    data-document-source-url="{{ primary_datasheet_asset.source_url or primary_datasheet_asset.viewer_url }}"
+                  >Öffnen</button>
+                  {% if primary_datasheet_asset.source_url %}
+                  <a class="btn small" href="{{ primary_datasheet_asset.source_url }}" target="_blank" rel="noopener">Quelle</a>
+                  {% endif %}
+                </div>
+              </div>
+              {% elif datasheet_source_url and user.role == "admin" %}
+              <div class="product-detail-summary-row">
+                <div>
+                  <strong>Datenblatt</strong>
+                  <div class="muted">Noch nicht lokal vorhanden</div>
+                </div>
+                <form method="post" action="/catalog/products/{{ product.id }}/datasheet/fetch" class="inline">
+                  <button class="btn small" type="submit">Jetzt laden</button>
+                </form>
+              </div>
+              {% else %}
+              <div class="muted">Kein Datenblatt hinterlegt.</div>
+              {% endif %}
+            </div>
+
+            <div class="product-detail-summary-box">
+              <div class="product-detail-summary-head">
+                <h2>Importstatus</h2>
+                <span class="muted">{{ analysis_fields[0].value if analysis_fields else '-' }}</span>
+              </div>
+              <div class="product-detail-analysis-list">
+                {% for row in analysis_fields %}
+                <div class="product-detail-analysis-item">
+                  <span class="label">{{ row.label }}</span>
+                  <strong>{{ row.value }}</strong>
+                </div>
+                {% endfor %}
+                {% if latest_snapshot %}
+                <div class="product-detail-analysis-item">
+                  <span class="label">Letzter Snapshot</span>
+                  <strong>#{{ latest_snapshot.id }}{% if latest_snapshot.created_at %} · {{ format_date(latest_snapshot.created_at) }}{% endif %}</strong>
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
         </div>
-        {% else %}
-        <div class="image-card image-card-empty">
-          <div class="image-card-empty-note">Kein Bild hinterlegt</div>
-          <span>Bild {{ slot.index }}</span>
-        </div>
-        {% endif %}
-        {% endfor %}
       </div>
-      {% else %}
-      <div class="muted">Keine Bild-Links hinterlegt.</div>
-      {% endif %}
     </div>
-  </details>
+  </section>
+
+  <section class="product-detail-layout">
+    <div class="product-detail-main">
+      <div class="box product-detail-section">
+        <div class="box-title">Merkmale</div>
+        <div class="box-body">
+          {% if feature_sections %}
+          <div class="product-detail-feature-sections">
+            {% for section in feature_sections %}
+            <section class="product-detail-feature-group">
+              <div class="product-detail-feature-group-head">
+                <h2>{{ section["label"] }}</h2>
+                <span class="muted">{{ section["items"]|length }} Werte</span>
+              </div>
+              <div class="product-detail-feature-grid">
+                {% for row in section["items"] %}
+                <div class="product-detail-feature-card">
+                  <span class="label">{{ row.label }}</span>
+                  <strong>{{ row.value }}</strong>
+                </div>
+                {% endfor %}
+              </div>
+            </section>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="muted">Für dieses Produkt liegen noch keine freigegebenen Merkmale vor.</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="box product-detail-section">
+        <div class="box-title">Artikelbeschreibung</div>
+        <div class="box-body">
+          {% if description_blocks %}
+          <div class="description-structured product-detail-description">
+            {% for block in description_blocks %}
+              {% if block["kind"] == "heading" %}
+              <h3 class="description-heading">{{ block["text"] }}</h3>
+              {% elif block["kind"] == "kv" %}
+              <div class="description-kv-table product-detail-description-table">
+                {% for row in block["rows"] %}
+                <div class="description-kv-row">
+                  <div class="description-kv-label">{{ row["label"] }}</div>
+                  <div>{{ row["value"] }}</div>
+                </div>
+                {% endfor %}
+              </div>
+              {% elif block["kind"] == "list" %}
+              <ul class="description-list">
+                {% for item in block["items"] %}
+                <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+              {% else %}
+              <p class="description-paragraph">{{ block["text"] }}</p>
+              {% endif %}
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="muted">Keine Beschreibung hinterlegt.</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="box product-detail-section">
+        <div class="box-title">Bilder</div>
+        <div class="box-body">
+          {% if image_slots %}
+          <div class="product-detail-section-meta">
+            <span>Belegt: <b>{{ image_configured_count }}</b></span>
+            <span>Lesbar: <b>{{ image_valid_count }}</b></span>
+          </div>
+          <div class="image-grid product-detail-image-grid">
+            {% for slot in image_slots %}
+            {% if slot.url %}
+            <a class="image-card" href="{{ slot.url }}" data-product-image-open="1">
+              <img src="{{ slot.url }}" alt="Produktbild {{ slot.index }}" loading="lazy">
+              <span>Bild {{ slot.index }}{% if slot.source_label %} | {{ slot.source_label }}{% endif %}</span>
+            </a>
+            {% endif %}
+            {% endfor %}
+            {% if image_valid_count == 0 %}
+            <div class="image-card image-card-empty">
+              <div class="image-card-empty-note">Keine Bild-Assets vorhanden.</div>
+              <span>Großgerät ohne Bild</span>
+            </div>
+            {% endif %}
+          </div>
+          {% else %}
+          <div class="muted">Keine Bild-Assets vorhanden.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <aside class="product-detail-sidecolumn">
+      <div class="box product-detail-section">
+        <div class="box-title">Dokumente</div>
+        <div class="box-body">
+          {% if document_assets %}
+          <div class="product-detail-doc-list">
+            {% for asset in document_assets %}
+            <div class="product-detail-doc-card">
+              <div class="product-detail-doc-head">
+                <strong>{{ asset.label }}</strong>
+                <span class="product-detail-doc-status{% if asset.has_local_file %} is-local{% endif %}">
+                  {% if asset.has_local_file %}Lokal{% else %}{{ asset.download_status or 'extern' }}{% endif %}
+                </span>
+              </div>
+              {% if asset.source_url %}
+              <div class="muted product-detail-doc-source">{{ asset.source_url }}</div>
+              {% endif %}
+              <div class="row">
+                <button
+                  class="btn small"
+                  type="button"
+                  data-product-document-open="1"
+                  data-document-title="{{ asset.label }}"
+                  data-document-viewer-url="{{ asset.viewer_url }}"
+                  data-document-download-url="{{ asset.detail_url }}"
+                  data-document-source-url="{{ asset.source_url or asset.viewer_url }}"
+                >Öffnen</button>
+                {% if asset.source_url %}
+                <a class="btn small" href="{{ asset.source_url }}" target="_blank" rel="noopener">Quelle</a>
+                {% endif %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="muted">Keine zusätzlichen Dokumente hinterlegt.</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="box product-detail-section">
+        <div class="box-title">CSV-Reste</div>
+        <div class="box-body">
+          {% if latest_snapshot %}
+          <div class="hint">
+            Snapshot #{{ latest_snapshot.id }}
+            {% if latest_snapshot.created_at %}&middot; {{ format_date(latest_snapshot.created_at) }}{% endif %}
+          </div>
+          {% if snapshot_unknown_preview %}
+          <div class="product-detail-analysis-list" style="margin-top:10px;">
+            {% for row in snapshot_unknown_preview %}
+            <div class="product-detail-analysis-item">
+              <span class="label">{{ row.key }}</span>
+              <strong>{{ row.value }}</strong>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="muted" style="margin-top:8px;">Im letzten Snapshot sind keine unbekannten CSV-Spalten übrig geblieben.</div>
+          {% endif %}
+          {% else %}
+          <div class="muted">Für dieses Produkt liegt noch kein Importsnapshot vor.</div>
+          {% endif %}
+        </div>
+      </div>
+    </aside>
+  </section>
 
   <div id="productImageOverlay" class="image-lightbox" hidden aria-hidden="true">
     <div class="image-lightbox-backdrop" data-image-lightbox-close="1"></div>
@@ -120,423 +327,32 @@
     </div>
   </div>
 
-  <details class="box collapse-box" style="margin-top:10px;">
-    <summary class="box-title">Datenblatt</summary>
-    <div class="box-body">
-      {% if datasheet_source_url %}
-      <div class="row">
-        <a class="btn small" href="{{ datasheet_source_url }}" target="_blank" rel="noopener">Quelle öffnen</a>
-        {% if user.role == "admin" %}
-        <form method="post" action="/catalog/products/{{ product.id }}/datasheet/fetch" class="inline">
-          <button class="btn small" type="submit">PDF laden & lokal speichern</button>
-        </form>
-        {% endif %}
-      </div>
-      <div class="muted">{{ datasheet_source_url }}</div>
-      {% else %}
-      <div class="muted">Kein zusammensetzbarer Datenblatt-Link vorhanden.</div>
-      {% endif %}
-
-      {% if datasheet_local_attachment %}
-      <div class="row" style="margin-top:8px;">
-        <a class="btn" href="/catalog/products/{{ product.id }}/datasheet/{{ datasheet_local_attachment.id }}" data-loading="off">Lokales Datenblatt öffnen</a>
-      </div>
-      {% endif %}
-    </div>
-  </details>
-
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Zubehör</div>
-    <div class="box-body">
-      <h3>Verknüpftes Zubehör</h3>
-      {% if accessory_links %}
-      <div class="table">
-        <div class="tr th" style="grid-template-columns: 110px 1fr 120px;">
-          <div>Produkt-ID</div>
-          <div>Artikel</div>
-          <div>Quelle</div>
-        </div>
-        {% for row in accessory_links %}
-        {% set ap = accessory_products.get(row.accessory_product_id) %}
-        <div class="tr" style="grid-template-columns: 110px 1fr 120px;">
-          <div>#{{ row.accessory_product_id }}</div>
-          <div>
-            {% if ap %}
-            <a href="/catalog/products/{{ ap.id }}">{{ ap.name or ap.sales_name or ('Produkt #' ~ ap.id) }}</a>
-            {% if ap.material_no %}<span class="muted"> | {{ ap.material_no }}</span>{% endif %}
-            {% if ap.ean %}<span class="muted"> | EAN {{ ap.ean }}</span>{% endif %}
-            {% else %}
-            <span class="muted">Produkt nicht mehr vorhanden</span>
-            {% endif %}
-          </div>
-          <div>{{ row.source or '-' }}</div>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="muted">Kein verknüpftes Zubehör vorhanden.</div>
-      {% endif %}
-
-      <h3 style="margin-top:12px;">Offene Zubehörhinweise</h3>
-      {% if accessory_open_refs %}
-      <div class="table">
-        <div class="tr th" style="grid-template-columns: 1fr 140px;">
-          <div>Wert</div>
-          <div>Status</div>
-        </div>
-        {% for row in accessory_open_refs %}
-        {% set status_label = 'Offen' %}
-        {% if row.status == 'pending' %}{% set status_label = 'Offen' %}{% endif %}
-        {% if row.status == 'not_found' %}{% set status_label = 'Nicht gefunden' %}{% endif %}
-        {% if row.status == 'ambiguous' %}{% set status_label = 'Mehrdeutig' %}{% endif %}
-        {% if row.status == 'linked' %}{% set status_label = 'Verknüpft' %}{% endif %}
-        <div class="tr" style="grid-template-columns: 1fr 140px;">
-          <div>{{ row.raw_value }}</div>
-          <div>{{ status_label }}</div>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="muted">Keine offenen Zubehörhinweise vorhanden.</div>
-      {% endif %}
-    </div>
-  </div>
-
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Bestand nach Zustand</div>
-    <div class="box-body">
-      {% if stock_condition_rows %}
-      <div class="table">
-        <div class="tr th" style="grid-template-columns: 1.1fr 1fr 1fr 140px;">
-          <div>Lager</div>
-          <div>Inhaber</div>
-          <div>Zustand</div>
-          <div>Menge</div>
-        </div>
-        {% for row in stock_condition_rows %}
-        <div class="tr" style="grid-template-columns: 1.1fr 1fr 1fr 140px;">
-          <div>{{ row.warehouse_name }}</div>
-          <div>{{ row.owner_name }}</div>
-          <div>{{ row.condition_label }}</div>
-          <div>{{ row.quantity }}</div>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="muted">Kein Bestand vorhanden.</div>
-      {% endif %}
-    </div>
-  </div>
-
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Preis</div>
-    <div class="box-body">
-      <div style="font-size:1.5rem;font-weight:700;">Verkaufspreis (brutto): {{ product.sale_price_cents|eur_cents if product.sale_price_cents is not none else "-" }}</div>
-      <div class="muted">Quelle: {{ product.price_source or "-" }}</div>
-      {% if can_show_costs %}
-        <div>EK (netto): {{ product.last_cost_cents|eur_cents if product.last_cost_cents is not none else "-" }}</div>
-        <div>EK (brutto, inkl. 19 % MwSt.): {{ last_cost_gross_cents|eur_cents if last_cost_gross_cents is not none else "-" }}</div>
-        <div>Marge (VK brutto - EK brutto): {{ margin_cents|eur_cents if margin_cents is not none else "-" }}</div>
-      {% else %}
-        <div class="muted">EK/Marge in Kundenansicht verborgen.</div>
-      {% endif %}
-      {% if recommended_sale_cents is not none %}
-        <div>Empfohlen: {{ recommended_sale_cents|eur_cents }}</div>
-      {% endif %}
-      {% if user.role == "admin" %}
-      <div class="row" style="margin-top:8px;">
-        <button id="priceToggleBtn" class="btn" type="button" aria-expanded="false">Preis bearbeiten</button>
-        {% if recommended_sale_cents is not none %}
-        <form class="inline" method="post" action="/catalog/products/{{ product.id }}/price/apply_rule">
-          <button id="applyRuleBtn" class="btn" type="submit">Nach Regel anwenden</button>
-        </form>
-        {% endif %}
-      </div>
-      <div id="priceEditPanel" class="box" hidden>
-        <div class="box-body">
-          <form method="post" action="/catalog/products/{{ product.id }}/price" class="form compact" data-price-form="1">
-            <div class="grid3">
-              <div>
-                <label>Verkaufspreis brutto (EUR)</label>
-                <input type="text" name="sale_price" value="{{ (product.sale_price_cents|eur_cents).replace(' €','') if product.sale_price_cents is not none else '' }}">
-              </div>
-              {% if can_view_costs %}
-              <div>
-                <label>Letzter EK netto (EUR)</label>
-                <input type="text" name="last_cost" value="{{ (product.last_cost_cents|eur_cents).replace(' €','') if product.last_cost_cents is not none else '' }}">
-              </div>
-              {% endif %}
-              <div>
-                <label>Preisquelle</label>
-                <select name="price_source">
-                  <option value="manuell" {% if product.price_source == 'manuell' %}selected{% endif %}>manuell</option>
-                  <option value="regel" {% if product.price_source == 'regel' %}selected{% endif %}>regel</option>
-                  <option value="csv" {% if product.price_source == 'csv' %}selected{% endif %}>csv</option>
-                  <option value="bestellung" {% if product.price_source == 'bestellung' %}selected{% endif %}>bestellung</option>
-                </select>
-              </div>
-            </div>
-            <button class="btn primary" type="submit">Preis speichern</button>
-          </form>
-        </div>
-      </div>
-      {% endif %}
-    </div>
-  </div>
-
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Einkauf</div>
-    <div class="box-body">
-      <div>Letzter EK: {{ purchase_summary.last_ek|eur_cents if purchase_summary.last_ek is not none else '-' }}</div>
-      <div>Durchschnitts-EK: {{ purchase_summary.avg_ek|eur_cents if purchase_summary.avg_ek is not none else '-' }}</div>
-      <div>Letzter Lieferant: {{ purchase_summary.last_supplier.name if purchase_summary.last_supplier else '-' }}</div>
-      <div class="row" style="margin-top:8px;">
-        <a class="btn" href="/einkauf/bestellungen/neu?product_id={{ product.id }}">Neue Bestellung</a>
-        {% if user.role == "admin" and outsmart_enabled %}
-        <form method="post" action="/catalog/products/{{ product.id }}/outsmart/export" class="inline">
-          <button class="btn" type="submit">Als Material an OutSmart senden</button>
-        </form>
-        {% endif %}
-        {% if outsmart_material_link and outsmart_material_link.deep_link_url %}
-        <a class="btn" href="{{ outsmart_material_link.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>
-        {% endif %}
-      </div>
-      {% if outsmart_material_link %}
-      <div class="hint">OutSmart-Link: {{ outsmart_material_link.external_key }}{% if outsmart_material_link.external_row_id %} | Zeile {{ outsmart_material_link.external_row_id }}{% endif %}</div>
-      {% endif %}
-      <div class="table" style="margin-top:10px;">
-        <div class="tr th" style="grid-template-columns: 120px 140px 140px 1fr;">
-          <div>Datum</div>
-          <div>Quelle</div>
-          <div>EK</div>
-          <div>Lieferant</div>
-        </div>
-        {% for row in purchase_summary.recent_prices %}
-          <div class="tr" style="grid-template-columns: 120px 140px 140px 1fr;">
-            <div>{{ row.effective_date.strftime('%d.%m.%Y') if row.effective_date else '-' }}</div>
-            <div>{{ row.source_type }}</div>
-            <div>{{ row.effective_unit_cost|eur_cents if row.effective_unit_cost is not none else (row.unit_cost|eur_cents if row.unit_cost is not none else '-') }}</div>
-            <div>{{ purchase_price_supplier_map.get(row.supplier_id).name if purchase_price_supplier_map.get(row.supplier_id) else '-' }}</div>
-          </div>
-        {% endfor %}
-        {% if not purchase_summary.recent_prices %}<div class="muted">Noch keine EK-Historie vorhanden.</div>{% endif %}
-      </div>
-    </div>
-  </div>
-
-  <div class="row" style="margin-top:10px;">
-    <a class="btn" href="/catalog/products">Zurück zur Produktliste</a>
-    {% if sets_enabled %}
-    <a class="btn" href="/catalog/products/{{ product.id }}/matches">Passende Kombinationen anzeigen</a>
-    {% endif %}
-    {% if user.role == "admin" and product.active %}
-      <button id="orderToggleBtn" class="btn" type="button" aria-expanded="false">Bestellen</button>
-    {% endif %}
-  </div>
-
-  <details class="box collapse-box" style="margin-top:10px;">
-    <summary class="box-title">Aktionen</summary>
-    <div class="box-body">
-      <div class="row">
-        {% if user.role == "admin" %}
-          <a id="detailEditBtn" class="btn" href="/catalog/products/{{ product.id }}/edit">Bearbeiten</a>
-          <form method="post" action="/catalog/products/{{ product.id }}/archive" class="inline" onsubmit="return confirm('{% if product.active %}Produkt wirklich archivieren? Nur möglich, wenn Lagerbestand 0 ist.{% else %}Produkt wirklich reaktivieren?{% endif %}');">
-            <button id="detailArchiveBtn" class="btn" type="submit">{% if product.active %}Archivieren{% else %}Reaktivieren{% endif %}</button>
-          </form>
-        {% endif %}
-        {% if role_flags.can_inventory and product.active %}
-          <a id="detailReceiptBtn" class="btn primary" href="/inventory/transactions/new?tx_type=receipt&product_id={{ product.id }}&return_to={{ return_to_q }}">Einbuchen</a>
-          <a id="detailRepairBtn" class="btn" href="/inventory/reparaturen/new?article_id={{ product.id }}">Reparatur starten</a>
-        {% elif role_flags.can_inventory %}
-          <button id="detailReceiptBtn" class="btn primary" type="button" disabled>Einbuchen</button>
-          <button id="detailRepairBtn" class="btn" type="button" disabled>Reparatur starten</button>
-        {% endif %}
-      </div>
-    </div>
-  </details>
-  {% if not product.active %}
-  <div class="hint">Archivierte Produkte sind für neue Bestellungen und Lagerbuchungen gesperrt.</div>
-  {% endif %}
-
-  {% if user.role == "admin" and product.active %}
-  <div id="orderCreatePanel" class="box" hidden>
-    <div class="box-title">Bestellung anlegen</div>
-    <div class="box-body">
-      <form method="post" action="/einkauf/bestellungen/aus-produkt" class="form compact">
-        <input type="hidden" name="product_id" value="{{ product.id }}">
-        <div class="grid3">
-          <div>
-            <label>Lieferant</label>
-            <select name="supplier_id" required>
-              <option value="0">Bitte wählen</option>
-              {% for s in suppliers %}
-                <option value="{{ s.id }}" {% if ofd.get('supplier_id', '0')|int == s.id %}selected{% endif %}>{{ s.name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div>
-            <label>Menge</label>
-            <input type="number" name="qty" value="{{ ofd.get('qty', '1') }}" min="1" required>
-          </div>
-          <div>
-            <label>Erwarteter EK (EUR, optional)</label>
-            <input type="text" name="expected_cost" value="{{ ofd.get('expected_cost', '') }}">
-          </div>
-        </div>
-        <label>Notiz (optional)</label>
-        <input type="text" name="note" value="{{ ofd.get('note', '') }}">
-        <button class="btn primary" type="submit">Bestellung erstellen</button>
-      </form>
-      {% if order_draft_key %}
-      <form method="post" action="/ui/draft/clear" class="row inline" data-draft-clear-form="1">
-        <input type="hidden" name="key" value="{{ order_draft_key }}">
-        <input type="hidden" name="next" value="{{ request.url.path }}">
-        <button class="btn" type="submit">Entwurf löschen</button>
-      </form>
-      {% endif %}
-    </div>
-  </div>
-  {% endif %}
-
-  {% set lb_open = loadbee_auto_open or loadbee_load_mode == 'auto' %}
-  {% if loadbee_enabled and product.item_type == 'appliance' and loadbee_gtin %}
-  <div class="loadbee-wrap">
-    <div class="loadbee-head">
-      <h2>Hersteller-Details</h2>
-      <div class="row">
-        <button
-          id="lbToggleBtn"
-          class="btn"
-          type="button"
-          aria-expanded="{% if lb_open %}true{% else %}false{% endif %}"
-          aria-controls="lbPanel"
-        >{% if lb_open %}Hersteller-Details schließen{% else %}Hersteller-Details öffnen{% endif %}</button>
-        <button id="lbReloadBtn" class="btn" type="button">Neu laden</button>
-      </div>
-    </div>
-    <div id="lbPanel" class="loadbee-panel{% if lb_open %} open{% endif %}" data-gtin="{{ loadbee_gtin }}">
-      <div id="lbStatus" class="muted">H: Hersteller-Details öffnen/schließen, R: Neu laden</div>
-      <div class="loadbeeTabContent" id="loadbeeTabContentId"
-           data-loadbee-apikey="{{ loadbee_api_key }}"
-           data-loadbee-gtin="{{ loadbee_gtin }}"
-           data-loadbee-locale="{{ loadbee_locales }}"
-           {% if loadbee_debug %}data-loadbee-debug="true"{% endif %}
-      ></div>
-      <script id="loadbeeScript" async src="https://cdn.loadbee.com/js/loadbee_integration.js"></script>
-    </div>
-  </div>
-  {% elif product.item_type == 'appliance' and not loadbee_gtin %}
-  <div class="hint">Keine EAN hinterlegt, daher keine Hersteller-Details.</div>
-  {% endif %}
-
-  {% if sets_enabled %}
-    <h2>Kompatible Geräte</h2>
-    {% if user.role == "admin" %}
-    <form method="get" action="/catalog/products/{{ product.id }}" class="form compact">
-      <div class="grid2">
+  <div id="productDocumentOverlay" class="document-lightbox" hidden aria-hidden="true">
+    <div class="image-lightbox-backdrop" data-document-lightbox-close="1"></div>
+    <div class="document-lightbox-panel" role="dialog" aria-modal="true" aria-label="Dokumentansicht">
+      <div class="document-lightbox-controls">
         <div>
-          <label>Suche für Auswahl</label>
-          <input id="q" type="text" name="q" value="{{ q }}" placeholder="Bezeichnung, Materialnummer, EAN">
+          <strong id="productDocumentOverlayTitle">Dokument</strong>
+          <div class="muted">Direktansicht ohne Seitenneuladen</div>
         </div>
-        <div class="row right">
-          <button class="btn primary" type="submit">Filtern</button>
-          <a class="btn" href="/catalog/products/{{ product.id }}">Zurücksetzen</a>
+        <div class="document-lightbox-actions">
+          <a id="productDocumentOverlayDownload" class="btn" href="#" download>Download</a>
+          <button id="productDocumentOverlayPrint" class="btn" type="button">Drucken</button>
+          <a id="productDocumentOverlayExternal" class="btn" href="#" target="_blank" rel="noopener">Separat öffnen</a>
+          <button id="productDocumentOverlayClose" class="btn" type="button">Zurück zur Detailseite</button>
         </div>
       </div>
-    </form>
-
-    <form method="post" action="/catalog/products/{{ product.id }}/links/add" class="form compact" style="margin-top:10px;">
-      <label>Kompatibles Gerät hinzufügen</label>
-      <select name="b_product_id" required>
-        {% for p in candidate_products %}
-          <option value="{{ p.id }}">{{ p.name }}{% if p.material_no %} | {{ p.material_no }}{% endif %}{% if p.ean %} | EAN {{ p.ean }}{% endif %}</option>
-        {% endfor %}
-      </select>
-      <label>Notiz (optional)</label>
-      <input type="text" name="note">
-      <button class="btn primary" type="submit">Kompatibilität speichern</button>
-    </form>
-    {% endif %}
-
-    <div class="table" style="margin-top:10px;">
-      <div class="tr th" style="grid-template-columns: 70px 1.4fr 1fr 1fr 170px;">
-        <div>#</div>
-        <div>Produkt</div>
-        <div>Materialnummer</div>
-        <div>Notiz</div>
-        <div>Aktion</div>
-      </div>
-      {% for link in links %}
-        {% set p = linked_products.get(link.b_product_id) %}
-        <div class="tr" style="grid-template-columns: 70px 1.4fr 1fr 1fr 170px;">
-          <div>{{ link.id }}</div>
-          <div>
-            {% if p %}
-            <a href="/catalog/products/{{ p.id }}">{{ p.name }}</a>
-            {% else %}
-            {{ link.b_product_id }}
-            {% endif %}
-          </div>
-          <div>{{ p.material_no if p and p.material_no else "-" }}</div>
-          <div>{{ link.note or "-" }}</div>
-          <div>
-            {% if user.role == "admin" %}
-            <form method="post" action="/catalog/products/{{ product.id }}/links/{{ link.id }}/delete" class="inline">
-              <button class="btn small" type="submit">Entfernen</button>
-            </form>
-            {% else %}
-            <span class="muted">-</span>
-            {% endif %}
-          </div>
-        </div>
-      {% endfor %}
-      {% if not links %}
-        <div class="muted">Noch keine kompatiblen Geräte hinterlegt.</div>
-      {% endif %}
+      <iframe id="productDocumentOverlayFrame" title="Dokumentvorschau" loading="lazy"></iframe>
+      <div class="muted">Esc schließt die Vorschau. Download und Drucken bleiben direkt verfügbar.</div>
     </div>
-
-    <h2>Sets mit diesem Produkt</h2>
-    <div class="table">
-      <div class="tr th" style="grid-template-columns: 80px 1fr 1fr 170px;">
-        <div>#</div>
-        <div>Set-Nummer</div>
-        <div>Name</div>
-        <div>Aktion</div>
-      </div>
-      {% for s in set_rows %}
-        <div class="tr" style="grid-template-columns: 80px 1fr 1fr 170px;">
-          <div>{{ s.id }}</div>
-          <div>{{ s.set_number }}</div>
-          <div>{{ s.name or '-' }}</div>
-          <div><a class="btn small" href="/catalog/sets/{{ s.id }}">Set öffnen</a></div>
-        </div>
-      {% endfor %}
-      {% if not set_rows %}
-        <div class="muted">Dieses Produkt ist aktuell in keinem Set enthalten.</div>
-      {% endif %}
-    </div>
-  {% endif %}
+  </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Bestand nach Zustand zeigt nur Zeilen mit Menge ungleich 0 und enthält den zugeordneten Inhaber.</li>
-  <li>Bilder öffnen direkt im Browser über die hinterlegten absoluten Links.</li>
-  <li>Das Datenblatt kann aus der Hersteller-Linklogik geladen und lokal gespeichert werden.</li>
-  <li>H: Hersteller-Details öffnen oder schließen.</li>
-  <li>E: Bearbeiten.</li>
-  <li>A: Archivieren/Reaktivieren.</li>
-  <li>I: Einbuchen.</li>
-  <li>Reparatur starten öffnet den Reparaturauftrag mit vorausgewähltem Artikel.</li>
-  <li>Taste P öffnet die schnelle Preisbearbeitung, Taste B die Bestellmaske.</li>
-  <li>Mit Taste R wird checkAvailability neu ausgelöst (Hersteller-Details neu laden).</li>
-  <li>Debug-Modus aktivierst du unter System → Hersteller-Details (loadbee).</li>
-  <li>Voraussetzung für Hersteller-Details: Artikelart Großgerät und gepflegte EAN.</li>
-  {% if sets_enabled %}
-    <li>Kompatibilität wird explizit gepflegt und beim Speichern bidirektional angelegt.</li>
-    <li>Über "Passende Kombinationen anzeigen" siehst du kompatible Geräte und enthaltene Sets zusammen.</li>
-    <li>Set-Nummern pflegst du in der Set-Verwaltung.</li>
-  {% endif %}
+  <li>Die Großgeräte-Detailseite startet jetzt mit Kerninfos, Dokumentzugriff und bestätigten Merkmalen statt mit Roh-Tabellen.</li>
+  <li>`E` öffnet die Bearbeitung, `A` archiviert oder reaktiviert das Produkt.</li>
+  <li>CSV-Reste bleiben sichtbar, aber nur noch gesammelt im rechten Analysebereich.</li>
 </ul>
 {% endblock %}

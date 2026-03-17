@@ -6,6 +6,7 @@ import re
 
 from sqlalchemy.orm import Session
 
+from .customer_cleanup_service import dedupe_party_addresses
 from ..models import (
     AiDecisionLog,
     AiReviewQueueItem,
@@ -185,6 +186,9 @@ def merge_master_customers(
             target_has_default = True
         db.add(row)
         summary["addresses"] += 1
+    dedupe_summary = dedupe_party_addresses(db, int(target_party.id))
+    summary["address_deduplicated"] = int(dedupe_summary.get("deleted") or 0)
+    summary["address_relinked"] = int(dedupe_summary.get("relinked_service_locations") or 0) + int(dedupe_summary.get("relinked_role_assignments") or 0)
 
     for row in db.query(CustomerContactPerson).filter(CustomerContactPerson.master_customer_id == source_id).all():
         row.master_customer_id = target_id

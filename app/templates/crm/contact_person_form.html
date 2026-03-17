@@ -33,7 +33,8 @@
       </div>
       <div>
         <label for="crm_contact_email">E-Mail</label>
-        <input id="crm_contact_email" type="email" name="email" value="{{ f.old(fd, 'email', row.email if row else '') }}">
+        <input id="crm_contact_email" type="email" name="email" value="{{ f.old(fd, 'email', row.email if row else '') }}" class="{% if fe.get('email') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'email') }}
       </div>
       <div>
         <label for="crm_contact_phone">Telefon</label>
@@ -43,6 +44,9 @@
         <label class="check"><input type="checkbox" name="active" {{ f.is_checked(fd, 'active', row.active if row else True) }}> Aktiv</label>
       </div>
     </div>
+    {% if row and row.email_validation_status %}
+      <div class="hint" style="margin-top:10px;">E-Mail-Check: {{ crm_quality_status_label(row.email_validation_status) }}{% if row.email_validation_message %} | {{ row.email_validation_message }}{% endif %}</div>
+    {% endif %}
 
     <div class="row" style="margin-top:10px;">
       <button class="btn primary" type="submit">Speichern</button>

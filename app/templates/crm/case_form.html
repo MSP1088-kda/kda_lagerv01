@@ -8,11 +8,20 @@
   {{ f.render_errors(fe) }}
 
   <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
-    <div class="grid3">
+    <div class="grid4">
       <div>
         <label for="crm_case_title">Auftragstitel</label>
         <input id="crm_case_title" type="text" name="title" value="{{ f.old(fd, 'title', row.title if row else '') }}" class="{% if fe.get('title') %}is-error{% endif %}" required>
         {{ f.field_error(fe, 'title') }}
+      </div>
+      <div>
+        <label for="crm_case_order_type_select">Auftragsart</label>
+        <select id="crm_case_order_type_select" name="order_type" class="{% if fe.get('order_type') %}is-error{% endif %}">
+          {% for item in order_type_choices %}
+            <option value="{{ item }}" {% if f.old(fd, 'order_type', row.order_type if row else 'service') == item %}selected{% endif %}>{{ crm_case_order_type_label(item) }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'order_type') }}
       </div>
       <div>
         <label for="crm_case_status_select">Status</label>
@@ -37,6 +46,8 @@
     <h2>Leistungsdreieck</h2>
     <div class="grid3">
       <div>
+        <label for="crm_case_ordering_party_search">Auftraggeber suchen</label>
+        <input id="crm_case_ordering_party_search" type="search" data-filter-select="crm_case_ordering_party_id" placeholder="Name, Nummer, Ort">
         <label for="crm_case_ordering_party_id">Auftraggeber</label>
         <select id="crm_case_ordering_party_id" name="ordering_party_id" class="{% if fe.get('ordering_party_id') %}is-error{% endif %}">
           <option value="0">Bitte wählen</option>
@@ -47,6 +58,8 @@
         {{ f.field_error(fe, 'ordering_party_id') }}
       </div>
       <div>
+        <label for="crm_case_service_location_search">Leistungsort suchen</label>
+        <input id="crm_case_service_location_search" type="search" data-filter-select="crm_case_service_location_id" placeholder="Standort oder Adresse">
         <label for="crm_case_service_location_id">Leistungsort</label>
         <select id="crm_case_service_location_id" name="service_location_id" class="{% if fe.get('service_location_id') %}is-error{% endif %}">
           <option value="0">Bitte wählen</option>
@@ -57,6 +70,8 @@
         {{ f.field_error(fe, 'service_location_id') }}
       </div>
       <div>
+        <label for="crm_case_invoice_recipient_search">Rechnungsempfänger suchen</label>
+        <input id="crm_case_invoice_recipient_search" type="search" data-filter-select="crm_case_invoice_recipient_id" placeholder="Name, Nummer, Ort">
         <label for="crm_case_invoice_recipient_id">Rechnungsempfänger</label>
         <select id="crm_case_invoice_recipient_id" name="invoice_recipient_id" class="{% if fe.get('invoice_recipient_id') %}is-error{% endif %}">
           <option value="0">Wie Auftraggeber</option>
@@ -84,7 +99,7 @@
       </div>
       <div></div>
     </div>
-    <div class="grid2">
+    <div class="grid4">
       <div>
         <label for="crm_case_requested_start_at">Wunschtermin von</label>
         <input id="crm_case_requested_start_at" type="datetime-local" name="requested_start_at" value="{{ f.old(fd, 'requested_start_at', row.requested_start_at.strftime('%Y-%m-%dT%H:%M') if row and row.requested_start_at else '') }}" class="{% if fe.get('requested_start_at') %}is-error{% endif %}">
@@ -95,11 +110,23 @@
         <input id="crm_case_requested_end_at" type="datetime-local" name="requested_end_at" value="{{ f.old(fd, 'requested_end_at', row.requested_end_at.strftime('%Y-%m-%dT%H:%M') if row and row.requested_end_at else '') }}" class="{% if fe.get('requested_end_at') %}is-error{% endif %}">
         {{ f.field_error(fe, 'requested_end_at') }}
       </div>
+      <div>
+        <label for="crm_case_proposed_start_at">Vorgeschlagener Termin von</label>
+        <input id="crm_case_proposed_start_at" type="datetime-local" name="proposed_start_at" value="{{ f.old(fd, 'proposed_start_at', row.proposed_start_at.strftime('%Y-%m-%dT%H:%M') if row and row.proposed_start_at else '') }}" class="{% if fe.get('proposed_start_at') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'proposed_start_at') }}
+      </div>
+      <div>
+        <label for="crm_case_proposed_end_at">Vorgeschlagener Termin bis</label>
+        <input id="crm_case_proposed_end_at" type="datetime-local" name="proposed_end_at" value="{{ f.old(fd, 'proposed_end_at', row.proposed_end_at.strftime('%Y-%m-%dT%H:%M') if row and row.proposed_end_at else '') }}" class="{% if fe.get('proposed_end_at') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'proposed_end_at') }}
+      </div>
     </div>
 
     <h2>Gerät und Einsatz</h2>
     <div class="grid2">
       <div>
+        <label for="crm_case_customer_object_search">Objekt suchen</label>
+        <input id="crm_case_customer_object_search" type="search" data-filter-select="crm_case_customer_object_id" placeholder="Objekt, Modell, Seriennummer">
         <label for="crm_case_customer_object_id">Verknüpftes Objekt</label>
         <select id="crm_case_customer_object_id" name="customer_object_id" class="{% if fe.get('customer_object_id') %}is-error{% endif %}">
           <option value="0">Kein lokales Objekt gewählt</option>
@@ -118,8 +145,47 @@
     <label for="crm_case_customer_issue">Fehlerbild / Kundenangabe</label>
     <textarea id="crm_case_customer_issue" name="customer_issue" rows="4">{{ f.old(fd, 'customer_issue', row.customer_issue if row else '') }}</textarea>
 
+    <label for="crm_case_customer_visible_note">Für Kunde / Techniker sichtbarer Hinweis</label>
+    <textarea id="crm_case_customer_visible_note" name="customer_visible_note" rows="3">{{ f.old(fd, 'customer_visible_note', row.customer_visible_note if row else '') }}</textarea>
+
     <label for="crm_case_work_instructions">Arbeitsauftrag / interne Anweisung</label>
     <textarea id="crm_case_work_instructions" name="work_instructions" rows="4">{{ f.old(fd, 'work_instructions', row.work_instructions if row else '') }}</textarea>
+
+    <div class="grid2">
+      <div>
+        <label for="crm_case_material_summary">Material / Vorabbedarf</label>
+        <textarea id="crm_case_material_summary" name="material_summary" rows="4">{{ f.old(fd, 'material_summary', row.material_summary if row else '') }}</textarea>
+      </div>
+      <div>
+        <label for="crm_case_schedule_hint">Termin-/Routenhinweis</label>
+        <textarea id="crm_case_schedule_hint" name="schedule_hint" rows="4">{{ f.old(fd, 'schedule_hint', row.schedule_hint if row else '') }}</textarea>
+      </div>
+    </div>
+
+    <div class="grid3">
+      <div>
+        <label for="crm_case_spare_part_status">Ersatzteilstatus</label>
+        <select id="crm_case_spare_part_status" name="spare_part_status" class="{% if fe.get('spare_part_status') %}is-error{% endif %}">
+          {% for item in spare_part_status_choices %}
+            <option value="{{ item }}" {% if f.old(fd, 'spare_part_status', row.spare_part_status if row else 'unknown') == item %}selected{% endif %}>{{ crm_case_spare_part_status_label(item) }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'spare_part_status') }}
+      </div>
+      <div>
+        <label for="crm_case_next_step">Nächster Schritt nach Rückmeldung</label>
+        <select id="crm_case_next_step" name="next_step" class="{% if fe.get('next_step') %}is-error{% endif %}">
+          {% for item in next_step_choices %}
+            <option value="{{ item }}" {% if f.old(fd, 'next_step', row.next_step if row else 'none') == item %}selected{% endif %}>{{ crm_case_next_step_label(item) }}</option>
+          {% endfor %}
+        </select>
+        {{ f.field_error(fe, 'next_step') }}
+      </div>
+      <div>
+        <label for="crm_case_spare_part_note">Ersatzteilhinweis</label>
+        <textarea id="crm_case_spare_part_note" name="spare_part_note" rows="3">{{ f.old(fd, 'spare_part_note', row.spare_part_note if row else '') }}</textarea>
+      </div>
+    </div>
 
     <label for="crm_case_note">Interne Hinweise</label>
     <textarea id="crm_case_note" name="note" rows="3">{{ f.old(fd, 'note', row.note if row else '') }}</textarea>
@@ -138,8 +204,8 @@
 
 {% block help %}
 <ul>
-  <li>Der Serviceauftrag ist der interne Datensatz für Erfassung, Kommunikation, Dokumente und Nachverfolgung.</li>
-  <li>OutSmart bleibt für Einplanung, Plantafel und Außendiensteinsatz zuständig.</li>
-  <li>Das verknüpfte Objekt ist optional, verbessert aber den späteren OutSmart-Export.</li>
+  <li>Dieser Auftrag ist die führende interne Akte und wird mit OutSmart synchronisiert.</li>
+  <li>Auftraggeber, Leistungsort, Rechnungsempfänger und Objekt lassen sich direkt beim Tippen eingrenzen.</li>
+  <li>Auftragsart, Materialbedarf, Ersatzteilstatus und Terminvorschlag gehen in die OutSmart-Vorbereitung ein.</li>
 </ul>
 {% endblock %}

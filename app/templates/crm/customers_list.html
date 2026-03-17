@@ -34,7 +34,7 @@
       <div>Aktionen</div>
     </div>
     {% for item in rows %}
-      <div class="tr" style="grid-template-columns: 140px 1.8fr 1fr 140px 160px; align-items:start;">
+      <div class="tr" data-customer-row data-customer-search="{{ item.customer.customer_no_internal }} {{ item.party.display_name }} {{ item.city_label }} {{ item.default_address.email if item.default_address else '' }} {{ item.default_address.phone if item.default_address else '' }}" style="grid-template-columns: 140px 1.8fr 1fr 140px 160px; align-items:start;">
         <div>{{ item.customer.customer_no_internal }}</div>
         <div>
           <div><b>{{ item.party.display_name }}</b></div>
@@ -49,7 +49,9 @@
       </div>
     {% endfor %}
     {% if not rows %}
-      <div class="muted">Keine Kunden gefunden.</div>
+      <div class="muted" data-customer-empty>Keine Kunden gefunden.</div>
+    {% else %}
+      <div class="muted" data-customer-empty hidden>Keine Kunden gefunden.</div>
     {% endif %}
   </div>
 </div>
@@ -57,7 +59,7 @@
 
 {% block help %}
 <ul>
-  <li>Die Suche prüft interne Kundennummer, Name, Ort, Mail und Telefon.</li>
+  <li>Die Trefferliste grenzt sich schon beim Tippen ein; mit Enter springst du bei genau einem Treffer direkt in die Kundenakte.</li>
   <li>Über die Detailseite pflegst du Adressen, Standorte, Kontaktpersonen und externe Identitäten.</li>
   <li>Vorgänge greifen auf diese Kundenstammdaten direkt zu.</li>
 </ul>

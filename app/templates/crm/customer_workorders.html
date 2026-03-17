@@ -20,6 +20,7 @@
               <div class="outsmart-workorder-id">
                 <a href="/outsmart/arbeitsauftraege/{{ item.row.id }}">{{ item.row.workorder_no }}</a>
               </div>
+              {% if item.display.title_suffix %}<div><b>{{ item.display.title_suffix }}</b></div>{% endif %}
               <div class="muted">
                 Status: {{ item.display.status_label }}
                 {% if item.display.job_no %} | OutSmart-Job: {{ item.display.job_no }}{% endif %}
@@ -28,7 +29,7 @@
             </div>
             <div class="outsmart-workorder-actions">
               <a class="btn small" href="/outsmart/arbeitsauftraege/{{ item.row.id }}">Ansicht</a>
-              {% if item.row.deep_link_url %}<a class="btn small" href="{{ item.row.deep_link_url }}" target="_blank" rel="noopener">In OutSmart</a>{% endif %}
+              {% if item.external_url %}<a class="btn small" href="{{ item.external_url }}" target="_blank" rel="noopener">In OutSmart</a>{% endif %}
               {% if item.row.pdf_url %}<a class="btn small" href="{{ item.row.pdf_url }}" target="_blank" rel="noopener">PDF</a>{% endif %}
             </div>
           </div>
@@ -47,15 +48,9 @@
             </div>
 
             <div class="outsmart-kv-card">
-              <div class="outsmart-kv-label">Serviceauftrag</div>
+              <div class="outsmart-kv-label">Arbeitsart</div>
               <div class="outsmart-kv-value">
-                {% if item.crm_case %}
-                  <a href="/serviceauftraege/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
-                  <div class="muted">{{ item.crm_case.title }}</div>
-                {% else %}
-                  <div>Kein interner Serviceauftrag verknüpft</div>
-                  {% if item.case_hint %}<div class="muted">{{ item.case_hint }}</div>{% endif %}
-                {% endif %}
+                {{ item.display.type_of_work_label or item.display.title_suffix or '-' }}
               </div>
             </div>
 
@@ -74,7 +69,7 @@
 
             <div class="outsmart-kv-card">
               <div class="outsmart-kv-label">Mitarbeiter</div>
-              <div class="outsmart-kv-value">{{ item.row.employee_name or '-' }}</div>
+              <div class="outsmart-kv-value">{{ item.display.employee_summary }}</div>
             </div>
           </div>
 
@@ -102,6 +97,7 @@
           <div class="outsmart-workorder-foot">
             <div class="muted">
               Material: {{ item.display.material_rows|length }}
+              | Brutto: {{ item.display.material_total_gross_label }}
               | Fotos: {{ item.display.photo_rows|length }}
               | Formulare: {{ item.display.form_rows|length }}
               | Arbeitszeiten: {{ item.display.workperiod_rows|length }}
@@ -121,7 +117,7 @@
 {% block help %}
 <ul>
   <li>Die Liste zeigt lokale OutSmart-Arbeitsaufträge mit deutscher Struktur statt Rohtext.</li>
-  <li>Wenn kein lokaler Vorgang verknüpft ist, siehst du hier die OutSmart-Referenzen als Hinweis.</li>
+  <li>Arbeitsart und Mitarbeiter kommen direkt aus den strukturierten OutSmart-Daten.</li>
   <li>Die Detailansicht zeigt Material, Fotos, Formulare, Zeiten und weitere importierte Daten strukturiert an.</li>
 </ul>
 {% endblock %}

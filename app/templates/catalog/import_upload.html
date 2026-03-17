@@ -12,59 +12,17 @@
   {% endif %}
 
   <form method="post" action="/catalog/import/upload" enctype="multipart/form-data" class="form" data-import-upload-form="1">
-    <label>Hersteller (Pflicht)</label>
-    <select name="manufacturer_id" required>
-      <option value="0">Bitte wählen</option>
-      {% for m in manufacturers %}
-      <option value="{{ m.id }}" {% if selected_manufacturer_id == m.id %}selected{% endif %}>{{ m.name }}</option>
-      {% endfor %}
-    </select>
-
-    <label>Geräteart (Pflicht)</label>
-    <select name="kind_id" required>
-      <option value="0">Bitte wählen</option>
-      {% for k in kinds %}
-      <option value="{{ k.id }}" {% if selected_kind_id == k.id %}selected{% endif %}>{{ k.name }}</option>
-      {% endfor %}
-    </select>
-
-    <label>Profil (optional)</label>
-    <select name="profile_id">
-      <option value="0">Automatisch erkennen / neu wählen</option>
-      {% for p in available_profiles %}
-      <option value="{{ p.id }}" {% if selected_profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>
-      {% endfor %}
-    </select>
-
     <label>CSV-Datei</label>
     <input type="file" name="csv_file" accept=".csv,text/csv" required>
 
-    <div class="grid3">
-      <div>
-        <label>Trennzeichen</label>
-        <select name="delimiter">
-          <option value=";" {% if upload_form_data.delimiter == ';' %}selected{% endif %}>Semikolon (;)</option>
-          <option value="," {% if upload_form_data.delimiter == ',' %}selected{% endif %}>Komma (,)</option>
-        </select>
-      </div>
-      <div>
-        <label>Encoding</label>
-        <select name="encoding">
-          <option value="utf-8" {% if upload_form_data.encoding == 'utf-8' %}selected{% endif %}>utf-8</option>
-          <option value="utf-8-sig" {% if upload_form_data.encoding == 'utf-8-sig' %}selected{% endif %}>utf-8-sig</option>
-          <option value="cp1252" {% if upload_form_data.encoding == 'cp1252' %}selected{% endif %}>cp1252</option>
-          <option value="latin-1" {% if upload_form_data.encoding == 'latin-1' %}selected{% endif %}>latin-1</option>
-        </select>
-      </div>
-      <div>
-        <label class="check"><input type="checkbox" name="has_header" {% if upload_form_data.has_header %}checked{% endif %}> Erste Zeile enthält Header</label>
-      </div>
+    <div class="hint">
+      Nach dem Upload werden Trennzeichen, Encoding und Header automatisch erkannt.
+      Danach mapst du nur noch Geräteart, Hersteller, EAN, Verkaufsbezeichnung, Materialnummer, Produkttitel 1, Produkttitel 2 und Bild 1-10.
     </div>
 
     <div class="row">
       <button class="btn primary" type="submit">Upload starten</button>
       <a class="btn" href="/catalog/products">Zurück</a>
-      <a class="btn" href="/catalog/import/profiles">Profile verwalten</a>
     </div>
   </form>
 </div>
@@ -107,8 +65,10 @@
 
 {% block help %}
 <ul>
-  <li>Upload speichert einen dauerhaften Entwurf, damit Datei und Auswahl erhalten bleiben.</li>
-  <li>Wenn schon ein passendes Profil existiert, kann es direkt gewählt oder automatisch erkannt werden.</li>
+  <li>Vor dem Upload muss nichts mehr vorgegeben werden. Du lädst nur die CSV hoch.</li>
+  <li>Im Mapping bleiben nur Kernfelder, Beschreibung und Bild 1-10 sichtbar.</li>
+  <li>Das Datenblatt wird danach automatisch aus der Hersteller-Linklogik gebaut, lokal gespeichert und ausgewertet.</li>
+  <li>Die Merkmale werden direkt aus CSV-Spalten und Beschreibungstexten je Hersteller und Geräteart abgeleitet.</li>
   <li>Über „Letzte Import-Entwürfe“ kannst du abgebrochene Importe fortsetzen.</li>
 </ul>
 {% endblock %}

@@ -5,7 +5,7 @@
 
   <div class="row" style="margin-bottom:10px; flex-wrap:wrap;">
     <a class="btn" href="/crm/kunden/{{ customer.id }}">Zurück zum Kunden</a>
-    {% if selected and selected.deep_link_url %}<a class="btn" href="{{ selected.deep_link_url }}" target="_blank" rel="noopener">Ausgewähltes Objekt in OutSmart öffnen</a>{% endif %}
+    {% if selected and selected.deep_link_url %}<a class="btn" href="{{ selected.deep_link_url }}" target="_blank" rel="noopener">Quelle öffnen</a>{% endif %}
   </div>
 
   <div class="grid2" style="align-items:start;">
@@ -14,13 +14,18 @@
       <div class="box-body">
         {% if rows %}
           {% for item in rows %}
+          {% set source_label = 'OutSmart' %}
+          {% if item.external_object_code and item.external_object_code.startswith('INVLINE-') %}{% set source_label = 'Rechnung' %}{% endif %}
+          {% if item.external_object_code and item.external_object_code.startswith('CASE-DEVICE-') %}{% set source_label = 'Reparaturrechnung' %}{% endif %}
+          {% if item.external_object_code and item.external_object_code.startswith('SEVDOC-') %}{% set source_label = 'sevDesk-Rechnung' %}{% endif %}
+          {% set device_label = ((item.brand_label ~ ' ' ~ item.model_label)|trim) if item.brand_label and item.model_label else (item.model_label or item.brand_label or item.type_label or item.external_object_code or 'Objekt') %}
           <div style="margin-bottom:8px;">
-            <a href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ item.id }}"><b>{{ item.brand_label or item.supplier_label or 'Objekt' }}</b> {{ item.model_label or item.type_label or item.external_object_code }}</a>
-            <div class="muted">Code: {{ item.external_object_code }} | Seriennummer: {{ item.serial_no or '-' }}</div>
+            <a href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ item.id }}"><b>{{ device_label }}</b></a>
+            <div class="muted">Quelle: {{ source_label }} | Code: {{ item.external_object_code }} | Seriennummer: {{ item.serial_no or '-' }}</div>
           </div>
           {% endfor %}
         {% else %}
-        <div class="muted">Noch keine OutSmart-Objekte für diesen Kunden vorhanden.</div>
+        <div class="muted">Noch keine Objekte oder automatisch abgeleiteten Geraete fuer diesen Kunden vorhanden.</div>
         {% endif %}
       </div>
     </div>
@@ -101,7 +106,7 @@
 
 {% block help %}
 <ul>
-  <li>Diese Seite zeigt installierte Geräte und Objekte aus OutSmart lokal an.</li>
+  <li>Diese Seite zeigt OutSmart-Objekte plus automatisch aus Rechnungen und Reparaturbelegen abgeleitete Geräte.</li>
   <li>Zusatzfelder und Komponenten bleiben lesbar, ohne direkt nach OutSmart zu springen.</li>
   <li>Über die verknüpften Arbeitsaufträge gelangst du in die lokale Detailansicht.</li>
 </ul>

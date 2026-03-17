@@ -3,7 +3,7 @@
 <div class="panel">
   <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
     <div>
-      <h1>OutSmart-Arbeitsauftrag {{ row.workorder_no }}</h1>
+      <h1>Arbeitsauftrag {{ row.workorder_no }}{% if display.title_suffix %} {{ display.title_suffix }}{% endif %}</h1>
       <div class="hint">
         Status: {{ display.status_label }}
         {% if display.job_no %} | OutSmart-Job: {{ display.job_no }}{% endif %}
@@ -11,10 +11,9 @@
       </div>
     </div>
     <div class="row" style="gap:8px; flex-wrap:wrap;">
-      {% if crm_case %}<a class="btn" href="/serviceauftraege/{{ crm_case.id }}">Zum Serviceauftrag</a>{% endif %}
       {% if customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}">Zum Kunden</a>{% endif %}
       {% if customer_object and customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}/objekte?object_id={{ customer_object.id }}">Zum Objekt</a>{% endif %}
-      {% if row.deep_link_url %}<a class="btn" href="{{ row.deep_link_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}
+      {% if external_url %}<a class="btn" href="{{ external_url }}" target="_blank" rel="noopener">In OutSmart öffnen</a>{% endif %}
       {% if row.pdf_url %}<a class="btn" href="{{ row.pdf_url }}" target="_blank" rel="noopener">PDF öffnen</a>{% endif %}
       {% if row.word_url %}<a class="btn" href="{{ row.word_url }}" target="_blank" rel="noopener">Word öffnen</a>{% endif %}
     </div>
@@ -33,20 +32,9 @@
       </div>
     </div>
     <div class="outsmart-kv-card">
-      <div class="outsmart-kv-label">Serviceauftrag</div>
+      <div class="outsmart-kv-label">Arbeitsart</div>
       <div class="outsmart-kv-value">
-        {% if crm_case %}
-          <a href="/serviceauftraege/{{ crm_case.id }}">{{ crm_case.case_no }}</a>
-          <div class="muted">{{ crm_case.title }}</div>
-        {% else %}
-          <div>Kein interner Serviceauftrag verknüpft</div>
-          {% if display.job_no or display.reference %}
-            <div class="muted">
-              {% if display.job_no %}Job {{ display.job_no }}{% endif %}
-              {% if display.reference %}{% if display.job_no %} | {% endif %}Referenz {{ display.reference }}{% endif %}
-            </div>
-          {% endif %}
-        {% endif %}
+        {{ display.type_of_work_label or display.title_suffix or '-' }}
       </div>
     </div>
     <div class="outsmart-kv-card">
@@ -80,43 +68,9 @@
     </div>
     <div class="outsmart-kv-card">
       <div class="outsmart-kv-label">Mitarbeiter</div>
-      <div class="outsmart-kv-value">{{ row.employee_name or '-' }}</div>
+      <div class="outsmart-kv-value">{{ display.employee_summary }}</div>
     </div>
   </div>
-
-  {% if not crm_case and role_flags.is_admin %}
-    <div class="box" style="margin-top:10px;">
-      <div class="box-title">Serviceauftrag verknüpfen</div>
-      <div class="box-body">
-        <div class="muted" style="margin-bottom:10px;">
-          Für diesen OutSmart-Arbeitsauftrag ist noch kein interner Serviceauftrag verknüpft. Lege nur dann einen internen Serviceauftrag an, wenn du zusätzlich E-Mail, Dokumente, Paperless und interne Steuerung in diesem System brauchst.
-        </div>
-        {% if candidate_cases %}
-          <form method="post" action="/outsmart/arbeitsauftraege/{{ row.id }}/vorgang-zuordnen" class="form compact">
-            <label for="outsmart_case_id">Vorhandenen Serviceauftrag auswählen</label>
-            <select id="outsmart_case_id" name="case_id">
-              {% for item in candidate_cases %}
-                <option value="{{ item.row.id }}">
-                  {{ item.row.case_no }} | {{ item.status_label }} | {{ item.row.title }}
-                  {% if item.service_location %} | {{ item.service_location.location_label }}{% endif %}
-                </option>
-              {% endfor %}
-            </select>
-            <div class="row" style="margin-top:10px;">
-              <button class="btn" type="submit">Mit Serviceauftrag verknüpfen</button>
-            </div>
-          </form>
-        {% else %}
-          <div class="muted">Es wurden noch keine passenden internen Serviceaufträge für diesen Kunden oder Leistungsort gefunden.</div>
-        {% endif %}
-        <form method="post" action="/outsmart/arbeitsauftraege/{{ row.id }}/vorgang-anlegen" class="inline">
-          <div class="row" style="margin-top:10px;">
-            <button class="btn primary" type="submit">Neuen internen Serviceauftrag aus Arbeitsauftrag anlegen</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  {% endif %}
 
   <div class="outsmart-description-grid" style="margin-top:10px;">
     <div class="box">
@@ -148,68 +102,68 @@
     </div>
   {% endif %}
 
-  <div class="grid2" style="margin-top:10px;">
-    <div class="box">
-      <div class="box-title">Materialien</div>
-      <div class="box-body">
-        {% if material_rows %}
-          <div class="outsmart-simple-table">
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Artikel</div>
+    <div class="box-body">
+      {% if material_rows %}
+        <div class="outsmart-material-summary">
+          <div class="muted">{{ material_rows|length }} Positionen</div>
+          <div><b>Gesamt brutto: {{ display.material_total_gross_label }}</b></div>
+        </div>
+        <div class="outsmart-material-table-wrap">
+          <div class="outsmart-simple-table outsmart-material-table">
             <div class="outsmart-simple-row outsmart-simple-head">
               <div>Pos.</div>
               <div>Artikel</div>
               <div>Menge</div>
-              <div>Preis</div>
-              <div>Gesamt</div>
+              <div>Preis netto</div>
+              <div>Gesamt netto</div>
+              <div>Gesamt brutto</div>
             </div>
             {% for item in material_rows %}
               <div class="outsmart-simple-row">
                 <div>{{ item.pos }}</div>
-                <div>
-                  <div>{{ item.name }}</div>
-                  <div class="muted">{{ item.code }}{% if item.unit and item.unit != '-' %} | {{ item.unit }}{% endif %}</div>
-                  {% if item.note %}<div class="muted">{{ item.note }}</div>{% endif %}
-                </div>
+                <div class="outsmart-material-label">{{ item.name }}{% if item.code and item.code != '-' %} | {{ item.code }}{% endif %}{% if item.unit and item.unit != '-' %} | {{ item.unit }}{% endif %}{% if item.note %} | {{ item.note|replace('\n', ' | ') }}{% endif %}</div>
                 <div>{{ item.qty_label }}</div>
                 <div>{{ item.price_label }}</div>
                 <div>{{ item.total_label }}</div>
+                <div>{{ item.total_gross_label }}</div>
               </div>
             {% endfor %}
           </div>
-        {% else %}
-          <div class="muted">Keine Materialien vorhanden.</div>
-        {% endif %}
-      </div>
+        </div>
+      {% else %}
+        <div class="muted">Keine Materialien vorhanden.</div>
+      {% endif %}
     </div>
+  </div>
 
-    <div class="box">
-      <div class="box-title">Arbeitszeiten</div>
-      <div class="box-body">
-        {% if workperiod_rows %}
-          <div class="outsmart-simple-table">
-            <div class="outsmart-simple-row outsmart-simple-head">
-              <div>Pos.</div>
-              <div>Tag / Zeit</div>
-              <div>Dauer</div>
-              <div>Typ</div>
-              <div>Hinweis</div>
-            </div>
-            {% for item in workperiod_rows %}
-              <div class="outsmart-simple-row">
-                <div>{{ item.pos }}</div>
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Arbeitszeiten</div>
+    <div class="box-body">
+      {% if workperiod_rows %}
+        <div class="outsmart-workperiod-list">
+          {% for item in workperiod_rows %}
+            <article class="outsmart-workperiod-card">
+              <div class="outsmart-workperiod-head">
                 <div>
-                  <div>{{ item.date_label }}</div>
+                  <div><b>{{ item.date_label }}</b></div>
                   <div class="muted">{{ item.time_label }}</div>
                 </div>
-                <div>{{ item.duration }}</div>
-                <div>{{ item.hour_type }}</div>
-                <div>{{ item.note or '-' }}</div>
+                <div class="outsmart-workperiod-meta">
+                  <span class="outsmart-workperiod-pill">{{ item.duration }}</span>
+                  <span class="outsmart-workperiod-pill">{{ item.hour_type }}</span>
+                  {% if item.travel %}<span class="outsmart-workperiod-pill">Fahrt</span>{% endif %}
+                  {% if item.billable %}<span class="outsmart-workperiod-pill">Berechenbar</span>{% endif %}
+                </div>
               </div>
-            {% endfor %}
-          </div>
-        {% else %}
-          <div class="muted">Keine Arbeitszeiten vorhanden.</div>
-        {% endif %}
-      </div>
+              {% if item.note %}<div style="margin-top:8px;">{{ item.note }}</div>{% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="muted">Keine Arbeitszeiten vorhanden.</div>
+      {% endif %}
     </div>
   </div>
 
@@ -348,8 +302,8 @@
 
 {% block help %}
 <ul>
-  <li>Die lokale Detailansicht zeigt den OutSmart-Arbeitsauftrag strukturiert mit Termin, Zuordnung, Gerät, Fehlerbild und Arbeitsgang.</li>
-  <li>Material, Fotos, Objekte, Formulare, Mitarbeiter und Dokumente werden in eigenen Blöcken dargestellt.</li>
-  <li>Wenn kein lokaler Vorgang verknüpft ist, bleiben OutSmart-Job und Referenz sichtbar.</li>
+  <li>Die lokale Detailansicht zeigt den OutSmart-Arbeitsauftrag strukturiert mit Termin, Arbeitsart, Gerät, Fehlerbild und Arbeitsgang.</li>
+  <li>Artikel laufen jetzt ohne Umbruch horizontal durch und zeigen zusätzlich die Bruttogesamtsumme.</li>
+  <li>Arbeitszeiten stehen als eigene Karten, damit die Artikelliste die volle Breite nutzen kann.</li>
 </ul>
 {% endblock %}

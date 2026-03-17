@@ -1,103 +1,217 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>Dokument zuordnen</h1>
-  <div class="box">
-    <div class="box-title">Dokument</div>
-    <div class="box-body">
-      <div><b>Paperless-ID:</b> {{ item.paperless_document_id }}</div>
-      <div><b>Titel:</b> {{ item.title or '-' }}</div>
-      <div><b>Korrespondent:</b> {{ item.correspondent or '-' }}</div>
-      <div><b>Typ:</b> {{ item.document_type or '-' }}</div>
-      <div><b>Status:</b> {{ document_inbox_status_label(item.status) }}</div>
-      {% if paperless_url %}<div><a class="btn small" target="_blank" rel="noopener" href="{{ paperless_url }}">In Paperless öffnen</a></div>{% endif %}
+  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+    <div>
+      <h1>Dokument zuordnen</h1>
+      <div class="hint">Beleg-Entwurf aus Paperless, Upload oder E-Mail, fachliche Zuordnung und direkte Vorbereitung fuer sevDesk.</div>
+    </div>
+    <div class="row" style="gap:8px; flex-wrap:wrap;">
+      {% if paperless_url %}<a class="btn" target="_blank" rel="noopener" href="{{ paperless_url }}">In Paperless öffnen</a>{% endif %}
+      {% if preview_url %}<a class="btn" target="_blank" rel="noopener" href="{{ preview_url }}">Quelldatei öffnen</a>{% endif %}
+      {% if classification_view.next_action.url %}<a class="btn primary" href="{{ classification_view.next_action.url }}">{{ classification_view.next_action.label }}</a>{% endif %}
+      <a class="btn" href="/einkauf/dokumente">Zurück</a>
     </div>
   </div>
 
-  {% if ai_document_result %}
-    {% set ai_output = ai_document_result.output %}
-    <details class="box" style="margin-top:10px;" open>
-      <summary class="box-title">KI-Vorschlag</summary>
-      <div class="box-body">
-        <div><b>Dokumenttyp:</b> {{ ai_output.doc_kind or '-' }}</div>
-        <div><b>Status:</b> {{ ai_status_label(ai_document_result.log.status) }} | {{ ai_risk_label(ai_document_result.risk_class) }}</div>
-        <div><b>Lieferant:</b> {{ ai_output.supplier_candidate or '-' }}</div>
-        <div><b>Bestellung:</b> {{ ai_output.purchase_order_candidate or '-' }}</div>
-        <div><b>Wareneingang:</b> {{ ai_output.goods_receipt_candidate or '-' }}</div>
-        <div><b>Eingangsrechnung:</b> {{ ai_output.invoice_candidate or '-' }}</div>
-        {% if ai_output.missing_fields %}
-          <div style="margin-top:8px;"><b>Offene Felder:</b> {{ ai_output.missing_fields|join(', ') }}</div>
-        {% endif %}
-        {% if ai_document_review and ai_document_review.status == 'open' %}
-          <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
-            <form method="post" action="/system/ki-freigaben/{{ ai_document_result.log.id }}" class="inline">
-              <input type="hidden" name="action" value="approve">
-              <button class="btn small" type="submit">Freigeben</button>
-            </form>
-            <form method="post" action="/system/ki-freigaben/{{ ai_document_result.log.id }}" class="inline">
-              <input type="hidden" name="action" value="reject">
-              <button class="btn small" type="submit">Ablehnen</button>
-            </form>
+  <div class="grid2" style="margin-top:10px; align-items:start;">
+    <div>
+      <div class="box">
+        <div class="box-title">Vorschau</div>
+        <div class="box-body">
+          {% if preview_url and preview_kind == 'image' %}
+            <img src="{{ preview_url }}" alt="{{ item.title or 'Dokument' }}" style="display:block; width:100%; max-height:980px; object-fit:contain;">
+          {% elif preview_url and preview_kind == 'pdf' %}
+            <object data="{{ preview_url }}" type="application/pdf" style="display:block; width:100%; min-height:980px;">
+              <div class="hint">PDF-Vorschau nicht verfügbar. Bitte Quelldatei direkt öffnen.</div>
+            </object>
+          {% elif preview_url %}
+            <div class="hint">Die Quelldatei kann geöffnet werden, aber nicht direkt eingebettet dargestellt werden.</div>
+          {% else %}
+            <div class="hint">Für dieses Dokument ist derzeit keine lokale Vorschau verfügbar.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="box">
+        <div class="box-title">Dokument</div>
+        <div class="box-body">
+          <div><b>Paperless-ID:</b> {{ item.paperless_document_id or '-' }}</div>
+          <div><b>Quelle:</b> {{ item_source.label if item_source else '-' }}</div>
+          <div><b>Belegtyp:</b> {{ classification_view.draft_kind_label }}</div>
+          <div><b>Workflow:</b> {{ classification_view.workflow_label }}</div>
+          <div><b>Titel:</b> {{ item.title or '-' }}</div>
+          <div><b>Korrespondent:</b> {{ item.correspondent or '-' }}</div>
+          <div><b>Typ:</b> {{ item.document_type or '-' }}</div>
+          <div><b>Status:</b> {{ document_inbox_status_label(item.status) }}</div>
+          {% if transaction_match %}
+            <div><b>Kontobewegung:</b> <a href="{{ transaction_match.url }}">{{ transaction_match.tx_id }}</a>{% if transaction_match.check_account_id %} | {{ transaction_match.check_account_id }}{% endif %}</div>
+          {% endif %}
+          {% if item_source and item_source.from_email %}
+            <div><b>Absender:</b> {{ item_source.from_email }}</div>
+          {% endif %}
+          {% if item_source and item_source.subject %}
+            <div><b>Mail-Betreff:</b> {{ item_source.subject }}</div>
+          {% endif %}
+          {% if item_source and item_source.mail_url %}
+            <div style="margin-top:8px;"><a href="{{ item_source.mail_url }}">Mail-Thread öffnen</a></div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="box" style="margin-top:10px;">
+        <div class="box-title">Belegtyp und Workflow</div>
+        <div class="box-body">
+          <form method="post" action="/einkauf/dokumente/{{ item.id }}" class="form">
+            <input type="hidden" name="intent" value="classification">
+            <div class="grid2">
+              <div>
+                <label>Lokaler Belegtyp</label>
+                <select name="draft_kind">
+                  <option value="">- Bitte festlegen -</option>
+                  {% for key, label in draft_kind_choices %}
+                    <option value="{{ key }}" {% if (classification_view.draft_kind or classification_view.suggested_kind) == key %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Workflow</label>
+                <select name="workflow_state">
+                  {% for key, label in workflow_choices %}
+                    <option value="{{ key }}" {% if classification_view.workflow_state == key %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            {% if classification_view.suggested_kind and not classification_view.draft_kind %}
+              <div class="hint" style="margin-bottom:8px;">Vorschlag aus Dokumentanalyse: {{ classification_view.suggested_kind_label }}</div>
+            {% endif %}
+            {% if classification_view.next_action.hint %}
+              <div class="hint" style="margin-bottom:8px;">{{ classification_view.next_action.hint }}</div>
+            {% endif %}
+            <div class="row" style="gap:8px; flex-wrap:wrap;">
+              <button class="btn primary" type="submit">Klassifikation speichern</button>
+              {% if classification_view.suggested_kind and classification_view.suggested_kind != classification_view.draft_kind %}
+                <button class="btn" type="submit" name="use_ai_kind" value="1">KI-Vorschlag übernehmen</button>
+              {% endif %}
+              <button class="btn" type="submit" name="open_next" value="1">Speichern + nächste Erfassung</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {% if ai_document_result %}
+        {% set ai_output = ai_document_result.output %}
+        <details class="box" style="margin-top:10px;" open>
+          <summary class="box-title">KI-Vorschlag</summary>
+          <div class="box-body">
+            <div><b>Dokumenttyp:</b> {{ ai_output.doc_kind or '-' }}</div>
+            <div><b>Status:</b> {{ ai_status_label(ai_document_result.log.status) }} | {{ ai_risk_label(ai_document_result.risk_class) }}</div>
+            <div><b>Lieferant:</b> {{ ai_output.supplier_candidate or '-' }}</div>
+            <div><b>Bestellung:</b> {{ ai_output.purchase_order_candidate or '-' }}</div>
+            <div><b>Wareneingang:</b> {{ ai_output.goods_receipt_candidate or '-' }}</div>
+            <div><b>Eingangsrechnung:</b> {{ ai_output.invoice_candidate or '-' }}</div>
+            {% if ai_output.missing_fields %}
+              <div style="margin-top:8px;"><b>Offene Felder:</b> {{ ai_output.missing_fields|join(', ') }}</div>
+            {% endif %}
+            {% if ai_document_review and ai_document_review.status == 'open' %}
+              <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+                <form method="post" action="/system/ki-freigaben/{{ ai_document_result.log.id }}" class="inline">
+                  <input type="hidden" name="action" value="approve">
+                  <button class="btn small" type="submit">Freigeben</button>
+                </form>
+                <form method="post" action="/system/ki-freigaben/{{ ai_document_result.log.id }}" class="inline">
+                  <input type="hidden" name="action" value="reject">
+                  <button class="btn small" type="submit">Ablehnen</button>
+                </form>
+              </div>
+            {% endif %}
           </div>
-        {% endif %}
-      </div>
-    </details>
-  {% endif %}
+        </details>
+      {% endif %}
 
-  <form method="post" action="/einkauf/dokumente/{{ item.id }}" class="form" style="margin-top:10px;">
-    <label>Objekttyp</label>
-    <select name="object_type">
-      <option value="purchase_order">Bestellung</option>
-      <option value="goods_receipt">Wareneingang</option>
-      <option value="purchase_invoice">Eingangsrechnung</option>
-      <option value="supplier">Lieferant</option>
-      <option value="ignored">Ignorieren</option>
-    </select>
+      {% if invoice_extract_result %}
+        {% set invoice_extract = invoice_extract_result.output %}
+        <details class="box" style="margin-top:10px;" open>
+          <summary class="box-title">Belegdaten</summary>
+          <div class="box-body">
+            <div><b>Rechnungsnummer:</b> {{ invoice_extract.invoice_no or '-' }}</div>
+            <div><b>Lieferant:</b> {{ invoice_extract.supplier_candidate or '-' }}</div>
+            <div><b>Belegdatum:</b> {{ invoice_extract.invoice_date or '-' }}</div>
+            <div><b>Fällig:</b> {{ invoice_extract.due_date or '-' }}</div>
+            <div><b>Netto:</b> {{ invoice_extract.amounts.net_total or '-' }}</div>
+            <div><b>Steuer:</b> {{ invoice_extract.amounts.tax_total or '-' }}</div>
+            <div><b>Brutto:</b> {{ invoice_extract.amounts.gross_total or '-' }}</div>
+            {% if invoice_extract.flags %}
+              <div style="margin-top:8px;"><b>Hinweise:</b> {{ invoice_extract.flags|join(', ') }}</div>
+            {% endif %}
+          </div>
+        </details>
+      {% endif %}
 
-    <div class="grid2">
-      <div>
-        <label>Bestellung</label>
-        <select name="purchase_order_id">
-          <option value="0">-</option>
-          {% for row in purchase_orders %}
-            <option value="{{ row.id }}">{{ row.order_no or row.po_number }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Wareneingang</label>
-        <select name="goods_receipt_id">
-          <option value="0">-</option>
-          {% for row in goods_receipts %}
-            <option value="{{ row.id }}">{{ row.receipt_no or ('WE-' ~ row.id) }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Eingangsrechnung</label>
-        <select name="purchase_invoice_id">
-          <option value="0">-</option>
-          {% for row in purchase_invoices %}
-            <option value="{{ row.id }}">{{ row.invoice_no }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>Lieferant</label>
-        <select name="supplier_id">
-          <option value="0">-</option>
-          {% for row in suppliers %}
-            <option value="{{ row.id }}">{{ row.name }}</option>
-          {% endfor %}
-        </select>
+      <div class="box" style="margin-top:10px;">
+        <div class="box-title">Fachliche Zuordnung</div>
+        <div class="box-body">
+          <form method="post" action="/einkauf/dokumente/{{ item.id }}" class="form">
+            <label>Objekttyp</label>
+            <select name="object_type">
+              <option value="purchase_order">Bestellung</option>
+              <option value="goods_receipt">Wareneingang</option>
+              <option value="purchase_invoice">Eingangsrechnung</option>
+              <option value="supplier">Lieferant</option>
+              <option value="ignored">Ignorieren</option>
+            </select>
+
+            <div class="grid2">
+              <div>
+                <label>Bestellung</label>
+                <select name="purchase_order_id">
+                  <option value="0">-</option>
+                  {% for row in purchase_orders %}
+                    <option value="{{ row.id }}">{{ row.order_no or row.po_number }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Wareneingang</label>
+                <select name="goods_receipt_id">
+                  <option value="0">-</option>
+                  {% for row in goods_receipts %}
+                    <option value="{{ row.id }}">{{ row.receipt_no or ('WE-' ~ row.id) }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Eingangsrechnung</label>
+                <select name="purchase_invoice_id">
+                  <option value="0">-</option>
+                  {% for row in purchase_invoices %}
+                    <option value="{{ row.id }}">{{ row.invoice_no }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Lieferant</label>
+                <select name="supplier_id">
+                  <option value="0">-</option>
+                  {% for row in suppliers %}
+                    <option value="{{ row.id }}">{{ row.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+
+            <div class="row" style="gap:8px; flex-wrap:wrap;">
+              <button class="btn primary" type="submit">Zuordnung speichern</button>
+              {% if classification_view.next_action.url %}<a class="btn" href="{{ classification_view.next_action.url }}">{{ classification_view.next_action.label }}</a>{% endif %}
+            </div>
+          </form>
+        </div>
       </div>
     </div>
-
-    <div class="row">
-      <button class="btn primary" type="submit">Zuordnung speichern</button>
-      <a class="btn" href="/einkauf/dokumente">Zurück</a>
-    </div>
-  </form>
+  </div>
 </div>
 {% endblock %}
 

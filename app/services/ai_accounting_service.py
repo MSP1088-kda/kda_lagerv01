@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ..models import GoodsReceipt, PurchaseInvoice, PurchaseOrder, Supplier
+from ..models import AccountingAccount, GoodsReceipt, PurchaseInvoice, PurchaseOrder, Supplier
 from .ai_service import run_task
 from .ai_tools import build_tool_snapshot
 
@@ -91,10 +92,17 @@ def suggest_voucher_accounting(
         flags.append("Kein passender Wareneingang gefunden.")
     if not supplier_name:
         flags.append("Lieferant fehlt.")
+    matched_account = _pick_account_candidate(db, description, fallback_number=suggested_account)
+    if matched_account is not None:
+        suggested_account = str(matched_account.account_number or suggested_account)
+        if str(matched_account.default_tax_rule_id or "").strip():
+            suggested_tax_rule = str(matched_account.default_tax_rule_id or "").strip()
     fallback_output = {
         "suggested_account_datev": suggested_account,
         "suggested_tax_rule": suggested_tax_rule,
         "suggested_cost_center": suggested_cost_center,
+        "account_label": str(matched_account.label or "") if matched_account is not None else "",
+        "account_source_type": str(matched_account.source_type or "") if matched_account is not None else "",
         "candidate_po_ids": candidate_po_ids,
         "candidate_receipt_ids": candidate_receipt_ids,
         "booking_note": _booking_note(supplier_name, candidate_po_ids, candidate_receipt_ids),
@@ -237,6 +245,50 @@ def _booking_note(supplier_name: str, po_ids: list[int], receipt_ids: list[int])
     if receipt_ids:
         parts.append("Wareneingaenge: " + ", ".join(str(item) for item in receipt_ids[:3]))
     return " | ".join(parts) if parts else "Manuelle Kontierungspruefung erforderlich."
+
+
+def _pick_account_candidate(db: Session, description: str, *, fallback_number: str = "") -> AccountingAccount | None:
+    rows = (
+        db.query(AccountingAccount)
+        .filter(AccountingAccount.active == True)
+        .order_by(AccountingAccount.favorite.desc(), AccountingAccount.account_number.asc(), AccountingAccount.id.asc())
+        .all()
+    )
+    if not rows:
+        return None
+    normalized = str(description or "").strip().lower()
+    best: tuple[int, AccountingAccount] | None = None
+    for row in rows:
+        score = 0
+        account_number = str(row.account_number or "").strip()
+        label = str(row.label or "").strip().lower()
+        category = str(row.category or "").strip().lower()
+        if account_number and account_number == str(fallback_number or "").strip():
+            score += 60
+        if label and label in normalized:
+            score += 40
+        if category and category in normalized:
+            score += 20
+        try:
+            keywords = json.loads(row.keywords_json or "[]")
+        except Exception:
+            keywords = []
+        if isinstance(keywords, list):
+            for keyword in keywords:
+                clean = str(keyword or "").strip().lower()
+                if clean and clean in normalized:
+                    score += 25
+        if row.favorite:
+            score += 3
+        if score <= 0:
+            continue
+        if best is None or score > best[0]:
+            best = (score, row)
+    if best is not None:
+        return best[1]
+    if fallback_number:
+        return next((row for row in rows if str(row.account_number or "").strip() == str(fallback_number).strip()), None)
+    return rows[0]
 
 
 def _invoice_confidence(invoice_no: str, supplier_id: int | None, amounts: dict[str, int | None]) -> float:

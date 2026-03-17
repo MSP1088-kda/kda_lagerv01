@@ -30,7 +30,7 @@ def _extract_single(payload) -> dict:
 
 def _ensure_push_allowed(settings: dict[str, str | bool]) -> None:
     if bool(settings.get("push_blocked")):
-        raise ValueError("OutSmart-Push ist während der Kunden-Initialisierung gesperrt.")
+        raise ValueError("OutSmart-Schreibzugriff ist deaktiviert. Es sind aktuell nur Lesezugriffe erlaubt.")
 
 
 def request_json(
@@ -97,25 +97,8 @@ def request_json(
         return {"raw": text}
 
 
-def build_deep_link(settings: dict[str, str | bool], *, entity_type: str, row_id: str | None = None, external_key: str | None = None) -> str:
-    explicit = str(settings.get("portal_url") or "").strip()
-    if explicit:
-        base = explicit.rstrip("/")
-    else:
-        host = str(settings.get("host") or "").strip().rstrip("/")
-        if not host:
-            return ""
-        path = urlsplit(host).path or ""
-        if "/openapi" in path:
-            path = path.split("/openapi", 1)[0]
-            parts = urlsplit(host)
-            base = f"{parts.scheme}://{parts.netloc}{path}".rstrip("/")
-        else:
-            base = host
+def _entity_segment(entity_type: str) -> str:
     entity = str(entity_type or "").strip().lower()
-    key = str(row_id or external_key or "").strip()
-    if not key:
-        return ""
     mapping = {
         "relation": "relations",
         "project": "projects",
@@ -123,10 +106,82 @@ def build_deep_link(settings: dict[str, str | bool], *, entity_type: str, row_id
         "workorder": "workorders",
         "material": "materials",
     }
-    segment = mapping.get(entity)
+    return mapping.get(entity) or ""
+
+
+def _legacy_fallback_base(settings: dict[str, str | bool]) -> str:
+    host = str(settings.get("host") or "").strip().rstrip("/")
+    if not host:
+        return ""
+    path = urlsplit(host).path or ""
+    if "/openapi" in path:
+        path = path.split("/openapi", 1)[0]
+        parts = urlsplit(host)
+        return f"{parts.scheme}://{parts.netloc}{path}".rstrip("/")
+    return host
+
+
+def _looks_like_legacy_fallback(
+    settings: dict[str, str | bool],
+    *,
+    entity_type: str,
+    url: str,
+    row_id: str | None = None,
+    external_key: str | None = None,
+) -> bool:
+    legacy_base = _legacy_fallback_base(settings)
+    segment = _entity_segment(entity_type)
+    if not legacy_base or not segment:
+        return False
+    candidate_keys = [str(row_id or "").strip(), str(external_key or "").strip()]
+    candidate_keys = [value for value in candidate_keys if value]
+    if not candidate_keys:
+        return False
+    raw = str(url or "").strip()
+    if not raw:
+        return False
+    current = urlsplit(raw)
+    legacy = urlsplit(legacy_base)
+    if current.netloc and legacy.netloc and current.netloc != legacy.netloc:
+        return False
+    normalized_path = current.path.rstrip("/")
+    for key in candidate_keys:
+        if normalized_path == f"/{segment}/{key}".rstrip("/"):
+            return True
+    return False
+
+
+def build_deep_link(settings: dict[str, str | bool], *, entity_type: str, row_id: str | None = None, external_key: str | None = None) -> str:
+    explicit = str(settings.get("portal_url") or "").strip().rstrip("/")
+    if not explicit:
+        return ""
+    key = str(row_id or external_key or "").strip()
+    if not key:
+        return ""
+    segment = _entity_segment(entity_type)
     if not segment:
         return ""
-    return f"{base}/{segment}/{key}"
+    return f"{explicit}/{segment}/{key}"
+
+
+def normalize_deep_link(
+    settings: dict[str, str | bool],
+    *,
+    entity_type: str,
+    url: str | None = None,
+    row_id: str | None = None,
+    external_key: str | None = None,
+) -> str:
+    current = str(url or "").strip()
+    if current and not _looks_like_legacy_fallback(
+        settings,
+        entity_type=entity_type,
+        url=current,
+        row_id=row_id,
+        external_key=external_key,
+    ):
+        return current
+    return build_deep_link(settings, entity_type=entity_type, row_id=row_id, external_key=external_key)
 
 
 def fetch_relations(settings: dict[str, str | bool]):

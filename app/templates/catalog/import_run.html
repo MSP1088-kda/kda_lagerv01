@@ -1,11 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
+  {% if active_job %}
+  <script>
+    window.setTimeout(function(){ window.location.reload(); }, 4000);
+  </script>
+  {% endif %}
   <h1>CSV-Import: Ausführen</h1>
   <div class="hint">
     Entwurf: <b>#{{ draft.id }}</b> |
-    Hersteller: <b>{{ manufacturer.name }}</b> |
-    Geräteart: <b>{{ selected_kind.name }}</b> |
+    Hersteller: <b>{{ manufacturer.name if manufacturer else '-' }}</b> |
+    Geräteart: <b>{{ selected_kind.name if selected_kind else '-' }}</b> |
     Zeilen: <b>{{ total_rows }}</b>
   </div>
 
@@ -40,22 +45,7 @@
   </div>
   {% endif %}
 
-  <div class="box" style="margin-top:10px;">
-    <div class="box-title">Profil</div>
-    <div class="box-body">
-      {% if active_profile %}
-      <div>Profil: <b>{{ active_profile.name }}</b></div>
-      {% else %}
-      <div>Profilname: <b>{{ profile_name_value }}</b></div>
-      {% endif %}
-      <div>Profil nach erfolgreichem Import aktualisieren: <b>{% if update_profile %}Ja{% else %}Nein{% endif %}</b></div>
-      {% if unmapped_columns %}
-      <div class="hint">Neue Spalten erkannt: {{ unmapped_columns[:8]|join(', ') }}{% if unmapped_columns|length > 8 %}, ...{% endif %}</div>
-      {% endif %}
-    </div>
-  </div>
-
-  <h2>Produkt-Mapping</h2>
+  <h2>Kern- und Medienmapping</h2>
   <div class="table">
     <div class="tr th" style="grid-template-columns: 1fr 1fr;">
       <div>Zielfeld</div>
@@ -69,32 +59,7 @@
     {% endfor %}
   </div>
 
-  <h2>Merkmals-Mapping</h2>
-  {% if mapped_feature_fields %}
-  <div class="table">
-    <div class="tr th" style="grid-template-columns: 1fr 1fr 140px;">
-      <div>CSV-Spalte</div>
-      <div>Merkmal</div>
-      <div>Typ</div>
-    </div>
-    {% for row in mapped_feature_fields %}
-    <div class="tr" style="grid-template-columns: 1fr 1fr 140px;">
-      <div>{{ row.source_column }}</div>
-      <div>{{ row.feature_label or row.feature_key }}</div>
-      <div>{{ row.data_type }}</div>
-    </div>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="muted">Keine Merkmale ausgewählt.</div>
-  {% endif %}
-
-  <h2>Zubehör-Mapping</h2>
-  {% if accessory_source_column %}
-  <div class="hint">Spalte: <b>{{ accessory_source_column }}</b> | Trennmodus: <b>{{ accessory_separator_mode }}</b></div>
-  {% else %}
-  <div class="muted">Keine Zubehörspalte zugeordnet.</div>
-  {% endif %}
+  <div class="hint" style="margin-top:10px;">Nach dem Kernimport analysiert das System die CSV je Hersteller und Geräteart, ergänzt die Beschreibung und ordnet definierte Merkmale direkt aus den passenden Spalten oder Beschreibungstexten zu.</div>
 
   <form method="post" action="/catalog/import/{{ draft.id }}/run" class="row" data-loading-immediate="1">
     <button class="btn primary" type="submit"{% if active_job %} disabled{% endif %}>{% if active_job %}Läuft bereits{% else %}Import als Hintergrundjob starten{% endif %}</button>
@@ -106,8 +71,10 @@
 
 {% block help %}
 <ul>
-  <li>Der Import startet jetzt als Hintergrundjob und blockiert die restliche App nicht mehr.</li>
-  <li>Während des Laufs zeigt die Seite Phase, Fortschritt und den aktuell bearbeiteten Datensatz.</li>
-  <li>Der Ergebnisbericht bleibt über den letzten Lauf und das Systemprotokoll erreichbar.</li>
+  <li>EAN ist die eindeutige Geräte-ID für Updates und Dublettenvermeidung.</li>
+  <li>Hersteller und Geräteart müssen aus der CSV eindeutig auf genau einen Kontext auflösbar sein.</li>
+  <li>Beschreibungsspalten werden gesammelt und logisch in die Produktbeschreibung übernommen.</li>
+  <li>Definierte Merkmale der Geräteart werden beim Lauf automatisch aus CSV-Spalten und Textfeldern befüllt.</li>
+  <li>Der Lauf startet im Hintergrund und blockiert die restliche App nicht.</li>
 </ul>
 {% endblock %}

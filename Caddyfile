@@ -1,3 +1,12 @@
 :80 {
-    reverse_proxy lager:8080
+    reverse_proxy {
+        dynamic a {
+            name lager
+            port 8080
+            refresh 2s
+            resolvers 127.0.0.11
+        }
+        lb_try_duration 15s
+        lb_try_interval 250ms
+    }
 }

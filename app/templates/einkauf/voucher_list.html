@@ -1,29 +1,106 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="panel">
-  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+<div class="panel receipt-list-shell">
+  <div class="receipt-toolbar">
     <div>
-      <h1>Voucher</h1>
-      <div class="hint">Lokale Eingangsrechnungsprüfung mit sevDesk-Voucher-Erzeugung.</div>
+      <h1>Belege</h1>
+      <div class="hint">Eingangsbelege mit Paperless-Eingang, Kontierung, sevDesk-Status und Zahlungsabgleich.</div>
     </div>
-    {% if role_flags.is_admin %}<a class="btn primary" href="/einkauf/voucher/vorbereiten">Voucher vorbereiten</a>{% endif %}
+    <div class="row" style="margin-top:0; gap:8px; flex-wrap:wrap;">
+      {% if role_flags.is_admin %}<a class="btn primary" href="/einkauf/voucher/vorbereiten">Ausgabe erfassen</a>{% endif %}
+      <a class="btn" href="/einkauf/dokumente">Dokumenteneingang</a>
+      <a class="btn" href="/einkauf/buchungskonten">Buchungskonten</a>
+    </div>
   </div>
 
-  <div class="table" style="margin-top:10px;">
-    <div class="tr th" style="grid-template-columns: 150px 1.1fr 1fr 140px 140px 140px;">
-      <div>Referenz</div><div>Lieferant</div><div>Eingangsrechnung</div><div>Status</div><div>Brutto</div><div>Aktion</div>
+  <div class="receipt-toolbar">
+    <div class="receipt-scope-tabs">
+      <a class="receipt-scope-tab{% if scope == 'all' %} active{% endif %}" href="/einkauf/voucher">Alle ({{ status_counts.get('all', 0) }})</a>
+      <a class="receipt-scope-tab{% if scope == 'draft' %} active{% endif %}" href="/einkauf/voucher?scope=draft">Entwurf ({{ status_counts.get('draft', 0) }})</a>
+      <a class="receipt-scope-tab{% if scope == 'open' %} active{% endif %}" href="/einkauf/voucher?scope=open">Offen ({{ status_counts.get('open', 0) }})</a>
+      <a class="receipt-scope-tab{% if scope == 'due' %} active{% endif %}" href="/einkauf/voucher?scope=due">Faellig ({{ status_counts.get('due', 0) }})</a>
+      <a class="receipt-scope-tab{% if scope == 'paid' %} active{% endif %}" href="/einkauf/voucher?scope=paid">Bezahlt ({{ status_counts.get('paid', 0) }})</a>
     </div>
-    {% for row in rows %}
-      <div class="tr" style="grid-template-columns: 150px 1.1fr 1fr 140px 140px 140px;">
-        <div>{{ row.sevdesk_voucher_id or ('VOU-' ~ '%04d'|format(row.id)) }}</div>
-        <div>{{ supplier_map.get(row.supplier_id).name if supplier_map.get(row.supplier_id) else '-' }}</div>
-        <div>{% if invoice_map.get(row.purchase_invoice_id) %}<a href="/einkauf/rechnungen/{{ row.purchase_invoice_id }}">{{ invoice_map.get(row.purchase_invoice_id).invoice_no }}</a>{% else %}-{% endif %}</div>
-        <div>{{ incoming_voucher_status_label(row.status) }}</div>
-        <div>{{ row.gross_total|eur_cents if row.gross_total is not none else '-' }}</div>
-        <div><a class="btn small" href="/einkauf/voucher/{{ row.id }}">Öffnen</a></div>
+
+    <form method="get" action="/einkauf/voucher" class="form compact" style="min-width:min(460px, 100%);">
+      <input type="hidden" name="scope" value="{{ scope or 'all' }}">
+      <div class="row" style="margin-top:0; gap:8px; flex-wrap:wrap;">
+        <input id="q" type="text" name="q" value="{{ q or '' }}" placeholder="Belegnummer, Lieferant, Rechnung, Kategorie" style="flex:1 1 260px;">
+        <button class="btn" type="submit">Filter</button>
+        <a class="btn" href="/einkauf/voucher">Zurücksetzen</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="table receipt-list-table">
+    <div class="tr th" style="grid-template-columns: 120px 120px 150px 1.3fr 120px 120px 140px 140px 150px 180px;">
+      <div>Status</div>
+      <div>Faelligkeit</div>
+      <div>Belegnummer</div>
+      <div>Lieferant / Bezug</div>
+      <div>Hinzugefügt</div>
+      <div>Belegdatum</div>
+      <div>Betrag</div>
+      <div>Offen</div>
+      <div>Kategorie</div>
+      <div>Aktion</div>
+    </div>
+    {% for item in rows %}
+      <div class="tr" style="grid-template-columns: 120px 120px 150px 1.3fr 120px 120px 140px 140px 150px 180px;">
+        <div>
+          <span class="status-pill status-{{ item.bucket }}">
+            {% if item.bucket == 'draft' %}Entwurf{% elif item.bucket == 'due' %}Faellig{% elif item.bucket == 'paid' %}Bezahlt{% else %}Offen{% endif %}
+          </span>
+        </div>
+        <div>{{ format_date(item.row.due_date) }}</div>
+        <div class="receipt-list-meta">
+          <div><a href="/einkauf/voucher/{{ item.row.id }}">{{ item.reference }}</a></div>
+          <div class="muted">{{ item.row.sevdesk_voucher_id or ('VOU-' ~ '%04d'|format(item.row.id)) }}</div>
+        </div>
+        <div class="receipt-list-meta">
+          <div>{{ item.supplier.name if item.supplier else '-' }}</div>
+          <div class="muted">
+            {% if item.invoice %}
+              Rechnung {{ item.invoice.invoice_no }}
+            {% else %}
+              {{ item.row.description or '-' }}
+            {% endif %}
+          </div>
+        </div>
+        <div>{{ format_date(item.added_at) }}</div>
+        <div>{{ format_date(item.row.voucher_date or item.added_at) }}</div>
+        <div>{{ item.gross_total|eur_cents if item.gross_total is not none else '-' }}</div>
+        <div>{{ item.open_amount|eur_cents if item.open_amount is not none else '-' }}</div>
+        <div>
+          {% if item.primary_account and item.primary_account.category %}
+            {{ item.primary_account.category }}
+          {% elif item.primary_account %}
+            {{ item.primary_account.label }}
+          {% else %}
+            -
+          {% endif %}
+        </div>
+        <div>
+          <div class="row" style="margin-top:0; gap:8px; flex-wrap:wrap;">
+            <a class="btn small" href="/einkauf/voucher/{{ item.row.id }}">Öffnen</a>
+            {% if role_flags.is_admin and item.can_edit %}<a class="btn small" href="/einkauf/voucher/{{ item.row.id }}/bearbeiten">Bearbeiten</a>{% endif %}
+          </div>
+        </div>
       </div>
     {% endfor %}
-    {% if not rows %}<div class="muted">Noch keine Voucher-Entwürfe vorhanden.</div>{% endif %}
+    {% if not rows %}<div class="muted" style="padding:10px;">Keine Belege für den aktuellen Filter gefunden.</div>{% endif %}
+  </div>
+
+  <div class="receipt-help-note">
+    Paperless und manuelle Uploads laufen in denselben Eingang. Von hier aus werden Erfassung, Kontierung, sevDesk-Push und der spätere Zahlungsabgleich gesteuert.
   </div>
 </div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Die Liste kombiniert lokale Entwürfe, offene sevDesk-Belege und bereits bezahlte Eingangsbelege.</li>
+  <li>Die Status-Tabs orientieren sich am sevDesk-Listenbild, bleiben aber lokal filterbar.</li>
+  <li>Bearbeitbar bleiben nur lokale oder strittige Belege ohne sevDesk-ID.</li>
+</ul>
 {% endblock %}

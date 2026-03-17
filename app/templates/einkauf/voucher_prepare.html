@@ -1,129 +1,304 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="panel">
-  <h1>{{ page_title }}</h1>
-  {% if form_errors %}<div class="flash error">{{ (form_errors.values()|list)[0] }}</div>{% endif %}
-  <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
-    <div class="grid2">
+<div class="panel draft-form-shell">
+  <div class="draft-form">
+    <div class="receipt-toolbar">
       <div>
-        <label>Eingangsrechnung</label>
-        <select name="purchase_invoice_id">
-          <option value="0">-</option>
-          {% for invoice in purchase_invoices %}
-            <option value="{{ invoice.id }}" {% if invoice.id == selected_purchase_invoice_id %}selected{% endif %}>{{ invoice.invoice_no }}</option>
-          {% endfor %}
-        </select>
+        <h1>{{ page_title }}</h1>
+        <div class="hint">Erfassung und Kontierung an sevDesk angelehnt, aber vollständig aus diesem Tool gesteuert.</div>
       </div>
-      <div>
-        <label>Lieferant</label>
-        <select name="supplier_id">
-          <option value="0">-</option>
-          {% for supplier in suppliers %}
-            <option value="{{ supplier.id }}" {% if supplier.id == selected_supplier_id %}selected{% endif %}>{{ supplier.name }}</option>
-          {% endfor %}
-        </select>
+      <div class="row" style="margin-top:0; gap:8px; flex-wrap:wrap;">
+        {% if document_inbox_item %}<a class="btn" href="/einkauf/dokumente/{{ document_inbox_item.id }}">Dokumentprüfung</a>{% endif %}
+        {% if row %}<a class="btn" href="/einkauf/voucher/{{ row.id }}">Detail</a>{% endif %}
+        <a class="btn" href="/einkauf/voucher">Zurück zur Liste</a>
       </div>
-    </div>
-    <div class="grid3">
-      <div>
-        <label>Bestellung</label>
-        <select name="purchase_order_id"><option value="0">-</option>{% for row in purchase_orders %}<option value="{{ row.id }}">{{ row.order_no or row.po_number }}</option>{% endfor %}</select>
-      </div>
-      <div>
-        <label>Wareneingang</label>
-        <select name="goods_receipt_id"><option value="0">-</option>{% for row in goods_receipts %}<option value="{{ row.id }}">{{ row.receipt_no or ('WE-' ~ row.id) }}</option>{% endfor %}</select>
-      </div>
-      <div>
-        <label>Währung</label>
-        <input type="text" name="currency" value="{{ form_data.currency or 'EUR' }}">
-      </div>
-    </div>
-    <div class="grid2">
-      <div><label>Beschreibung</label><input type="text" name="description" value="{{ form_data.description or '' }}"></div>
-      <div><label>Verknüpftes Dokument</label><input type="text" name="linked_document_id" value="{{ form_data.linked_document_id or '' }}"></div>
-    </div>
-    <div class="grid3">
-      <div><label>Belegdatum</label><input type="date" name="voucher_date" value="{{ form_data.voucher_date or '' }}"></div>
-      <div><label>Fällig am</label><input type="date" name="due_date" value="{{ form_data.due_date or '' }}"></div>
-      <div><label>Paperless-Dokument-ID</label><input type="text" name="paperless_document_id" value="{{ form_data.paperless_document_id or '' }}"></div>
-    </div>
-    <div class="grid3">
-      <div><label>Netto</label><input type="text" name="net_total" value="{{ form_data.net_total or '' }}"></div>
-      <div><label>Steuer</label><input type="text" name="tax_total" value="{{ form_data.tax_total or '' }}"></div>
-      <div><label>Brutto</label><input type="text" name="gross_total" value="{{ form_data.gross_total or '' }}"></div>
     </div>
 
-    {% if ai_extract_result or ai_voucher_result %}
-      <div class="grid2" style="margin-top:10px; align-items:start;">
-        {% if ai_extract_result %}
-        {% set ai_extract = ai_extract_result.output %}
-        <details class="box" open>
-          <summary class="box-title">KI-Belegdaten</summary>
-          <div class="box-body">
-            <div><b>Rechnungsnummer:</b> {{ ai_extract.invoice_no or '-' }}</div>
-            <div><b>Lieferant:</b> {{ ai_extract.supplier_candidate or '-' }}</div>
-            <div><b>Belegdatum:</b> {{ ai_extract.invoice_date or '-' }}</div>
-            <div><b>Fällig:</b> {{ ai_extract.due_date or '-' }}</div>
-            <div><b>Netto:</b> {{ ai_extract.amounts.net_total or '-' }}</div>
-            <div><b>Steuer:</b> {{ ai_extract.amounts.tax_total or '-' }}</div>
-            <div><b>Brutto:</b> {{ ai_extract.amounts.gross_total or '-' }}</div>
-            {% if ai_extract.flags %}<div style="margin-top:8px;"><b>Hinweise:</b> {{ ai_extract.flags|join(', ') }}</div>{% endif %}
-          </div>
-        </details>
-        {% endif %}
-        {% if ai_voucher_result %}
-        {% set ai_voucher = ai_voucher_result.output %}
-        <details class="box" open>
-          <summary class="box-title">KI-Kontierung</summary>
-          <div class="box-body">
-            <div><b>Status:</b> {{ ai_status_label(ai_voucher_result.log.status) }} | {{ ai_risk_label(ai_voucher_result.risk_class) }}</div>
-            <div><b>DATEV-Konto:</b> {{ ai_voucher.suggested_account_datev or '-' }}</div>
-            <div><b>Steuerregel:</b> {{ ai_voucher.suggested_tax_rule or '-' }}</div>
-            <div><b>Kostenstelle:</b> {{ ai_voucher.suggested_cost_center or '-' }}</div>
-            <div><b>Bestellungen:</b> {{ ai_voucher.candidate_po_ids|join(', ') if ai_voucher.candidate_po_ids else '-' }}</div>
-            <div><b>Wareneingänge:</b> {{ ai_voucher.candidate_receipt_ids|join(', ') if ai_voucher.candidate_receipt_ids else '-' }}</div>
-            <div><b>Buchungshinweis:</b> {{ ai_voucher.booking_note or '-' }}</div>
-            {% if ai_voucher.flags %}<div style="margin-top:8px;"><b>Hinweise:</b> {{ ai_voucher.flags|join(', ') }}</div>{% endif %}
-            {% if ai_voucher_review and ai_voucher_review.status == 'open' %}
-              <div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
-                <form method="post" action="/system/ki-freigaben/{{ ai_voucher_result.log.id }}" class="inline">
-                  <input type="hidden" name="action" value="approve">
-                  <button class="btn small" type="submit">Freigeben</button>
-                </form>
-                <form method="post" action="/system/ki-freigaben/{{ ai_voucher_result.log.id }}" class="inline">
-                  <input type="hidden" name="action" value="reject">
-                  <button class="btn small" type="submit">Ablehnen</button>
-                </form>
-              </div>
+    {% if form_errors %}<div class="flash error">{{ (form_errors.values()|list)[0] }}</div>{% endif %}
+
+    <form method="post" action="{{ form_action }}" class="form" data-first-error="{{ first_error_field_id or '' }}">
+      <input type="hidden" name="document_inbox_id" value="{{ document_inbox_item.id if document_inbox_item else (form_data.document_inbox_id or '') }}">
+      <input type="hidden" name="matched_check_account_id" value="{{ selected_payment_check_account_id or '' }}">
+      <input type="hidden" name="matched_transaction_id" value="{{ selected_payment_transaction_id or '' }}">
+
+      <div class="row right" style="margin-top:0; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+        <button class="btn" type="submit">Als Entwurf speichern</button>
+        <button class="btn primary" type="submit" name="next_action" value="payment_match">Fertigstellen + Zahlungsabgleich</button>
+      </div>
+
+      <div class="receipt-workbench" style="margin-top:10px;">
+        <div class="receipt-preview-pane">
+          <div class="receipt-preview-card">
+            {% if document_preview_url and document_preview_kind == 'image' %}
+              <img src="{{ document_preview_url }}" alt="{{ document_inbox_item.title if document_inbox_item else 'Dokument' }}" class="receipt-preview-image">
+            {% elif document_preview_url and document_preview_kind == 'pdf' %}
+              <object data="{{ document_preview_url }}" type="application/pdf" class="receipt-preview-frame">
+                <div class="hint">PDF-Vorschau nicht verfügbar. Bitte die Quelldatei separat öffnen.</div>
+              </object>
+            {% elif document_preview_url %}
+              <div class="hint">Die Quelldatei kann geöffnet werden, aber nicht direkt eingebettet dargestellt werden.</div>
+            {% else %}
+              <div class="hint">Noch keine lokale Vorschau verfügbar. Der Beleg kann trotzdem fachlich erfasst werden.</div>
             {% endif %}
           </div>
-        </details>
-        {% endif %}
-      </div>
-    {% endif %}
 
-    <h2>Voucher-Zeilen</h2>
-    <div class="table">
-      <div class="tr th" style="grid-template-columns: 120px 120px 90px 120px 120px 1.6fr 120px;">
-        <div>DATEV-Konto</div><div>Steuerregel</div><div>Steuer %</div><div>Netto</div><div>Brutto</div><div>Kommentar</div><div>Kostenstelle</div>
-      </div>
-      {% for line in line_rows %}
-        <div class="tr" style="grid-template-columns: 120px 120px 90px 120px 120px 1.6fr 120px; align-items:start;">
-          <div><input type="text" name="line_account_datev_id" value="{{ line.account_datev_id or '' }}"></div>
-          <div><input type="text" name="line_tax_rule_id" value="{{ line.tax_rule_id or '' }}"></div>
-          <div><input type="text" name="line_tax_rate" value="{{ line.tax_rate or '19' }}"></div>
-          <div><input type="text" name="line_sum_net" value="{{ line.sum_net or '' }}"></div>
-          <div><input type="text" name="line_sum_gross" value="{{ line.sum_gross or '' }}"></div>
-          <div><input type="text" name="line_comment" value="{{ line.comment or '' }}"></div>
-          <div><input type="text" name="line_cost_center_id" value="{{ line.cost_center_id or '' }}"></div>
+          {% if document_inbox_item %}
+            <div class="receipt-sidebar-section box">
+              <div class="box-title">Quelldokument</div>
+              <div class="box-body">
+                <div class="receipt-inline-kv">
+                  <div>Paperless-ID</div><div>{{ document_inbox_item.paperless_document_id or '-' }}</div>
+                  <div>Quelle</div><div>{{ document_source.label if document_source else '-' }}</div>
+                  <div>Belegtyp</div><div>{{ document_classification.draft_kind_label if document_classification else '-' }}</div>
+                  <div>Workflow</div><div>{{ document_classification.workflow_label if document_classification else '-' }}</div>
+                  <div>Titel</div><div>{{ document_inbox_item.title or '-' }}</div>
+                  <div>Korrespondent</div><div>{{ document_inbox_item.correspondent or '-' }}</div>
+                  {% if stored_payment_match %}
+                    <div>Kontobewegung</div><div><a href="{{ stored_payment_match.url }}">{{ stored_payment_match.tx_id }}</a>{% if stored_payment_match.check_account_id %} | {{ stored_payment_match.check_account_id }}{% endif %}</div>
+                  {% endif %}
+                  {% if document_source and document_source.from_email %}
+                    <div>Absender</div><div>{{ document_source.from_email }}</div>
+                  {% endif %}
+                  {% if document_source and document_source.subject %}
+                    <div>Mail-Betreff</div><div>{{ document_source.subject }}</div>
+                  {% endif %}
+                </div>
+                <div class="row" style="gap:8px; flex-wrap:wrap;">
+                  <a class="btn small" href="/einkauf/dokumente/{{ document_inbox_item.id }}">Dokumentprüfung</a>
+                  {% if document_source and document_source.mail_url %}<a class="btn small" href="{{ document_source.mail_url }}">Mail öffnen</a>{% endif %}
+                  {% if document_preview_url %}<a class="btn small" target="_blank" rel="noopener" href="{{ document_preview_url }}">Quelldatei öffnen</a>{% endif %}
+                </div>
+              </div>
+            </div>
+          {% endif %}
         </div>
-      {% endfor %}
-    </div>
 
-    <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
-      <button class="btn primary" type="submit">Speichern</button>
-      <a class="btn" href="/einkauf/voucher">Zurück</a>
-    </div>
-  </form>
+        <div class="receipt-sidebar">
+          <div class="receipt-sidebar-section box">
+            <div class="box-title">Details</div>
+            <div class="box-body">
+              <div class="receipt-field-grid">
+                <div>
+                  <label>Eingangsrechnung</label>
+                  <select name="purchase_invoice_id">
+                    <option value="0">-</option>
+                    {% for invoice in purchase_invoices %}
+                      <option value="{{ invoice.id }}" {% if invoice.id == selected_purchase_invoice_id %}selected{% endif %}>{{ invoice.invoice_no }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div>
+                  <label>Lieferant</label>
+                  <select name="supplier_id">
+                    <option value="0">-</option>
+                    {% for supplier in suppliers %}
+                      <option value="{{ supplier.id }}" {% if supplier.id == selected_supplier_id %}selected{% endif %}>{{ supplier.name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div>
+                  <label>Bestellung</label>
+                  <select name="purchase_order_id"><option value="0">-</option>{% for row in purchase_orders %}<option value="{{ row.id }}" {% if (form_data.purchase_order_id or '')|int == row.id %}selected{% endif %}>{{ row.order_no or row.po_number }}</option>{% endfor %}</select>
+                </div>
+                <div>
+                  <label>Wareneingang</label>
+                  <select name="goods_receipt_id"><option value="0">-</option>{% for row in goods_receipts %}<option value="{{ row.id }}" {% if (form_data.goods_receipt_id or '')|int == row.id %}selected{% endif %}>{{ row.receipt_no or ('WE-' ~ row.id) }}</option>{% endfor %}</select>
+                </div>
+                <div class="draft-field wide">
+                  <label>Belegnummer / Referenz</label>
+                  <input type="text" name="description" value="{{ form_data.description or '' }}">
+                </div>
+                <div>
+                  <label>Art</label>
+                  <input type="text" value="Ausgabe" readonly>
+                </div>
+                <div>
+                  <label>Währung</label>
+                  <input type="text" name="currency" value="{{ form_data.currency or 'EUR' }}">
+                </div>
+                <div>
+                  <label>Belegdatum</label>
+                  <input type="date" name="voucher_date" value="{{ form_data.voucher_date or '' }}">
+                </div>
+                <div>
+                  <label>Fällig am</label>
+                  <input type="date" name="due_date" value="{{ form_data.due_date or '' }}">
+                </div>
+                <div class="draft-field wide">
+                  <label>Verknüpftes Dokument</label>
+                  <input type="text" name="linked_document_id" value="{{ form_data.linked_document_id or '' }}">
+                </div>
+                <div class="draft-field wide">
+                  <label>Paperless-Dokument-ID</label>
+                  <input type="text" name="paperless_document_id" value="{{ form_data.paperless_document_id or '' }}">
+                </div>
+              </div>
+
+              <div class="receipt-metric-row" style="margin-top:10px;">
+                <div class="receipt-metric">
+                  <div class="receipt-metric-label">Netto</div>
+                  <div class="receipt-metric-value">{{ form_data.net_total or '-' }}</div>
+                  <input type="hidden" name="net_total" value="{{ form_data.net_total or '' }}">
+                </div>
+                <div class="receipt-metric">
+                  <div class="receipt-metric-label">Steuer</div>
+                  <div class="receipt-metric-value">{{ form_data.tax_total or '-' }}</div>
+                  <input type="hidden" name="tax_total" value="{{ form_data.tax_total or '' }}">
+                </div>
+                <div class="receipt-metric">
+                  <div class="receipt-metric-label">Brutto</div>
+                  <div class="receipt-metric-value">{{ form_data.gross_total or '-' }}</div>
+                  <input type="hidden" name="gross_total" value="{{ form_data.gross_total or '' }}">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {% if row %}
+            <div class="receipt-sidebar-section box">
+              <div class="box-title">sevDesk</div>
+              <div class="box-body">
+                <div class="receipt-inline-kv">
+                  <div>Status</div><div>{{ incoming_voucher_status_label(row.status) }}</div>
+                  <div>Voucher-ID</div><div>{{ row.sevdesk_voucher_id or '-' }}</div>
+                  <div>sevDesk-Status</div><div>{{ row.sevdesk_voucher_status or '-' }}</div>
+                </div>
+              </div>
+            </div>
+          {% endif %}
+
+          {% if selected_account_row %}
+            <div class="receipt-sidebar-section box">
+              <div class="box-title">Buchhaltung</div>
+              <div class="box-body">
+                <div class="receipt-inline-kv">
+                  <div>Konto</div><div>{{ selected_account_row.account_framework }} | {{ selected_account_row.account_number }}</div>
+                  <div>Bezeichnung</div><div>{{ selected_account_row.label }}</div>
+                  <div>Kategorie</div><div>{{ selected_account_row.category or '-' }}</div>
+                  <div>TaxRule</div><div>{{ selected_account_row.default_tax_rule_id or '-' }}</div>
+                  <div>sevDesk-ID</div><div>{{ selected_account_row.sevdesk_account_datev_id or '-' }}</div>
+                </div>
+              </div>
+            </div>
+          {% endif %}
+
+          {% if payment_match.error or payment_match.rows %}
+            <div class="receipt-sidebar-section box">
+              <div class="box-title">Zahlungsabgleich</div>
+              <div class="box-body">
+                {% if payment_match.error %}
+                  <div class="flash error">{{ payment_match.error }}</div>
+                {% endif %}
+                {% if payment_match.auto_candidate %}
+                  <div class="receipt-candidate selected">
+                    <div><b>Auto-Kandidat:</b> {{ payment_match.auto_candidate.text or payment_match.auto_candidate.tx_id or '-' }}</div>
+                    <div class="muted">{{ payment_match.auto_candidate.amount_cents|eur_cents }} | {{ payment_match.auto_candidate.check_account_label or payment_match.auto_candidate.check_account_id or '-' }}</div>
+                    <div class="muted">{{ payment_match.auto_candidate.reasons|join(', ') if payment_match.auto_candidate.reasons else '-' }}</div>
+                  </div>
+                {% endif %}
+                {% if stored_payment_match %}
+                  <div class="receipt-candidate selected" style="margin-top:8px;">
+                    <div><b>Gespeicherter Match:</b> <a href="{{ stored_payment_match.url }}">{{ stored_payment_match.tx_id }}</a></div>
+                    <div class="muted">{{ stored_payment_match.check_account_id or '-' }}</div>
+                  </div>
+                {% endif %}
+                {% if payment_match.rows %}
+                  <div class="receipt-candidate-list" style="margin-top:8px;">
+                    {% for item in payment_match.rows %}
+                      <div class="receipt-candidate{% if payment_match.auto_candidate and payment_match.auto_candidate.tx_id == item.tx_id %} selected{% endif %}">
+                        <div><b>{{ item.text or item.tx_id or '-' }}</b></div>
+                        <div class="muted">{{ item.amount_cents|eur_cents }} | {{ format_date(item.date) }}</div>
+                        <div class="muted">{{ item.reasons|join(', ') if item.reasons else '-' }}</div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                <div class="draft-inline-hint">Mit "Fertigstellen + Zahlungsabgleich" wird der beste Treffer in die Zahlungsmaske übernommen.</div>
+              </div>
+            </div>
+          {% endif %}
+
+          {% if ai_extract_result %}
+            {% set ai_extract = ai_extract_result.output %}
+            <details class="receipt-sidebar-section box collapse-box" open>
+              <summary class="box-title">KI-Belegdaten</summary>
+              <div class="box-body">
+                <div class="receipt-inline-kv">
+                  <div>Rechnungsnummer</div><div>{{ ai_extract.invoice_no or '-' }}</div>
+                  <div>Lieferant</div><div>{{ ai_extract.supplier_candidate or '-' }}</div>
+                  <div>Belegdatum</div><div>{{ ai_extract.invoice_date or '-' }}</div>
+                  <div>Fällig</div><div>{{ ai_extract.due_date or '-' }}</div>
+                  <div>Netto</div><div>{{ ai_extract.amounts.net_total or '-' }}</div>
+                  <div>Steuer</div><div>{{ ai_extract.amounts.tax_total or '-' }}</div>
+                  <div>Brutto</div><div>{{ ai_extract.amounts.gross_total or '-' }}</div>
+                </div>
+                {% if ai_extract.flags %}<div class="draft-inline-hint">Hinweise: {{ ai_extract.flags|join(', ') }}</div>{% endif %}
+              </div>
+            </details>
+          {% endif %}
+
+          {% if ai_voucher_result %}
+            {% set ai_voucher = ai_voucher_result.output %}
+            <details class="receipt-sidebar-section box collapse-box" open>
+              <summary class="box-title">KI-Kontierung</summary>
+              <div class="box-body">
+                <div class="receipt-inline-kv">
+                  <div>Status</div><div>{{ ai_status_label(ai_voucher_result.log.status) }} | {{ ai_risk_label(ai_voucher_result.risk_class) }}</div>
+                  <div>DATEV-Konto</div><div>{{ ai_voucher.suggested_account_datev or '-' }}</div>
+                  <div>Kontobezeichnung</div><div>{{ ai_voucher.account_label or '-' }}</div>
+                  <div>Quelle</div><div>{{ ai_voucher.account_source_type or '-' }}</div>
+                  <div>Steuerregel</div><div>{{ ai_voucher.suggested_tax_rule or '-' }}</div>
+                  <div>Kostenstelle</div><div>{{ ai_voucher.suggested_cost_center or '-' }}</div>
+                </div>
+                {% if ai_voucher.flags %}<div class="draft-inline-hint">Hinweise: {{ ai_voucher.flags|join(', ') }}</div>{% endif %}
+                {% if ai_voucher_review and ai_voucher_review.status == 'open' %}
+                  <div class="row" style="gap:8px; flex-wrap:wrap;">
+                    <form method="post" action="/system/ki-freigaben/{{ ai_voucher_result.log.id }}" class="inline">
+                      <input type="hidden" name="action" value="approve">
+                      <button class="btn small" type="submit">Freigeben</button>
+                    </form>
+                    <form method="post" action="/system/ki-freigaben/{{ ai_voucher_result.log.id }}" class="inline">
+                      <input type="hidden" name="action" value="reject">
+                      <button class="btn small" type="submit">Ablehnen</button>
+                    </form>
+                  </div>
+                {% endif %}
+              </div>
+            </details>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="box draft-lines-box" style="margin-top:12px;">
+        <div class="box-title">Buchhaltung</div>
+        <div class="box-body">
+          <div class="row" style="margin-top:0; gap:8px; flex-wrap:wrap;">
+            <a class="btn small" href="/einkauf/buchungskonten">Buchungskonten verwalten</a>
+          </div>
+          <div class="table" style="margin-top:10px;">
+            <div class="tr th" style="grid-template-columns: 120px 120px 90px 120px 120px 1.6fr 120px;">
+              <div>DATEV-Konto</div><div>Steuerregel</div><div>Steuer %</div><div>Netto</div><div>Brutto</div><div>Beschreibung</div><div>Kostenstelle</div>
+            </div>
+            {% for line in line_rows %}
+              <div class="tr" style="grid-template-columns: 120px 120px 90px 120px 120px 1.6fr 120px; align-items:start;">
+                <div><input type="text" list="accounting-account-list" name="line_account_datev_id" value="{{ line.account_datev_id or '' }}"></div>
+                <div><input type="text" name="line_tax_rule_id" value="{{ line.tax_rule_id or '' }}"></div>
+                <div><input type="text" name="line_tax_rate" value="{{ line.tax_rate or '19' }}"></div>
+                <div><input type="text" name="line_sum_net" value="{{ line.sum_net or '' }}"></div>
+                <div><input type="text" name="line_sum_gross" value="{{ line.sum_gross or '' }}"></div>
+                <div><input type="text" name="line_comment" value="{{ line.comment or '' }}"></div>
+                <div><input type="text" name="line_cost_center_id" value="{{ line.cost_center_id or '' }}"></div>
+              </div>
+            {% endfor %}
+          </div>
+          <datalist id="accounting-account-list">
+            {% for account in accounting_accounts %}
+              <option value="{{ account.account_number }}">{{ account.account_framework }} | {{ account.account_number }} | {{ account.label }}</option>
+            {% endfor %}
+          </datalist>
+        </div>
+      </div>
+    </form>
+  </div>
 </div>
 {% endblock %}

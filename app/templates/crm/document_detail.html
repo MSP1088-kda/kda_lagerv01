@@ -23,7 +23,7 @@
           <div><b>Kunden</b></div>
           {% for row in candidates.customers[:5] %}<div><a href="/crm/kunden/{{ row.id }}">{{ row.customer_no_internal }}</a></div>{% endfor %}
         {% endif %}
-        {% if candidates.cases %}
+        {% if internal_service_orders_enabled and candidates.cases %}
           <div style="margin-top:8px;"><b>Vorgänge</b></div>
           {% for row in candidates.cases[:5] %}<div><a href="/crm/vorgaenge/{{ row.id }}">{{ row.case_no }} | {{ row.title }}</a></div>{% endfor %}
         {% endif %}
@@ -43,7 +43,7 @@
     <label>Zieltyp</label>
     <select name="object_type">
       <option value="customer">Kunde</option>
-      <option value="case">Vorgang</option>
+      {% if internal_service_orders_enabled %}<option value="case">Vorgang</option>{% endif %}
       <option value="repair_order">Reparaturauftrag</option>
       <option value="purchase_order">Bestellung</option>
       <option value="goods_receipt">Wareneingang</option>
@@ -60,13 +60,15 @@
           {% for row in candidates.customers %}<option value="{{ row.id }}">{{ row.customer_no_internal }}</option>{% endfor %}
         </select>
       </div>
-      <div>
-        <label>Vorgang</label>
-        <select name="case_id">
-          <option value="0">-</option>
-          {% for row in candidates.cases %}<option value="{{ row.id }}">{{ row.case_no }} | {{ row.title }}</option>{% endfor %}
-        </select>
-      </div>
+      {% if internal_service_orders_enabled %}
+        <div>
+          <label>Vorgang</label>
+          <select name="case_id">
+            <option value="0">-</option>
+            {% for row in candidates.cases %}<option value="{{ row.id }}">{{ row.case_no }} | {{ row.title }}</option>{% endfor %}
+          </select>
+        </div>
+      {% endif %}
       <div>
         <label>Reparaturauftrag</label>
         <select name="repair_order_id">
@@ -117,7 +119,7 @@
 
 {% block help %}
 <ul>
-  <li>Die Trefferliste bündelt erkannte Kunden, Vorgänge und Einkaufsbezüge ohne lange Suchwege.</li>
+  <li>Die Trefferliste bündelt erkannte Kunden und Einkaufsbezüge ohne lange Suchwege.</li>
   <li>Beim Speichern wird die Fachzuordnung im Hauptsystem und der Paperless-Link zusammen gepflegt.</li>
   <li>Ignorierte Dokumente bleiben sichtbar, werden aber nicht mehr als offen behandelt.</li>
 </ul>

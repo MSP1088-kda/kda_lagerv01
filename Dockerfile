@@ -17,6 +17,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
+COPY scripts /app/scripts
 COPY README.md /app/README.md
 COPY Dockerfile /app/Dockerfile
 COPY docker-compose.yml /app/docker-compose.yml

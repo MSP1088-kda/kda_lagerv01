@@ -1,0 +1,46 @@
+<div class="box pdf-marker-viewer-panel">
+  <div class="box-title">{{ pdf_marker_title or "Datenblatt markieren" }}</div>
+  <div class="box-body">
+    <div
+      class="pdf-marker-viewer"
+      data-pdf-marker-root
+      data-preview-base="{{ pdf_preview_base_url }}"
+      data-page-count="{{ pdf_page_count or 1 }}"
+      data-initial-page="1"
+      data-initial-zoom="1.4"
+    >
+      <div class="row pdf-marker-toolbar">
+        <button class="btn small" type="button" data-pdf-prev>&lt; Seite</button>
+        <div class="pdf-marker-page-label" data-pdf-page-label>Seite 1 / {{ pdf_page_count or 1 }}</div>
+        <button class="btn small" type="button" data-pdf-next>Seite &gt;</button>
+        <button class="btn small" type="button" data-pdf-zoom-out>-</button>
+        <div class="pdf-marker-zoom-label" data-pdf-zoom-label>100%</div>
+        <button class="btn small" type="button" data-pdf-zoom-in>+</button>
+        <button class="btn small" type="button" data-pdf-zoom-reset>Reset</button>
+        {% if pdf_download_url %}
+        <a class="btn small" href="{{ pdf_download_url }}" target="_blank" rel="noopener">PDF separat öffnen</a>
+        {% endif %}
+        {% if pdf_back_url %}
+        <a class="btn small" href="{{ pdf_back_url }}">{{ pdf_back_label or "Zurück" }}</a>
+        {% endif %}
+      </div>
+
+      <div class="pdf-marker-stage-wrap">
+        <div class="pdf-marker-stage" data-pdf-stage tabindex="0" aria-label="PDF-Seite für Markierungen">
+          <img
+            data-pdf-image
+            src="{{ pdf_preview_base_url }}?page=1&zoom=1.4"
+            alt="PDF-Seite"
+            loading="eager"
+          >
+          <div class="pdf-marker-layer" data-pdf-layer></div>
+          <div class="pdf-marker-draft" data-pdf-draft hidden></div>
+        </div>
+      </div>
+
+      <div class="hint" data-pdf-status>
+        {{ pdf_marker_help or "Merkmal rechts wählen und im PDF mit gedrückter Maustaste markieren." }}
+      </div>
+    </div>
+  </div>
+</div>

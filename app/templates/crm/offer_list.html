@@ -1,34 +1,41 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <div class="row" style="justify-content:space-between; gap:8px; flex-wrap:wrap;">
+  <div class="customer-section-head hero">
     <div>
       <h1>Angebote</h1>
-      <div class="hint">Lokale Angebotsentwürfe mit sevDesk-Vollzug.</div>
+      <div class="hint">{{ items|length }} Einträge mit relevanten Angebotsdaten.</div>
     </div>
     {% if role_flags.is_admin %}<a class="btn primary" href="/crm/angebote/neu">Neues Angebot</a>{% endif %}
   </div>
 
-  <div class="table" style="margin-top:10px;">
-    <div class="tr th" style="grid-template-columns: 130px 1.2fr 1.1fr 140px 140px 140px;">
-      <div>Referenz</div>
-      <div>Vorgang</div>
-      <div>Kunde</div>
-      <div>Status</div>
-      <div>Gesamt</div>
-      <div>Aktion</div>
-    </div>
-    {% for row in rows %}
-      <div class="tr" style="grid-template-columns: 130px 1.2fr 1.1fr 140px 140px 140px;">
-        <div>{{ row.sevdesk_order_number or ('ANG-' ~ '%04d'|format(row.id)) }}</div>
-        <div>{% if case_map.get(row.case_id) %}<a href="/crm/vorgaenge/{{ row.case_id }}">{{ case_map.get(row.case_id).case_no }}</a>{% else %}-{% endif %}</div>
-        <div>{{ customer_labels.get(row.master_customer_id, '-') }}</div>
-        <div>{{ offer_status_label(row.status) }}</div>
-        <div>{{ totals.get(row.id, 0)|eur_cents }}</div>
-        <div><a class="btn small" href="/crm/angebote/{{ row.id }}">Öffnen</a></div>
+  {% if items %}
+    {% for item in items %}
+      <div class="box" style="margin-top:10px;">
+        <div class="box-title">{{ item.number_label }} | {{ item.customer_label }}</div>
+        <div class="box-body">
+          <div class="customer-kpi-grid">
+            <div class="customer-kpi"><span class="label">Status</span><strong>{{ item.status_label }}</strong></div>
+            <div class="customer-kpi"><span class="label">Erstellt</span><strong>{{ format_date(item.created_at) if item.created_at else '-' }}</strong></div>
+            {% if item.sent_at %}<div class="customer-kpi"><span class="label">Versendet</span><strong>{{ format_date(item.sent_at) }}</strong></div>{% endif %}
+            <div class="customer-kpi"><span class="label">Gesamt brutto</span><strong>{{ item.total_gross_cents|eur_cents }}</strong></div>
+          </div>
+          {% if item.case_label %}
+            <div style="margin-top:10px;"><b>Vorgang:</b> {{ item.case_label }}</div>
+          {% endif %}
+          {% if item.note_preview %}
+            <div style="margin-top:10px;"><b>Hinweis:</b> {{ item.note_preview }}</div>
+          {% endif %}
+          <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
+            <a class="btn small" href="{{ item.detail_url }}">Öffnen</a>
+            {% if item.pdf_url %}<a class="btn small" href="{{ item.pdf_url }}" target="_blank" rel="noopener">PDF</a>{% endif %}
+            {% if item.external_url %}<a class="btn small" href="{{ item.external_url }}" target="_blank" rel="noopener">In sevDesk öffnen</a>{% endif %}
+          </div>
+        </div>
       </div>
     {% endfor %}
-    {% if not rows %}<div class="muted">Noch keine Angebote vorhanden.</div>{% endif %}
-  </div>
+  {% else %}
+    <div class="muted" style="margin-top:10px;">Noch keine Angebote vorhanden.</div>
+  {% endif %}
 </div>
 {% endblock %}

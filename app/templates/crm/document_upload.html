@@ -19,7 +19,7 @@
     <label>Zieltyp</label>
     <select name="object_type">
       <option value="customer"{% if object_type == 'customer' %} selected{% endif %}>Kunde</option>
-      <option value="case"{% if object_type == 'case' %} selected{% endif %}>Vorgang</option>
+      {% if internal_service_orders_enabled %}<option value="case"{% if object_type == 'case' %} selected{% endif %}>Vorgang</option>{% endif %}
       <option value="repair_order"{% if object_type == 'repair_order' %} selected{% endif %}>Reparaturauftrag</option>
     </select>
 
@@ -66,6 +66,6 @@
 <ul>
   <li>Der Upload braucht immer ein fachliches Ziel, damit das Dokument nicht lose bleibt.</li>
   <li>Lokale Dateien sind sofort sichtbar; bei aktiver Paperless-Anbindung wird direkt archiviert.</li>
-  <li>Für Kunden und Vorgänge kannst du den Upload direkt aus der Detailseite vorbelegen.</li>
+  <li>Für Kunden und Reparaturaufträge kannst du den Upload direkt aus der Detailseite vorbelegen.</li>
 </ul>
 {% endblock %}

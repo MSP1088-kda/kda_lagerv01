@@ -984,6 +984,58 @@
     applyFilter('');
   }
 
+  function initFilterSelectInputs(){
+    const inputs = Array.from(document.querySelectorAll('[data-filter-select]'));
+    inputs.forEach(function(input){
+      const inputId = String(input.id || '').trim();
+      const selectId = String(input.getAttribute('data-filter-select') || '').trim();
+      if(!inputId || !selectId) return;
+      attachSelectFilter(inputId, selectId);
+    });
+  }
+
+  function initCustomerListLiveSearch(){
+    const input = document.getElementById('crm_customer_q');
+    const rows = Array.from(document.querySelectorAll('[data-customer-row]'));
+    if(!input || !rows.length) return;
+    const empty = document.querySelector('[data-customer-empty]');
+
+    const apply = function(){
+      const q = normalizeText(input.value || '').trim();
+      let visibleCount = 0;
+      let lastVisibleLink = '';
+      rows.forEach(function(row){
+        const haystack = normalizeText(row.getAttribute('data-customer-search') || '');
+        const visible = !q || haystack.indexOf(q) !== -1;
+        row.hidden = !visible;
+        if(visible){
+          visibleCount += 1;
+          const link = row.querySelector('a[href]');
+          if(link){
+            lastVisibleLink = String(link.getAttribute('href') || '').trim();
+          }
+        }
+      });
+      if(empty){
+        empty.hidden = visibleCount > 0;
+      }
+      return { visibleCount, lastVisibleLink };
+    };
+
+    input.addEventListener('input', apply);
+    input.addEventListener('keydown', function(e){
+      if(e.key !== 'Enter'){
+        return;
+      }
+      const state = apply();
+      if(state.visibleCount === 1 && state.lastVisibleLink){
+        e.preventDefault();
+        navigateTo(state.lastVisibleLink);
+      }
+    });
+    apply();
+  }
+
   function formatTraitRangeValue(raw){
     const n = Number(raw);
     if(!Number.isFinite(n)){
@@ -1192,19 +1244,130 @@
   function initCatalogListCascadeFilter(){
     const form = document.querySelector('form[data-catalog-v2-filter="1"]');
     if(!form) return;
-    const kindSelect = form.querySelector('#catalog_kind_id');
-    if(!kindSelect) return;
+    const filterRegionSelector = '[data-catalog-filter-region="1"]';
+    const resultsRegionSelector = '[data-catalog-results-region="1"]';
+    const liveStatusSelector = '[data-catalog-live-status="1"]';
+    let debounceTimer = null;
+    let requestSeq = 0;
+    let activeController = null;
 
-    const submit = function(){
-      if(typeof form.requestSubmit === 'function'){
-        form.requestSubmit();
-      }else{
-        form.submit();
+    const setBusy = function(isBusy, message){
+      const resultsRegion = document.querySelector(resultsRegionSelector);
+      const liveStatus = document.querySelector(liveStatusSelector);
+      if(resultsRegion){
+        resultsRegion.setAttribute('data-loading', isBusy ? '1' : '0');
+      }
+      if(liveStatus){
+        liveStatus.textContent = isBusy ? (message || 'Filtert ...') : (message || '');
       }
     };
 
-    kindSelect.addEventListener('change', function(){
-      submit();
+    const buildUrl = function(){
+      const action = form.getAttribute('action') || window.location.pathname;
+      const url = new URL(action, window.location.origin);
+      const formData = new FormData(form);
+      formData.forEach(function(value, key){
+        const cleanKey = String(key || '').trim();
+        if(!cleanKey || value instanceof File) return;
+        const cleanValue = String(value || '').trim();
+        if(cleanValue === '') return;
+        url.searchParams.append(cleanKey, cleanValue);
+      });
+      return url;
+    };
+
+    const applyResponse = function(html, url){
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const currentFilterRegion = form.querySelector(filterRegionSelector);
+      const nextFilterRegion = doc.querySelector(filterRegionSelector);
+      const currentPanel = form.querySelector('[data-catalog-filter-panel="1"]');
+      const currentCollapsed = currentPanel ? currentPanel.getAttribute('data-collapsed') : '0';
+      if(currentFilterRegion && nextFilterRegion){
+        currentFilterRegion.replaceWith(nextFilterRegion);
+      }
+      const currentResultsRegion = document.querySelector(resultsRegionSelector);
+      const nextResultsRegion = doc.querySelector(resultsRegionSelector);
+      if(currentResultsRegion && nextResultsRegion){
+        currentResultsRegion.replaceWith(nextResultsRegion);
+      }
+      const toggleBtn = form.querySelector('[data-catalog-filter-toggle="1"]');
+      const nextPanel = form.querySelector('[data-catalog-filter-panel="1"]');
+      if(toggleBtn && nextPanel){
+        const collapsed = currentCollapsed === '1';
+        nextPanel.setAttribute('data-collapsed', collapsed ? '1' : '0');
+        toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        toggleBtn.textContent = collapsed ? 'Filter' : 'Filter ausblenden';
+      }
+      const finalUrl = url.pathname + (url.search || '');
+      window.history.replaceState({}, '', finalUrl);
+    };
+
+    const fetchLive = function(){
+      const url = buildUrl();
+      requestSeq += 1;
+      const currentSeq = requestSeq;
+      if(activeController && typeof activeController.abort === 'function'){
+        activeController.abort();
+      }
+      activeController = typeof AbortController === 'function' ? new AbortController() : null;
+      setBusy(true, 'Filtert ...');
+      fetch(url.toString(), {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: {'X-Requested-With': 'fetch'},
+        signal: activeController ? activeController.signal : undefined,
+      })
+        .then(function(response){
+          if(!response.ok){
+            throw new Error('HTTP ' + response.status);
+          }
+          return response.text();
+        })
+        .then(function(html){
+          if(currentSeq !== requestSeq) return;
+          applyResponse(html, url);
+          setBusy(false, '');
+        })
+        .catch(function(error){
+          if(error && error.name === 'AbortError'){
+            return;
+          }
+          window.location.assign(url.toString());
+        });
+    };
+
+    const scheduleFetch = function(delay){
+      if(debounceTimer){
+        window.clearTimeout(debounceTimer);
+      }
+      debounceTimer = window.setTimeout(fetchLive, Math.max(0, delay || 0));
+    };
+
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      fetchLive();
+    });
+
+    form.addEventListener('change', function(e){
+      const target = e.target;
+      if(!(target instanceof HTMLElement)) return;
+      if(!target.closest('input,select,textarea')) return;
+      scheduleFetch(target.id === 'catalog_kind_id' ? 60 : 100);
+    });
+
+    form.addEventListener('input', function(e){
+      const target = e.target;
+      if(!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
+      const fieldName = String(target.name || '').trim();
+      if(!fieldName) return;
+      if(fieldName === 'q'){
+        scheduleFetch(220);
+        return;
+      }
+      if(fieldName.indexOf('f_') === 0){
+        scheduleFetch(140);
+      }
     });
 
     form.addEventListener('keydown', function(e){
@@ -1223,7 +1386,7 @@
         }
       });
       e.preventDefault();
-      submit();
+      fetchLive();
     });
   }
 
@@ -1231,13 +1394,18 @@
     const form = document.querySelector('form[data-catalog-v2-filter="1"]');
     if(!form) return;
     const toggleBtn = form.querySelector('[data-catalog-filter-toggle="1"]');
-    const panel = form.querySelector('[data-catalog-filter-panel="1"]');
-    if(!toggleBtn || !panel) return;
+    if(!toggleBtn) return;
 
     const mq = window.matchMedia('(max-width: 900px)');
     let userTouched = false;
 
+    const getPanel = function(){
+      return form.querySelector('[data-catalog-filter-panel="1"]');
+    };
+
     const setCollapsed = function(nextCollapsed){
+      const panel = getPanel();
+      if(!panel) return;
       const collapsed = !!nextCollapsed;
       panel.setAttribute('data-collapsed', collapsed ? '1' : '0');
       toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
@@ -1245,6 +1413,8 @@
     };
 
     const syncMode = function(){
+      const panel = getPanel();
+      if(!panel) return;
       if(mq.matches){
         if(!userTouched){
           setCollapsed(true);
@@ -1257,7 +1427,8 @@
 
     toggleBtn.addEventListener('click', function(){
       userTouched = true;
-      const isCollapsed = panel.getAttribute('data-collapsed') === '1';
+      const panel = getPanel();
+      const isCollapsed = !panel || panel.getAttribute('data-collapsed') === '1';
       setCollapsed(!isCollapsed);
     });
 
@@ -2128,6 +2299,14 @@
     const imageOverlayNextBtn = document.getElementById('productImageOverlayNext');
     const imageOverlayCounter = document.getElementById('productImageOverlayCounter');
     const imageLinks = Array.from(document.querySelectorAll('[data-product-image-open="1"]'));
+    const documentOverlay = document.getElementById('productDocumentOverlay');
+    const documentOverlayFrame = document.getElementById('productDocumentOverlayFrame');
+    const documentOverlayTitle = document.getElementById('productDocumentOverlayTitle');
+    const documentOverlayCloseBtn = document.getElementById('productDocumentOverlayClose');
+    const documentOverlayDownload = document.getElementById('productDocumentOverlayDownload');
+    const documentOverlayPrint = document.getElementById('productDocumentOverlayPrint');
+    const documentOverlayExternal = document.getElementById('productDocumentOverlayExternal');
+    const documentButtons = Array.from(document.querySelectorAll('[data-product-document-open="1"]'));
     const imageItems = imageLinks.map(function(link, index){
       const href = String(link.getAttribute('href') || '').trim();
       const thumb = link.querySelector('img');
@@ -2262,6 +2441,118 @@
           return;
         }
         if(e.key === 'ArrowRight' && showNextImage()){
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }, true);
+    }
+
+    if(documentOverlay && documentOverlayFrame && documentButtons.length){
+      let lastDocumentTrigger = null;
+
+      const closeDocumentOverlay = function(){
+        if(documentOverlay.hidden){
+          return false;
+        }
+        documentOverlay.hidden = true;
+        documentOverlay.setAttribute('aria-hidden', 'true');
+        documentOverlayFrame.setAttribute('src', 'about:blank');
+        document.body.classList.remove('document-lightbox-open');
+        if(lastDocumentTrigger && typeof lastDocumentTrigger.focus === 'function'){
+          lastDocumentTrigger.focus();
+        }
+        lastDocumentTrigger = null;
+        return true;
+      };
+
+      const openDocumentOverlay = function(triggerEl){
+        const viewerUrl = String(triggerEl.getAttribute('data-document-viewer-url') || '').trim();
+        const downloadUrl = String(triggerEl.getAttribute('data-document-download-url') || '').trim();
+        const sourceUrl = String(triggerEl.getAttribute('data-document-source-url') || '').trim();
+        const title = String(triggerEl.getAttribute('data-document-title') || 'Dokument').trim();
+        const frameUrl = viewerUrl || sourceUrl || downloadUrl;
+        if(!frameUrl){
+          return;
+        }
+        lastDocumentTrigger = triggerEl;
+        if(documentOverlayTitle){
+          documentOverlayTitle.textContent = title;
+        }
+        if(documentOverlayDownload){
+          if(downloadUrl){
+            documentOverlayDownload.setAttribute('href', downloadUrl);
+            documentOverlayDownload.hidden = false;
+          }else{
+            documentOverlayDownload.setAttribute('href', '#');
+            documentOverlayDownload.hidden = true;
+          }
+        }
+        if(documentOverlayExternal){
+          const externalUrl = sourceUrl || viewerUrl || downloadUrl;
+          if(externalUrl){
+            documentOverlayExternal.setAttribute('href', externalUrl);
+            documentOverlayExternal.hidden = false;
+          }else{
+            documentOverlayExternal.setAttribute('href', '#');
+            documentOverlayExternal.hidden = true;
+          }
+        }
+        if(documentOverlayPrint){
+          documentOverlayPrint.disabled = !viewerUrl;
+        }
+        documentOverlayFrame.setAttribute('src', frameUrl);
+        documentOverlay.hidden = false;
+        documentOverlay.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('document-lightbox-open');
+        if(documentOverlayCloseBtn){
+          documentOverlayCloseBtn.focus();
+        }
+      };
+
+      documentButtons.forEach(function(button){
+        button.addEventListener('click', function(e){
+          e.preventDefault();
+          openDocumentOverlay(button);
+        });
+      });
+
+      if(documentOverlayCloseBtn){
+        documentOverlayCloseBtn.addEventListener('click', function(){
+          closeDocumentOverlay();
+        });
+      }
+      if(documentOverlayPrint){
+        documentOverlayPrint.addEventListener('click', function(){
+          try{
+            if(documentOverlayFrame.contentWindow){
+              documentOverlayFrame.contentWindow.focus();
+              documentOverlayFrame.contentWindow.print();
+              return;
+            }
+          }catch(err){
+          }
+          const fallbackUrl = String(documentOverlayExternal && documentOverlayExternal.getAttribute('href') || '').trim();
+          if(fallbackUrl){
+            window.open(fallbackUrl, '_blank', 'noopener');
+          }
+        });
+      }
+
+      documentOverlay.addEventListener('click', function(e){
+        const target = e.target;
+        if(!(target instanceof Element)){
+          return;
+        }
+        if(target === documentOverlay || target.hasAttribute('data-document-lightbox-close')){
+          closeDocumentOverlay();
+        }
+      });
+
+      document.addEventListener('keydown', function(e){
+        if(documentOverlay.hidden){
+          return;
+        }
+        if(e.key === 'Escape' && closeDocumentOverlay()){
           e.preventDefault();
           e.stopPropagation();
         }
@@ -2825,6 +3116,546 @@
     }
   }
 
+  function initPdfMarkerReviews(){
+    const scopes = Array.prototype.slice.call(document.querySelectorAll('[data-pdf-marker-scope]'));
+    if(!scopes.length){
+      return;
+    }
+
+    function clamp(value, min, max){
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function parseMarker(rawValue){
+      const raw = String(rawValue || '').trim();
+      if(!raw){
+        return null;
+      }
+      try{
+        const parsed = JSON.parse(raw);
+        if(!parsed || typeof parsed !== 'object'){
+          return null;
+        }
+        const page = Math.max(1, parseInt(parsed.page || 1, 10) || 1);
+        const x = clamp(Number(parsed.x || 0), 0, 100);
+        const y = clamp(Number(parsed.y || 0), 0, 100);
+        const w = clamp(Number(parsed.w || 0), 0, 100 - x);
+        const h = clamp(Number(parsed.h || 0), 0, 100 - y);
+        if(!w || !h){
+          return null;
+        }
+        return {
+          page: page,
+          x: Number(x.toFixed(3)),
+          y: Number(y.toFixed(3)),
+          w: Number(w.toFixed(3)),
+          h: Number(h.toFixed(3))
+        };
+      }catch(_e){
+        return null;
+      }
+    }
+
+    function markerSummary(marker){
+      if(!marker){
+        return 'Keine Markierung';
+      }
+      return 'Seite ' + String(marker.page) + ' · ' + String(Math.round(marker.x)) + '% / ' + String(Math.round(marker.y)) + '%';
+    }
+
+    scopes.forEach(function(scope){
+      const root = scope.querySelector('[data-pdf-marker-root]');
+      if(!root || root.getAttribute('data-pdf-marker-ready') === '1'){
+        return;
+      }
+      root.setAttribute('data-pdf-marker-ready', '1');
+
+      const previewBase = String(root.getAttribute('data-preview-base') || '').trim();
+      if(!previewBase){
+        return;
+      }
+
+      const image = root.querySelector('[data-pdf-image]');
+      const layer = root.querySelector('[data-pdf-layer]');
+      const draft = root.querySelector('[data-pdf-draft]');
+      const stage = root.querySelector('[data-pdf-stage]');
+      const stageWrap = root.querySelector('.pdf-marker-stage-wrap');
+      const statusEl = root.querySelector('[data-pdf-status]');
+      const pageLabelEl = root.querySelector('[data-pdf-page-label]');
+      const zoomLabelEl = root.querySelector('[data-pdf-zoom-label]');
+      const prevBtn = root.querySelector('[data-pdf-prev]');
+      const nextBtn = root.querySelector('[data-pdf-next]');
+      const zoomInBtn = root.querySelector('[data-pdf-zoom-in]');
+      const zoomOutBtn = root.querySelector('[data-pdf-zoom-out]');
+      const zoomResetBtn = root.querySelector('[data-pdf-zoom-reset]');
+      const countTotalEl = scope.querySelector('[data-pdf-marker-count-total]');
+      const countMarkedEl = scope.querySelector('[data-pdf-marker-count-marked]');
+      const countOpenEl = scope.querySelector('[data-pdf-marker-count-open]');
+      const countRequiredOpenEl = scope.querySelector('[data-pdf-marker-count-required-open]');
+      const progressFillEl = scope.querySelector('[data-pdf-marker-progress-fill]');
+      const progressLabelEl = scope.querySelector('[data-pdf-marker-progress-label]');
+      const nextOpenBtn = scope.querySelector('[data-pdf-marker-next-open]');
+      const firstOpenBtn = scope.querySelector('[data-pdf-marker-first-open]');
+      if(!image || !layer || !draft || !stage){
+        return;
+      }
+
+      const fields = Array.prototype.slice.call(scope.querySelectorAll('[data-pdf-marker-field]')).map(function(el){
+        const attrId = parseInt(el.getAttribute('data-attr-id') || '0', 10) || 0;
+        const input = el.querySelector('[data-pdf-marker-input]');
+        if(!attrId || !input){
+          return null;
+        }
+        return {
+          el: el,
+          attrId: attrId,
+          attrName: String(el.getAttribute('data-attr-name') || '').trim() || ('Merkmal ' + String(attrId)),
+          input: input,
+          summary: el.querySelector('[data-pdf-marker-summary]'),
+          chip: el.querySelector('[data-pdf-marker-chip]'),
+          selectBtn: el.querySelector('[data-pdf-marker-select]'),
+          openBtn: el.querySelector('[data-pdf-marker-open]'),
+          clearBtn: el.querySelector('[data-pdf-marker-clear]'),
+          required: String(el.getAttribute('data-pdf-marker-required') || '') === '1'
+        };
+      }).filter(Boolean);
+      if(!fields.length){
+        return;
+      }
+
+      const markers = {};
+      fields.forEach(function(field){
+        const marker = parseMarker(field.input.value);
+        if(marker){
+          markers[field.attrId] = marker;
+        }
+      });
+
+      let activeAttrId = 0;
+      let pageCount = Math.max(1, parseInt(root.getAttribute('data-page-count') || '1', 10) || 1);
+      let currentPage = clamp(parseInt(root.getAttribute('data-initial-page') || '1', 10) || 1, 1, pageCount);
+      let zoom = clamp(parseFloat(root.getAttribute('data-initial-zoom') || '1.4') || 1.4, 0.8, 2.4);
+      let dragState = null;
+      let afterImageLoad = null;
+
+      function fieldById(attrId){
+        for(let i = 0; i < fields.length; i += 1){
+          if(fields[i].attrId === attrId){
+            return fields[i];
+          }
+        }
+        return null;
+      }
+
+      function nextUnmarkedField(afterAttrId){
+        if(!fields.length){
+          return null;
+        }
+        let startIndex = 0;
+        for(let i = 0; i < fields.length; i += 1){
+          if(fields[i].attrId === afterAttrId){
+            startIndex = i + 1;
+            break;
+          }
+        }
+        for(let offset = 0; offset < fields.length; offset += 1){
+          const field = fields[(startIndex + offset) % fields.length];
+          if(!markers[field.attrId]){
+            return field;
+          }
+        }
+        return fieldById(afterAttrId) || fields[0];
+      }
+
+      function setStatus(message){
+        if(statusEl){
+          statusEl.textContent = String(message || '');
+        }
+      }
+
+      function updateToolbar(){
+        if(pageLabelEl){
+          pageLabelEl.textContent = 'Seite ' + String(currentPage) + ' / ' + String(pageCount);
+        }
+        if(zoomLabelEl){
+          zoomLabelEl.textContent = String(Math.round(zoom * 100)) + '%';
+        }
+        if(prevBtn){
+          prevBtn.disabled = currentPage <= 1;
+        }
+        if(nextBtn){
+          nextBtn.disabled = currentPage >= pageCount;
+        }
+      }
+
+      function writeMarker(field, marker){
+        if(marker){
+          markers[field.attrId] = marker;
+          field.input.value = JSON.stringify(marker);
+        }else{
+          delete markers[field.attrId];
+          field.input.value = '';
+        }
+      }
+
+      function updateFieldStates(){
+        let markedCount = 0;
+        let requiredOpenCount = 0;
+        fields.forEach(function(field){
+          const marker = markers[field.attrId] || null;
+          const isActive = field.attrId === activeAttrId;
+          field.el.classList.toggle('is-active', field.attrId === activeAttrId);
+          field.el.classList.toggle('has-marker', !!marker);
+          if(marker){
+            markedCount += 1;
+          }else if(field.required){
+            requiredOpenCount += 1;
+          }
+          if(field.summary){
+            field.summary.textContent = markerSummary(marker);
+          }
+          if(field.chip){
+            field.chip.classList.toggle('is-active', !marker && isActive);
+            field.chip.classList.toggle('is-marked', !!marker);
+            field.chip.textContent = marker ? 'Markiert' : (isActive ? 'Aktiv' : 'Offen');
+          }
+          if(field.openBtn){
+            field.openBtn.hidden = !marker;
+          }
+          if(field.clearBtn){
+            field.clearBtn.hidden = !marker;
+          }
+          if(field.selectBtn){
+            field.selectBtn.textContent = field.attrId === activeAttrId ? 'Aktiv im PDF' : 'Im PDF markieren';
+          }
+        });
+        const totalCount = fields.length;
+        const openCount = Math.max(0, totalCount - markedCount);
+        const percent = totalCount ? Math.round((markedCount / totalCount) * 100) : 0;
+        if(countTotalEl){
+          countTotalEl.textContent = String(totalCount);
+        }
+        if(countMarkedEl){
+          countMarkedEl.textContent = String(markedCount);
+        }
+        if(countOpenEl){
+          countOpenEl.textContent = String(openCount);
+        }
+        if(countRequiredOpenEl){
+          countRequiredOpenEl.textContent = String(requiredOpenCount);
+        }
+        if(progressFillEl){
+          progressFillEl.style.width = String(percent) + '%';
+        }
+        if(progressLabelEl){
+          progressLabelEl.textContent = totalCount ? (String(markedCount) + ' von ' + String(totalCount) + ' Merkmalen markiert') : 'Keine Merkmale';
+        }
+      }
+
+      function scrollToMarker(marker){
+        if(!marker || !stageWrap){
+          return;
+        }
+        const wrapWidth = stageWrap.clientWidth || 0;
+        const wrapHeight = stageWrap.clientHeight || 0;
+        const targetLeft = Math.max(0, ((marker.x + marker.w / 2) / 100) * stage.offsetWidth - wrapWidth / 2);
+        const targetTop = Math.max(0, ((marker.y + marker.h / 2) / 100) * stage.offsetHeight - wrapHeight / 2);
+        stageWrap.scrollTo({ left: targetLeft, top: targetTop, behavior: 'smooth' });
+      }
+
+      function selectField(attrId){
+        activeAttrId = attrId;
+        const field = fieldById(attrId);
+        if(field){
+          setStatus('Aktiv: ' + field.attrName + '. Rechteck im PDF aufziehen oder bestehende Markierung anpassen.');
+          try{
+            field.el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }catch(_e){}
+        }
+        layer.classList.add('is-armed');
+        updateFieldStates();
+        try{
+          stage.focus({ preventScroll: true });
+        }catch(_e){
+          try{
+            stage.focus();
+          }catch(_err){}
+        }
+      }
+
+      function renderMarkers(){
+        layer.innerHTML = '';
+        fields.forEach(function(field){
+          const marker = markers[field.attrId];
+          if(!marker || marker.page !== currentPage){
+            return;
+          }
+          const box = document.createElement('button');
+          box.type = 'button';
+          box.className = 'pdf-marker-box' + (field.attrId === activeAttrId ? ' active' : '');
+          box.style.left = String(marker.x) + '%';
+          box.style.top = String(marker.y) + '%';
+          box.style.width = String(marker.w) + '%';
+          box.style.height = String(marker.h) + '%';
+          box.setAttribute('aria-label', field.attrName);
+          box.innerHTML = '<span class="pdf-marker-box-label">' + field.attrName + '</span>';
+          box.addEventListener('click', function(ev){
+            ev.preventDefault();
+            selectField(field.attrId);
+            scrollToMarker(marker);
+          });
+          layer.appendChild(box);
+        });
+      }
+
+      function loadPreview(){
+        updateToolbar();
+        image.src = previewBase + '?page=' + encodeURIComponent(String(currentPage)) + '&zoom=' + encodeURIComponent(String(zoom.toFixed(2)));
+      }
+
+      function openMarker(field){
+        const marker = markers[field.attrId];
+        if(!marker){
+          return;
+        }
+        selectField(field.attrId);
+        if(currentPage !== marker.page){
+          currentPage = marker.page;
+          afterImageLoad = function(){
+            scrollToMarker(marker);
+          };
+          loadPreview();
+          return;
+        }
+        scrollToMarker(marker);
+        renderMarkers();
+      }
+
+      function pointerPercent(ev){
+        const rect = layer.getBoundingClientRect();
+        if(!rect.width || !rect.height){
+          return null;
+        }
+        return {
+          x: clamp(((ev.clientX - rect.left) / rect.width) * 100, 0, 100),
+          y: clamp(((ev.clientY - rect.top) / rect.height) * 100, 0, 100)
+        };
+      }
+
+      function updateDraftBox(marker){
+        draft.hidden = false;
+        draft.style.left = String(marker.x) + '%';
+        draft.style.top = String(marker.y) + '%';
+        draft.style.width = String(marker.w) + '%';
+        draft.style.height = String(marker.h) + '%';
+      }
+
+      fields.forEach(function(field){
+        if(field.selectBtn){
+          field.selectBtn.addEventListener('click', function(ev){
+            ev.preventDefault();
+            selectField(field.attrId);
+          });
+        }
+        if(field.clearBtn){
+          field.clearBtn.addEventListener('click', function(ev){
+            ev.preventDefault();
+            writeMarker(field, null);
+            updateFieldStates();
+            renderMarkers();
+            selectField(field.attrId);
+          });
+        }
+        if(field.openBtn){
+          field.openBtn.addEventListener('click', function(ev){
+            ev.preventDefault();
+            openMarker(field);
+          });
+        }
+      });
+
+      layer.addEventListener('mousedown', function(ev){
+        if(ev.button !== 0 || ev.target !== layer){
+          return;
+        }
+        if(!activeAttrId){
+          setStatus('Erst rechts ein Merkmal auswählen, dann die Stelle im PDF markieren.');
+          return;
+        }
+        const point = pointerPercent(ev);
+        if(!point){
+          return;
+        }
+        ev.preventDefault();
+        dragState = {
+          attrId: activeAttrId,
+          startX: point.x,
+          startY: point.y
+        };
+        updateDraftBox({ x: point.x, y: point.y, w: 0.1, h: 0.1 });
+      });
+
+      document.addEventListener('mousemove', function(ev){
+        if(!dragState){
+          return;
+        }
+        const point = pointerPercent(ev);
+        if(!point){
+          return;
+        }
+        const x1 = Math.min(dragState.startX, point.x);
+        const y1 = Math.min(dragState.startY, point.y);
+        const x2 = Math.max(dragState.startX, point.x);
+        const y2 = Math.max(dragState.startY, point.y);
+        updateDraftBox({
+          x: x1,
+          y: y1,
+          w: Math.max(0.1, x2 - x1),
+          h: Math.max(0.1, y2 - y1)
+        });
+      });
+
+      document.addEventListener('mouseup', function(ev){
+        if(!dragState){
+          return;
+        }
+        const point = pointerPercent(ev) || { x: dragState.startX, y: dragState.startY };
+        const x1 = Math.min(dragState.startX, point.x);
+        const y1 = Math.min(dragState.startY, point.y);
+        const x2 = Math.max(dragState.startX, point.x);
+        const y2 = Math.max(dragState.startY, point.y);
+        draft.hidden = true;
+        const field = fieldById(dragState.attrId);
+        if(field && (x2 - x1) >= 0.6 && (y2 - y1) >= 0.6){
+          writeMarker(field, {
+            page: currentPage,
+            x: Number(x1.toFixed(3)),
+            y: Number(y1.toFixed(3)),
+            w: Number((x2 - x1).toFixed(3)),
+            h: Number((y2 - y1).toFixed(3))
+          });
+          const nextField = nextUnmarkedField(field.attrId);
+          if(nextField && nextField.attrId !== field.attrId){
+            setStatus(field.attrName + ' wurde markiert. Weiter mit ' + nextField.attrName + '.');
+            selectField(nextField.attrId);
+          }else{
+            setStatus(field.attrName + ' wurde auf Seite ' + String(currentPage) + ' markiert.');
+            selectField(field.attrId);
+          }
+          updateFieldStates();
+          renderMarkers();
+        }else if(field){
+          setStatus('Markierung für ' + field.attrName + ' war zu klein. Bitte das Feld mit gedrückter Maustaste aufziehen.');
+        }
+        dragState = null;
+      });
+
+      image.addEventListener('load', function(){
+        renderMarkers();
+        if(typeof afterImageLoad === 'function'){
+          const callback = afterImageLoad;
+          afterImageLoad = null;
+          callback();
+        }
+      });
+
+      stage.addEventListener('keydown', function(ev){
+        if(ev.key === 'ArrowRight' && currentPage < pageCount){
+          ev.preventDefault();
+          currentPage += 1;
+          loadPreview();
+          return;
+        }
+        if(ev.key === 'ArrowLeft' && currentPage > 1){
+          ev.preventDefault();
+          currentPage -= 1;
+          loadPreview();
+          return;
+        }
+        if((ev.key === '+' || ev.key === '=') && !ev.ctrlKey && !ev.metaKey){
+          ev.preventDefault();
+          zoom = clamp(Number((zoom + 0.2).toFixed(2)), 0.8, 2.4);
+          loadPreview();
+          return;
+        }
+        if(ev.key === '-' && !ev.ctrlKey && !ev.metaKey){
+          ev.preventDefault();
+          zoom = clamp(Number((zoom - 0.2).toFixed(2)), 0.8, 2.4);
+          loadPreview();
+        }
+      });
+
+      if(prevBtn){
+        prevBtn.addEventListener('click', function(ev){
+          ev.preventDefault();
+          if(currentPage <= 1){
+            return;
+          }
+          currentPage -= 1;
+          loadPreview();
+        });
+      }
+      if(nextBtn){
+        nextBtn.addEventListener('click', function(ev){
+          ev.preventDefault();
+          if(currentPage >= pageCount){
+            return;
+          }
+          currentPage += 1;
+          loadPreview();
+        });
+      }
+      if(zoomInBtn){
+        zoomInBtn.addEventListener('click', function(ev){
+          ev.preventDefault();
+          zoom = clamp(Number((zoom + 0.2).toFixed(2)), 0.8, 2.4);
+          loadPreview();
+        });
+      }
+      if(zoomOutBtn){
+        zoomOutBtn.addEventListener('click', function(ev){
+          ev.preventDefault();
+          zoom = clamp(Number((zoom - 0.2).toFixed(2)), 0.8, 2.4);
+          loadPreview();
+        });
+      }
+      if(zoomResetBtn){
+        zoomResetBtn.addEventListener('click', function(ev){
+          ev.preventDefault();
+          zoom = 1.4;
+          loadPreview();
+        });
+      }
+      if(nextOpenBtn){
+        nextOpenBtn.addEventListener('click', function(ev){
+          ev.preventDefault();
+          const field = nextUnmarkedField(activeAttrId || 0);
+          if(field){
+            selectField(field.attrId);
+          }
+        });
+      }
+      if(firstOpenBtn){
+        firstOpenBtn.addEventListener('click', function(ev){
+          ev.preventDefault();
+          const field = nextUnmarkedField(0);
+          if(field){
+            selectField(field.attrId);
+          }
+        });
+      }
+
+      updateFieldStates();
+      const initialField = nextUnmarkedField(0);
+      if(initialField){
+        selectField(initialField.attrId);
+      }else{
+        setStatus('Rechts ein Merkmal auswählen und dann die passende Stelle im PDF markieren.');
+      }
+      loadPreview();
+    });
+  }
+
   fetch('/meta/version').then(r=>r.json()).then(v=>{
     const el = document.getElementById('versionLine');
     if(!el) return;
@@ -3051,6 +3882,7 @@
   initImportUploadCascade();
   initImportMapCascadeDefaults();
   initImportMapDuplicateWarning();
+  initPdfMarkerReviews();
   initTxFormAdjustActions();
   initProductDetailPanels();
   initTraitRangeSliders();
@@ -3059,6 +3891,8 @@
   initMobileSparePartForm();
   initMobileTransferForm();
   initFirstErrorFocus();
+  initFilterSelectInputs();
+  initCustomerListLiveSearch();
   attachSelectFilter('tx_product_filter', 'tx_product_id');
   attachSelectFilter('reservation_product_filter', 'reservation_product_id');
   attachSelectFilter('set_item_product_filter', 'set_item_product_id');

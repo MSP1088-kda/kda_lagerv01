@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="panel">
+<div class="panel catalog-products-page" data-catalog-page="1">
   <h1>Produktkatalog</h1>
 
   <form method="get" action="/catalog/products" class="form compact" data-catalog-v2-filter="1">
@@ -15,71 +15,73 @@
       </div>
     </div>
 
-    <div id="catalogFilterPanel" class="catalog-filter-panel" data-catalog-filter-panel="1" data-collapsed="0">
-      <div class="grid3" style="margin-top:10px;">
-        <div>
-          <label>Geräteart</label>
-          <select id="catalog_kind_id" name="kind_id">
-            <option value="0">Alle</option>
-            {% for k in kinds %}
-              <option value="{{ k.id }}" {% if kind_id==k.id %}selected{% endif %}>{{ k.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-
-      {% if kind_id and feature_filters %}
-      <div class="box" style="margin-top:10px;">
-        <div class="box-title">Merkmalfilter</div>
-        <div class="box-body">
-          <div class="grid3">
-            {% for feature in feature_filters %}
-            <div>
-              <label>{{ feature.label }}</label>
-              {% if feature.data_type == 'number' %}
-              <div class="grid2">
-                <select name="f_{{ feature.id }}_min">
-                  <option value="">Min</option>
-                  {% for row in feature.min_options %}
-                  <option value="{{ row.value }}" {% if feature.min == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
-                  {% endfor %}
-                </select>
-                <select name="f_{{ feature.id }}_max">
-                  <option value="">Max</option>
-                  {% for row in feature.max_options %}
-                  <option value="{{ row.value }}" {% if feature.max == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
-                  {% endfor %}
-                </select>
-              </div>
-              {% elif feature.data_type == 'bool' %}
-              <select name="f_{{ feature.id }}">
-                <option value="">Egal</option>
-                {% for row in feature.bool_options %}
-                <option value="{{ row.value }}" {% if feature.value == row.value %}selected{% endif %}>{{ row.label }}</option>
-                {% endfor %}
-              </select>
-              {% else %}
-              <select name="f_{{ feature.id }}">
-                <option value="">Egal</option>
-                {% for row in feature.options %}
-                <option value="{{ row.value }}" {% if feature.value == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
-                {% endfor %}
-              </select>
-              {% endif %}
-            </div>
-            {% endfor %}
+    <div data-catalog-filter-region="1">
+      <div id="catalogFilterPanel" class="catalog-filter-panel" data-catalog-filter-panel="1" data-collapsed="0">
+        <div class="grid3" style="margin-top:10px;">
+          <div>
+            <label>Geräteart</label>
+            <select id="catalog_kind_id" name="kind_id">
+              <option value="0">Alle</option>
+              {% for k in kinds %}
+                <option value="{{ k.id }}" {% if kind_id==k.id %}selected{% endif %}>{{ k.name }}</option>
+              {% endfor %}
+            </select>
           </div>
         </div>
-      </div>
-      {% elif kind_id %}
-      <div class="hint">Für diese Geräteart sind noch keine filterbaren Merkmale definiert.</div>
-      {% else %}
-      <div class="hint">Merkmalfilter werden nach Auswahl einer Geräteart eingeblendet.</div>
-      {% endif %}
 
-      <div class="row">
-        <button class="btn primary" type="submit">Filtern</button>
-        <a class="btn" href="/catalog/products">Zurücksetzen</a>
+        {% if kind_id and feature_filters %}
+        <div class="box" style="margin-top:10px;">
+          <div class="box-title">Merkmalfilter</div>
+          <div class="box-body">
+            <div class="grid3">
+              {% for feature in feature_filters %}
+              <div>
+                <label>{{ feature.label }}</label>
+                {% if feature.data_type == 'number' %}
+                <div class="grid2">
+                  <select name="f_{{ feature.id }}_min">
+                    <option value="">Min</option>
+                    {% for row in feature.min_options %}
+                    <option value="{{ row.value }}" {% if feature.min == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
+                    {% endfor %}
+                  </select>
+                  <select name="f_{{ feature.id }}_max">
+                    <option value="">Max</option>
+                    {% for row in feature.max_options %}
+                    <option value="{{ row.value }}" {% if feature.max == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                {% elif feature.data_type == 'bool' %}
+                <select name="f_{{ feature.id }}">
+                  <option value="">Egal</option>
+                  {% for row in feature.bool_options %}
+                  <option value="{{ row.value }}" {% if feature.value == row.value %}selected{% endif %}>{{ row.label }}</option>
+                  {% endfor %}
+                </select>
+                {% else %}
+                <select name="f_{{ feature.id }}">
+                  <option value="">Egal</option>
+                  {% for row in feature.options %}
+                  <option value="{{ row.value }}" {% if feature.value == row.value %}selected{% endif %} {% if row.disabled %}disabled{% endif %}>{{ row.label }}</option>
+                  {% endfor %}
+                </select>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        {% elif kind_id %}
+        <div class="hint">Für diese Geräteart sind noch keine filterbaren Merkmale definiert.</div>
+        {% else %}
+        <div class="hint">Merkmalfilter werden nach Auswahl einer Geräteart eingeblendet.</div>
+        {% endif %}
+
+        <div class="row">
+          <button class="btn primary" type="submit">Filtern</button>
+          <a class="btn" href="/catalog/products">Zurücksetzen</a>
+        </div>
       </div>
     </div>
 
@@ -92,79 +94,76 @@
     </div>
   </form>
 
-  <div class="catalog-table-shell">
-    <table class="catalog-table catalog-products-table" data-kbd-list="true">
-      <colgroup>
-        <col style="width:24%">
-        <col style="width:12%">
-        <col style="width:32%">
-        <col style="width:10%">
-        <col style="width:6%">
-        <col style="width:16%">
-      </colgroup>
-      <thead>
-        <tr>
-          <th title="Produkt">Produkt</th>
-          <th title="Hersteller">Hersteller</th>
-          <th title="Merkmale">Merkmale</th>
-          <th title="Verkaufspreis brutto">VK (brutto)</th>
-          <th title="Bestand">Bestand</th>
-          <th title="Aktion">Aktion</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in products %}
-          {% set base_name = p.sales_name if p.sales_name else p.name %}
-          {% set product_text = base_name %}
-          {% if p.material_no %}{% set product_text = product_text ~ ' | MatNr: ' ~ p.material_no %}{% endif %}
-          {% if not p.active %}{% set product_text = product_text ~ ' (archiviert)' %}{% endif %}
-          {% set brand = p.manufacturer if p.manufacturer else (p.manufacturer_name if p.manufacturer_name else '-') %}
-          {% set feature_lines = feature_values_map.get(p.id, []) %}
-          {% set feature_text = (feature_lines[:3]|join(' | ')) if feature_lines else '-' %}
-          {% set price_text = p.sale_price_cents|eur_cents if p.sale_price_cents is not none else '-' %}
-          {% set stock_text = stock_total_map.get(p.id, 0) %}
-        <tr
-          class="kbd-row"
-          data-kbd-row="true"
-          data-href="/catalog/products/{{ p.id }}"
-          data-details-href="/catalog/products/{{ p.id }}"
-          {% if p.active %}data-book-href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}"{% endif %}
-          tabindex="0"
-        >
-          <td class="catalog-col-product" title="{{ product_text }}">
-            <a href="/catalog/products/{{ p.id }}" title="{{ product_text }}">{{ product_text }}</a>
-          </td>
-          <td title="{{ brand }}">{{ brand }}</td>
-          <td class="catalog-col-features" title="{{ feature_text }}">{{ feature_text }}</td>
-          <td title="{{ price_text }}">{{ price_text }}</td>
-          <td title="{{ stock_text }}">{{ stock_text }}</td>
-          <td class="catalog-col-actions">
-            <div class="act-inline">
-              <a class="btn small" href="/catalog/products/{{ p.id }}">Details</a>
-              {% if p.active %}
-              <a class="btn small" href="/inventory/transactions/new?tx_type=receipt&product_id={{ p.id }}">Einbuchen</a>
-              {% endif %}
+  <div class="catalog-products-shell" data-catalog-results-region="1" data-result-count="{{ product_rows|length }}">
+    <div class="catalog-products-toolbar">
+      <div class="catalog-products-count">{{ product_rows|length }} Artikel</div>
+      <div class="catalog-live-status" data-catalog-live-status="1"></div>
+    </div>
+
+    <div class="catalog-products-list" data-kbd-list="true">
+      {% for row in product_rows %}
+      <article
+        class="catalog-product-row kbd-row"
+        data-kbd-row="true"
+        data-href="{{ row.detail_url }}"
+        data-details-href="{{ row.detail_url }}"
+        {% if row.receipt_url %}data-book-href="{{ row.receipt_url }}"{% endif %}
+        tabindex="0"
+      >
+        <a class="catalog-product-hit" href="{{ row.detail_url }}">
+          <div class="catalog-product-media">
+            {% if row.image_url %}
+            <img src="{{ row.image_url }}" alt="{{ row.title_main }}">
+            {% else %}
+            <div class="catalog-product-media-fallback">Kein Bild</div>
+            {% endif %}
+          </div>
+          <div class="catalog-product-body">
+            <div class="catalog-product-line1">
+              <div class="catalog-product-title" title="{{ row.title_main }}{% if row.title_aux %} · {{ row.title_aux }}{% endif %}">
+                <span class="catalog-product-title-main">{{ row.title_main }}</span>
+                {% if row.title_aux %}
+                <span class="catalog-product-title-aux">{{ row.title_aux }}</span>
+                {% endif %}
+              </div>
+              <div class="catalog-product-side">
+                <div class="catalog-product-price">{{ row.product.sale_price_cents|eur_cents if row.product.sale_price_cents is not none else '-' }}</div>
+                <div class="catalog-product-stock">Bestand {{ row.stock_total }}</div>
+              </div>
             </div>
-          </td>
-        </tr>
-        {% endfor %}
-        {% if not products %}
-        <tr>
-          <td class="muted" colspan="6">Keine Treffer.</td>
-        </tr>
-        {% endif %}
-      </tbody>
-    </table>
+            <div class="catalog-product-line2">
+              <div class="catalog-product-meta" title="{{ row.meta_bits|join(' · ') }}">{{ row.meta_bits|join(' · ') if row.meta_bits else '-' }}</div>
+              <div class="catalog-product-traits">
+                {% for trait in row.traits %}
+                <span class="catalog-product-trait" title="{{ trait }}">{{ trait }}</span>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </a>
+        <div class="catalog-product-actions">
+          <a class="btn small" href="{{ row.detail_url }}">Details</a>
+          {% if row.receipt_url %}
+          <a class="btn small" href="{{ row.receipt_url }}">Einbuchen</a>
+          {% endif %}
+        </div>
+      </article>
+      {% endfor %}
+
+      {% if not product_rows %}
+      <div class="catalog-product-empty">Keine Treffer.</div>
+      {% endif %}
+    </div>
   </div>
 </div>
 {% endblock %}
 
 {% block help %}
 <ul>
-  <li>Es gibt nur eine Volltextsuche für den gesamten Katalog.</li>
+  <li>Suche und Filter aktualisieren die Liste live.</li>
   <li>Die einzige Struktur-Auswahl ist die Geräteart.</li>
   <li>Merkmalfilter erscheinen nach Auswahl einer Geräteart.</li>
-  <li>Enter in einem Filterfeld führt die Filterung aus.</li>
+  <li>Pro Artikel werden Bild, Preis, Bestand und bis zu drei relevante Merkmale gezeigt.</li>
   <li>Mit "Zurücksetzen" werden alle Filter entfernt.</li>
 </ul>
 {% endblock %}

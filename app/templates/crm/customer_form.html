@@ -54,7 +54,8 @@
         </div>
         <div>
           <label for="crm_address_email">E-Mail</label>
-          <input id="crm_address_email" type="email" name="email" value="{{ f.old(fd, 'email', row.email if row else '') }}">
+          <input id="crm_address_email" type="email" name="email" value="{{ f.old(fd, 'email', row.email if row else '') }}" class="{% if fe.get('email') %}is-error{% endif %}">
+          {{ f.field_error(fe, 'email') }}
         </div>
         <div>
           <label for="crm_address_phone">Telefon</label>
@@ -65,6 +66,13 @@
           <label class="check"><input type="checkbox" name="active" {{ f.is_checked(fd, 'active', row.active if row else True) }}> Aktiv</label>
         </div>
       </div>
+      {% if row and (row.address_validation_status or row.email_validation_status) %}
+        <div class="hint" style="margin-top:10px;">
+          {% if row.address_validation_status %}Adresscheck: {{ crm_quality_status_label(row.address_validation_status) }}{% if row.address_validation_message %} | {{ row.address_validation_message }}{% endif %}{% endif %}
+          {% if row.address_validation_status and row.email_validation_status %}<br>{% endif %}
+          {% if row.email_validation_status %}E-Mail-Check: {{ crm_quality_status_label(row.email_validation_status) }}{% if row.email_validation_message %} | {{ row.email_validation_message }}{% endif %}{% endif %}
+        </div>
+      {% endif %}
     {% else %}
       <div class="grid3">
         <div>
@@ -135,13 +143,21 @@
         </div>
         <div>
           <label for="crm_default_email">E-Mail</label>
-          <input id="crm_default_email" type="email" name="address_email" value="{{ f.old(fd, 'address_email', default_address.email if default_address else '') }}">
+          <input id="crm_default_email" type="email" name="address_email" value="{{ f.old(fd, 'address_email', default_address.email if default_address else '') }}" class="{% if fe.get('address_email') %}is-error{% endif %}">
+          {{ f.field_error(fe, 'address_email') }}
         </div>
         <div>
           <label for="crm_default_phone">Telefon</label>
           <input id="crm_default_phone" type="text" name="address_phone" value="{{ f.old(fd, 'address_phone', default_address.phone if default_address else '') }}">
         </div>
       </div>
+      {% if default_address and (default_address.address_validation_status or default_address.email_validation_status) %}
+        <div class="hint" style="margin-top:10px;">
+          {% if default_address.address_validation_status %}Adresscheck: {{ crm_quality_status_label(default_address.address_validation_status) }}{% if default_address.address_validation_message %} | {{ default_address.address_validation_message }}{% endif %}{% endif %}
+          {% if default_address.address_validation_status and default_address.email_validation_status %}<br>{% endif %}
+          {% if default_address.email_validation_status %}E-Mail-Check: {{ crm_quality_status_label(default_address.email_validation_status) }}{% if default_address.email_validation_message %} | {{ default_address.email_validation_message }}{% endif %}{% endif %}
+        </div>
+      {% endif %}
     {% endif %}
 
     <div class="row" style="margin-top:10px;">

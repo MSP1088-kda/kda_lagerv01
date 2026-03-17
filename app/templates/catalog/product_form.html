@@ -14,13 +14,13 @@
   {% set rdefaults = receipt_defaults or {} %}
   {% import "macros/forms.html" as f %}
 
-  <form method="post" class="form" data-product-form="1" data-product-new="{% if not product %}1{% else %}0{% endif %}" data-first-error="{{ first_error_field_id or '' }}">
+  <form method="post" enctype="multipart/form-data" class="form" data-product-form="1" data-product-new="{% if not product %}1{% else %}0{% endif %}" data-first-error="{{ first_error_field_id or '' }}">
     <label>Artikelart</label>
     {% if item_type_locked %}
       <input type="text" value="{{ item_type_labels.get(selected_item_type, selected_item_type) }}" disabled>
       <input type="hidden" name="item_type" value="{{ selected_item_type }}">
     {% else %}
-      <select name="item_type" required>
+      <select name="item_type">
         {% for it in item_types %}
           <option value="{{ it }}" {% if selected_item_type == it %}selected{% endif %}>{{ item_type_labels.get(it, it) }}</option>
         {% endfor %}
@@ -43,15 +43,15 @@
 
         {% if field.key == 'name' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input id="product_name" type="text" name="name" class="{% if fe.get('name') %}is-error{% endif %}" value="{{ f.old(fd, 'name', product.name if product else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %} autofocus>
+          <input id="product_name" type="text" name="name" class="{% if fe.get('name') %}is-error{% endif %}" value="{{ f.old(fd, 'name', product.name if product else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} autofocus>
           {{ f.field_error(fe, 'name') }}
         {% elif field.key == 'material_no' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input id="product_material_no" type="text" name="material_no" class="{% if fe.get('material_no') %}is-error{% endif %}" value="{{ f.old(fd, 'material_no', product.material_no if product and product.material_no else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_material_no" type="text" name="material_no" class="{% if fe.get('material_no') %}is-error{% endif %}" value="{{ f.old(fd, 'material_no', product.material_no if product and product.material_no else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}>
           {{ f.field_error(fe, 'material_no') }}
         {% elif field.key == 'manufacturer_id' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <select id="product_manufacturer_id" name="manufacturer_id" class="{% if fe.get('manufacturer_id') %}is-error{% endif %}" {% if field.required %}required{% endif %}>
+          <select id="product_manufacturer_id" name="manufacturer_id" class="{% if fe.get('manufacturer_id') %}is-error{% endif %}">
             <option value="0">Bitte wählen</option>
             {% for m in manufacturers %}
               <option value="{{ m.id }}" {% if selected_manufacturer_id == m.id %}selected{% endif %}>{{ m.name }}{% if not m.active %} (inaktiv){% endif %}</option>
@@ -60,31 +60,31 @@
           {{ f.field_error(fe, 'manufacturer_id') }}
         {% elif field.key == 'sku' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input id="product_sku" type="text" name="sku" class="{% if fe.get('sku') %}is-error{% endif %}" value="{{ f.old(fd, 'sku', product.sku if product and product.sku else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_sku" type="text" name="sku" class="{% if fe.get('sku') %}is-error{% endif %}" value="{{ f.old(fd, 'sku', product.sku if product and product.sku else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}>
           {{ f.field_error(fe, 'sku') }}
         {% elif field.key == 'sales_name' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input id="product_sales_name" type="text" name="sales_name" class="{% if fe.get('sales_name') %}is-error{% endif %}" value="{{ f.old(fd, 'sales_name', product.sales_name if product and product.sales_name else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_sales_name" type="text" name="sales_name" class="{% if fe.get('sales_name') %}is-error{% endif %}" value="{{ f.old(fd, 'sales_name', product.sales_name if product and product.sales_name else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}>
           {{ f.field_error(fe, 'sales_name') }}
         {% elif field.key == 'manufacturer_name' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input id="product_manufacturer_name" type="text" name="manufacturer_name" class="{% if fe.get('manufacturer_name') %}is-error{% endif %}" value="{{ f.old(fd, 'manufacturer_name', product.manufacturer_name if product and product.manufacturer_name else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_manufacturer_name" type="text" name="manufacturer_name" class="{% if fe.get('manufacturer_name') %}is-error{% endif %}" value="{{ f.old(fd, 'manufacturer_name', product.manufacturer_name if product and product.manufacturer_name else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}>
           {{ f.field_error(fe, 'manufacturer_name') }}
         {% elif field.key == 'product_title_1' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input id="product_product_title_1" type="text" name="product_title_1" class="{% if fe.get('product_title_1') %}is-error{% endif %}" value="{{ f.old(fd, 'product_title_1', product.product_title_1 if product and product.product_title_1 else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_product_title_1" type="text" name="product_title_1" class="{% if fe.get('product_title_1') %}is-error{% endif %}" value="{{ f.old(fd, 'product_title_1', product.product_title_1 if product and product.product_title_1 else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}>
           {{ f.field_error(fe, 'product_title_1') }}
         {% elif field.key == 'product_title_2' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input id="product_product_title_2" type="text" name="product_title_2" class="{% if fe.get('product_title_2') %}is-error{% endif %}" value="{{ f.old(fd, 'product_title_2', product.product_title_2 if product and product.product_title_2 else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_product_title_2" type="text" name="product_title_2" class="{% if fe.get('product_title_2') %}is-error{% endif %}" value="{{ f.old(fd, 'product_title_2', product.product_title_2 if product and product.product_title_2 else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}>
           {{ f.field_error(fe, 'product_title_2') }}
         {% elif field.key == 'ean' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <input id="product_ean" type="text" name="ean" class="{% if fe.get('ean') %}is-error{% endif %}" value="{{ f.old(fd, 'ean', product.ean if product and product.ean else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.required %}required{% endif %}>
+          <input id="product_ean" type="text" name="ean" class="{% if fe.get('ean') %}is-error{% endif %}" value="{{ f.old(fd, 'ean', product.ean if product and product.ean else '') }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}>
           {{ f.field_error(fe, 'ean') }}
         {% elif field.key == 'area_id' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <select id="product_area_id" name="area_id" class="{% if fe.get('area_id') %}is-error{% endif %}" {% if field.required %}required{% endif %}>
+          <select id="product_area_id" name="area_id" class="{% if fe.get('area_id') %}is-error{% endif %}">
             <option value="0">Bitte wählen</option>
             {% for a in areas %}
               <option value="{{ a.id }}" {% if selected_area == a.id %}selected{% endif %}>{{ a.name }}</option>
@@ -93,7 +93,7 @@
           {{ f.field_error(fe, 'area_id') }}
         {% elif field.key == 'device_kind_id' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <select id="product_device_kind_id" name="device_kind_id" class="{% if fe.get('device_kind_id') %}is-error{% endif %}" {% if field.required %}required{% endif %}>
+          <select id="product_device_kind_id" name="device_kind_id" class="{% if fe.get('device_kind_id') %}is-error{% endif %}">
             <option value="0">Bitte wählen</option>
             {% for k in kinds %}
               <option value="{{ k.id }}" {% if selected_kind == k.id %}selected{% endif %}>{{ k.name }}</option>
@@ -102,7 +102,7 @@
           {{ f.field_error(fe, 'device_kind_id') }}
         {% elif field.key == 'device_type_id' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <select id="product_device_type_id" name="device_type_id" class="{% if fe.get('device_type_id') %}is-error{% endif %}" {% if field.required %}required{% endif %}>
+          <select id="product_device_type_id" name="device_type_id" class="{% if fe.get('device_type_id') %}is-error{% endif %}">
             <option value="0">Bitte wählen</option>
             {% for t in types %}
               <option value="{{ t.id }}" {% if selected_type == t.id %}selected{% endif %}>{{ t.name }}</option>
@@ -111,7 +111,7 @@
           {{ f.field_error(fe, 'device_type_id') }}
         {% elif field.key == 'description' %}
           <label>{{ field.label }}{% if field.required %} *{% endif %}</label>
-          <textarea id="product_description" name="description" rows="4" class="{% if fe.get('description') %}is-error{% endif %}" {% if field.required %}required{% endif %}>{{ f.old(fd, 'description', product.description if product and product.description else '') }}</textarea>
+          <textarea id="product_description" name="description" rows="4" class="{% if fe.get('description') %}is-error{% endif %}">{{ f.old(fd, 'description', product.description if product and product.description else '') }}</textarea>
           {{ f.field_error(fe, 'description') }}
         {% endif %}
 
@@ -174,12 +174,89 @@
       {% endfor %}
     {% endif %}
 
-    <h2>Bilder (absolute Links)</h2>
+    {% set afd = asset_form_defaults or {} %}
+    {% set current_document_assets = document_assets or [] %}
+    <h2>Assets und Dokumente</h2>
+    <div class="hint">Manuelle Pflege und CSV-Import laufen hier über dieselbe Asset-Pipeline. Bildfelder 1-15 werden lokal referenziert, PDFs können direkt hochgeladen oder per URL angebunden werden.</div>
+
+    <div class="grid3">
+      <div>
+        <label for="product_asset_datasheet_url">Datenblatt-URL</label>
+        <input id="product_asset_datasheet_url" type="text" name="asset_datasheet_url" class="{% if fe.get('asset_datasheet_url') %}is-error{% endif %}" value="{{ afd.get('asset_datasheet_url', '') }}" placeholder="https://.../datenblatt.pdf">
+        {{ f.field_error(fe, 'asset_datasheet_url') }}
+      </div>
+      <div>
+        <label for="product_asset_manual_url">Bedienungsanleitung-URL</label>
+        <input id="product_asset_manual_url" type="text" name="asset_manual_url" class="{% if fe.get('asset_manual_url') %}is-error{% endif %}" value="{{ afd.get('asset_manual_url', '') }}" placeholder="https://.../manual.pdf">
+        {{ f.field_error(fe, 'asset_manual_url') }}
+      </div>
+      <div>
+        <label for="product_asset_energy_label_url">Energielabel-URL</label>
+        <input id="product_asset_energy_label_url" type="text" name="asset_energy_label_url" class="{% if fe.get('asset_energy_label_url') %}is-error{% endif %}" value="{{ afd.get('asset_energy_label_url', '') }}" placeholder="https://.../label.pdf">
+        {{ f.field_error(fe, 'asset_energy_label_url') }}
+      </div>
+    </div>
+
+    <div class="grid3">
+      <div>
+        <label for="product_datasheet_upload">Datenblatt hochladen</label>
+        <input id="product_datasheet_upload" type="file" name="datasheet_upload" accept="application/pdf" class="{% if fe.get('datasheet_upload') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'datasheet_upload') }}
+        <div class="hint">Bei Großgeräten kann ein Datenblatt allein genügen. Fehlende Hersteller-, Geräteart- und Kerndaten werden dann bestmöglich aus dem PDF übernommen.</div>
+      </div>
+      <div>
+        <label for="product_manual_upload">Bedienungsanleitung hochladen</label>
+        <input id="product_manual_upload" type="file" name="manual_upload" accept="application/pdf" class="{% if fe.get('manual_upload') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'manual_upload') }}
+      </div>
+      <div>
+        <label for="product_energy_label_upload">Energielabel hochladen</label>
+        <input id="product_energy_label_upload" type="file" name="energy_label_upload" accept="application/pdf" class="{% if fe.get('energy_label_upload') %}is-error{% endif %}">
+        {{ f.field_error(fe, 'energy_label_upload') }}
+      </div>
+    </div>
+
+    {% if product and current_document_assets %}
+    <div class="box" style="margin-top:10px;">
+      <div class="box-title">Bereits verknüpfte Dokumente</div>
+      <div class="box-body">
+        <div class="table">
+          <div class="tr th" style="grid-template-columns: 1fr 180px 180px;">
+            <div>Dokument</div>
+            <div>Status</div>
+            <div>Aktion</div>
+          </div>
+          {% for asset in current_document_assets %}
+          <div class="tr" style="grid-template-columns: 1fr 180px 180px;">
+            <div>
+              <strong>{{ asset.label }}</strong>
+              {% if asset.source_url %}
+              <div class="muted">{{ asset.source_url }}</div>
+              {% endif %}
+            </div>
+            <div>
+              {% if asset.has_local_file %}Lokal gespeichert{% else %}{{ asset.download_status or 'extern' }}{% endif %}
+            </div>
+            <div class="row">
+              <a class="btn small" href="{{ asset.detail_url }}">Öffnen</a>
+              {% if asset.source_url %}
+              <a class="btn small" href="{{ asset.source_url }}" target="_blank" rel="noopener">Quelle</a>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <h3 style="margin-top:12px;">Bildquellen 1-15</h3>
+    <div class="hint">Leere Bildfelder werden beim Speichern aus der manuellen Bildliste entfernt.</div>
     <div class="grid2">
-      {% for idx in range(1, product_image_url_max + 1) %}
-        {% set key = 'image_url_' ~ idx %}
-        {% set field_id = 'product_image_url_' ~ idx %}
-        {% set url_value = f.old(fd, key, product and (product|attr(key)) or '') %}
+      {% for idx in range(1, product_image_asset_slot_max + 1) %}
+        {% set key = 'asset_image_url_' ~ idx %}
+        {% set field_id = 'product_asset_image_url_' ~ idx %}
+        {% set url_value = afd.get(key, '') %}
         <div>
           <label for="{{ field_id }}">Bild {{ idx }}</label>
           <input id="{{ field_id }}" type="text" name="{{ key }}" class="{% if fe.get(key) %}is-error{% endif %}" value="{{ url_value }}" placeholder="https://...">
@@ -340,7 +417,8 @@
 <ul>
   <li>Das Formular zeigt nur Felder, die in Stammdaten → Formularregeln aktiv sind.</li>
   <li>Pflichtfelder werden serverseitig je Artikelart geprüft.</li>
-  <li>Bildfelder akzeptieren nur absolute Links mit http:// oder https://.</li>
+  <li>PDF-Uploads und Asset-URLs laufen in dieselbe lokale Asset-Pipeline wie der Import.</li>
+  <li>Bildfelder akzeptieren absolute Links mit `http://` oder `https://` und werden als Bildslots 1-15 geführt.</li>
   <li>Bei Direkt-Einbuchung kann optional ein Inhaber mitgespeichert werden.</li>
   <li>Mit Strg+S speicherst du das Formular direkt.</li>
   <li>Produkte lassen sich nur archivieren, wenn kein Lagerbestand und keine aktive Reservierung vorhanden ist.</li>

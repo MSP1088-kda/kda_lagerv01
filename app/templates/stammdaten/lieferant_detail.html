@@ -15,13 +15,14 @@
       <div class="row">
         <a class="btn small" href="/stammdaten/lieferanten/{{ row.id }}/edit">Bearbeiten</a>
         <a class="btn small" href="/einkauf/konditionen?supplier_id={{ row.id }}">Konditionen</a>
-        {% if outsmart_enabled %}
         <form method="post" action="/stammdaten/lieferanten/{{ row.id }}/outsmart/export" class="inline">
-          <button class="btn small" type="submit">An OutSmart senden</button>
+          <button class="btn small" type="submit" {% if not outsmart_write_enabled %}disabled title="OutSmart-Schreiben ist derzeit deaktiviert."{% endif %}>An OutSmart senden</button>
         </form>
-        {% endif %}
         <a class="btn small" href="/stammdaten/lieferanten">Zurück zur Liste</a>
       </div>
+      {% if not outsmart_write_enabled %}
+      <div class="hint" style="margin-top:8px;">OutSmart-Schreiben ist derzeit deaktiviert. Lieferanten werden nicht exportiert.</div>
+      {% endif %}
       {% if outsmart_relation_link %}
       <div class="hint">OutSmart-Link: {{ outsmart_relation_link.external_key }}{% if outsmart_relation_link.external_row_id %} | Zeile {{ outsmart_relation_link.external_row_id }}{% endif %}</div>
       {% endif %}
