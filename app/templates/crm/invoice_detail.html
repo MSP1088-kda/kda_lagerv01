@@ -54,7 +54,7 @@
           {% endif %}
         </div>
         {% if internal_service_orders_enabled and crm_case %}
-          <div><b>Vorgang:</b> <a href="/crm/vorgaenge/{{ crm_case.id }}">{{ crm_case.case_no }}</a></div>
+          <div><b>Vorgang:</b> <a href="/serviceauftraege/{{ crm_case.id }}">{{ crm_case.case_no }}</a></div>
         {% endif %}
         {% if service_location %}<div><b>Leistungsort:</b> {{ service_location.location_label }}</div>{% endif %}
       </div>

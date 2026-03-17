@@ -25,7 +25,7 @@
         {% endif %}
         {% if internal_service_orders_enabled and candidates.cases %}
           <div style="margin-top:8px;"><b>Vorgänge</b></div>
-          {% for row in candidates.cases[:5] %}<div><a href="/crm/vorgaenge/{{ row.id }}">{{ row.case_no }} | {{ row.title }}</a></div>{% endfor %}
+          {% for row in candidates.cases[:5] %}<div><a href="/serviceauftraege/{{ row.id }}">{{ row.case_no }} | {{ row.title }}</a></div>{% endfor %}
         {% endif %}
         {% if candidates.repairs %}
           <div style="margin-top:8px;"><b>Reparaturen</b></div>

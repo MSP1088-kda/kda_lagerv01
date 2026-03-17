@@ -58,7 +58,7 @@
         {% if internal_service_orders_enabled %}
           <div>
             {% if item.crm_case %}
-              <a href="/crm/vorgaenge/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
+              <a href="/serviceauftraege/{{ item.crm_case.id }}">{{ item.crm_case.case_no }}</a>
               <div class="muted">{{ item.crm_case.title }}</div>
             {% else %}
               <span class="muted">-</span>

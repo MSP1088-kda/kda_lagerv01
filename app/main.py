@@ -28115,8 +28115,22 @@ async def crm_contact_edit_post(customer_id: int, contact_id: int, request: Requ
     return RedirectResponse(f"/crm/kunden/{int(customer.id)}", status_code=302)
 
 
-@app.get("/serviceauftraege", response_class=HTMLResponse)
+# Deprecated CRM alias routes stay as redirects while old bookmarks and links drain out.
+def _legacy_case_route_redirect(request: Request, target_path: str, *, status_code: int = 302) -> RedirectResponse:
+    query = str(request.url.query or "").strip()
+    if query:
+        target_path = f"{target_path}?{query}"
+    return RedirectResponse(target_path, status_code=status_code)
+
+
 @app.get("/crm/vorgaenge", response_class=HTMLResponse)
+def crm_cases_list_legacy_redirect(request: Request, user=Depends(require_user)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, "/serviceauftraege")
+
+
+@app.get("/serviceauftraege", response_class=HTMLResponse)
 def crm_cases_list(
     request: Request,
     user=Depends(require_user),
@@ -28189,8 +28203,14 @@ def crm_cases_list(
     )
 
 
-@app.get("/serviceauftraege/neu", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge/neu", response_class=HTMLResponse)
+def crm_case_new_get_legacy_redirect(request: Request, user=Depends(require_admin)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, "/serviceauftraege/neu")
+
+
+@app.get("/serviceauftraege/neu", response_class=HTMLResponse)
 def crm_case_new_get(
     request: Request,
     user=Depends(require_admin),
@@ -28217,8 +28237,14 @@ def crm_case_new_get(
     )
 
 
-@app.post("/serviceauftraege/neu")
 @app.post("/crm/vorgaenge/neu")
+def crm_case_new_post_legacy_redirect(request: Request, user=Depends(require_admin)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, "/serviceauftraege/neu", status_code=307)
+
+
+@app.post("/serviceauftraege/neu")
 async def crm_case_new_post(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     _require_internal_service_orders_enabled()
     form = await request.form()
@@ -28393,8 +28419,14 @@ async def crm_case_new_post(request: Request, user=Depends(require_admin), db: S
     return RedirectResponse(f"/serviceauftraege/{int(row.id)}", status_code=302)
 
 
-@app.get("/serviceauftraege/{case_id}", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge/{case_id}", response_class=HTMLResponse)
+def crm_case_detail_legacy_redirect(case_id: int, request: Request, user=Depends(require_user)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, f"/serviceauftraege/{int(case_id)}")
+
+
+@app.get("/serviceauftraege/{case_id}", response_class=HTMLResponse)
 def crm_case_detail(
     case_id: int,
     request: Request,
@@ -28492,8 +28524,14 @@ def crm_case_detail(
     )
 
 
-@app.post("/serviceauftraege/{case_id}/weiter")
 @app.post("/crm/vorgaenge/{case_id}/weiter")
+def crm_case_next_step_legacy_redirect(case_id: int, request: Request, user=Depends(require_admin)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, f"/serviceauftraege/{int(case_id)}/weiter", status_code=307)
+
+
+@app.post("/serviceauftraege/{case_id}/weiter")
 async def crm_case_next_step(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     _require_internal_service_orders_enabled()
     row = db.get(CrmCase, case_id)
@@ -28536,8 +28574,14 @@ async def crm_case_next_step(case_id: int, request: Request, user=Depends(requir
     return RedirectResponse(f"/serviceauftraege/{int(row.id)}", status_code=302)
 
 
-@app.get("/serviceauftraege/{case_id}/outsmart/vorbereiten", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge/{case_id}/outsmart/vorbereiten", response_class=HTMLResponse)
+def crm_case_outsmart_prepare_legacy_redirect(case_id: int, request: Request, user=Depends(require_admin)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, f"/serviceauftraege/{int(case_id)}/outsmart/vorbereiten")
+
+
+@app.get("/serviceauftraege/{case_id}/outsmart/vorbereiten", response_class=HTMLResponse)
 def crm_case_outsmart_prepare(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     _require_internal_service_orders_enabled()
     row = db.get(CrmCase, case_id)
@@ -28589,8 +28633,14 @@ def crm_case_outsmart_prepare(case_id: int, request: Request, user=Depends(requi
     )
 
 
-@app.post("/serviceauftraege/{case_id}/outsmart/senden")
 @app.post("/crm/vorgaenge/{case_id}/outsmart/senden")
+def crm_case_outsmart_send_legacy_redirect(case_id: int, request: Request, user=Depends(require_admin)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, f"/serviceauftraege/{int(case_id)}/outsmart/senden", status_code=307)
+
+
+@app.post("/serviceauftraege/{case_id}/outsmart/senden")
 def crm_case_outsmart_send(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     _require_internal_service_orders_enabled()
     row = db.get(CrmCase, case_id)
@@ -28796,8 +28846,14 @@ async def outsmart_workorder_create_case(workorder_id: int, request: Request, us
     return RedirectResponse(f"/outsmart/arbeitsauftraege/{int(row.id)}", status_code=302)
 
 
-@app.get("/serviceauftraege/{case_id}/bearbeiten", response_class=HTMLResponse)
 @app.get("/crm/vorgaenge/{case_id}/bearbeiten", response_class=HTMLResponse)
+def crm_case_edit_get_legacy_redirect(case_id: int, request: Request, user=Depends(require_admin)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, f"/serviceauftraege/{int(case_id)}/bearbeiten")
+
+
+@app.get("/serviceauftraege/{case_id}/bearbeiten", response_class=HTMLResponse)
 def crm_case_edit_get(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     _require_internal_service_orders_enabled()
     row = db.get(CrmCase, case_id)
@@ -28824,8 +28880,14 @@ def crm_case_edit_get(case_id: int, request: Request, user=Depends(require_admin
     )
 
 
-@app.post("/serviceauftraege/{case_id}/bearbeiten")
 @app.post("/crm/vorgaenge/{case_id}/bearbeiten")
+def crm_case_edit_post_legacy_redirect(case_id: int, request: Request, user=Depends(require_admin)):
+    _ = user
+    _require_internal_service_orders_enabled()
+    return _legacy_case_route_redirect(request, f"/serviceauftraege/{int(case_id)}/bearbeiten", status_code=307)
+
+
+@app.post("/serviceauftraege/{case_id}/bearbeiten")
 async def crm_case_edit_post(case_id: int, request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     _require_internal_service_orders_enabled()
     row = db.get(CrmCase, case_id)

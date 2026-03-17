@@ -7,7 +7,7 @@
     <a class="btn" href="/mail/eingang">Zurück zum Mail-Eingang</a>
     <a class="btn" href="/mail/verfassen?thread_id={{ thread.id }}&customer_id={{ customer.id if customer else 0 }}{% if internal_service_orders_enabled and crm_case %}&case_id={{ crm_case.id }}{% endif %}&to_email={{ reply_to|urlencode }}">Antwort verfassen</a>
     {% if customer %}<a class="btn" href="/crm/kunden/{{ customer.id }}">Kunde öffnen</a>{% endif %}
-    {% if internal_service_orders_enabled and crm_case %}<a class="btn" href="/crm/vorgaenge/{{ crm_case.id }}">Vorgang öffnen</a>{% endif %}
+    {% if internal_service_orders_enabled and crm_case %}<a class="btn" href="/serviceauftraege/{{ crm_case.id }}">Vorgang öffnen</a>{% endif %}
   </div>
 
   <div class="grid3" style="align-items:start;">

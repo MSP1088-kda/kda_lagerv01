@@ -9,7 +9,7 @@
       <div class="box-body">
         <div><b>Thread:</b> {% if thread %}<a href="/mail/threads/{{ thread.id }}">#{{ thread.id }}</a>{% else %}-{% endif %}</div>
         <div><b>Kunde:</b> {% if customer %}<a href="/crm/kunden/{{ customer.id }}">{{ customer.customer_no_internal }}</a>{% else %}-{% endif %}</div>
-        {% if internal_service_orders_enabled %}<div><b>Vorgang:</b> {% if crm_case %}<a href="/crm/vorgaenge/{{ crm_case.id }}">{{ crm_case.case_no }}</a>{% else %}-{% endif %}</div>{% endif %}
+        {% if internal_service_orders_enabled %}<div><b>Vorgang:</b> {% if crm_case %}<a href="/serviceauftraege/{{ crm_case.id }}">{{ crm_case.case_no }}</a>{% else %}-{% endif %}</div>{% endif %}
         <div><b>Angebot:</b> {% if offer_draft %}<a href="/crm/angebote/{{ offer_draft.id }}">{{ offer_draft.sevdesk_order_number or ('ANG-' ~ '%04d'|format(offer_draft.id)) }}</a>{% else %}-{% endif %}</div>
         <div><b>Rechnung:</b> {% if invoice %}{{ invoice.invoice_no }}{% elif invoice_draft %}<a href="/crm/rechnungen/{{ invoice_draft.id }}">{{ invoice_draft.sevdesk_invoice_number or ('RE-ENTW-' ~ '%04d'|format(invoice_draft.id)) }}</a>{% else %}-{% endif %}</div>
       </div>
