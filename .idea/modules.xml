@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/kda_lager_docker.iml" filepath="$PROJECT_DIR$/.idea/kda_lager_docker.iml" />
+      <module fileurl="file://$USER_HOME$/.idea/max.iml" filepath="$USER_HOME$/.idea/max.iml" />
     </modules>
   </component>
 </project>

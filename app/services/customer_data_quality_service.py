@@ -292,9 +292,12 @@ def _address_local_validation(street: str, house_no: str, zip_code: str, city: s
 
 def _request_json(url: str, headers: dict[str, str], timeout: int) -> object:
     req = url_request.Request(url=url, headers=headers, method="GET")
-    with url_request.urlopen(req, timeout=timeout) as response:
-        payload = (response.read() or b"").decode("utf-8", errors="replace").strip()
-    return json.loads(payload) if payload else {}
+    try:
+        with url_request.urlopen(req, timeout=timeout) as response:
+            payload = (response.read() or b"").decode("utf-8", errors="replace").strip()
+        return json.loads(payload) if payload else {}
+    except (url_error.URLError, OSError, json.JSONDecodeError, ValueError):
+        return {}
 
 
 def validate_address(

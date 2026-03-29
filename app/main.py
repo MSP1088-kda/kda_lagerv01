@@ -616,9 +616,42 @@ OUTSMART_SETTING_WRITE_ENABLED = "outsmart_write_enabled"
 OUTSMART_SETTING_LAST_SYNC_AT = "outsmart_last_sync_at"
 SEVDESK_SETTING_LAST_SYNC_AT = "sevdesk_last_sync_at"
 
-templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-templates.env.filters["de_label"] = lambda value, kind: de_label(kind, value)
-templates.env.filters["eur_cents"] = lambda value: _format_eur(value)
+_jinja_templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+_jinja_templates.env.filters["de_label"] = lambda value, kind: de_label(kind, value)
+_jinja_templates.env.filters["eur_cents"] = lambda value: _format_eur(value)
+
+
+class _CompatTemplates:
+    """Wrapper around Jinja2Templates for Starlette 1.0 compatibility.
+
+    Accepts both old-style TemplateResponse("name.html", context_dict, ...)
+    and new-style TemplateResponse(request, "name.html", context=...).
+    """
+
+    def __init__(self, jinja: Jinja2Templates):
+        self._jinja = jinja
+
+    @property
+    def env(self):
+        return self._jinja.env
+
+    def get_template(self, name: str):
+        return self._jinja.get_template(name)
+
+    def TemplateResponse(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            name = args[0]
+            context = args[1] if len(args) > 1 else kwargs.pop("context", {})
+            status_code = args[2] if len(args) > 2 else kwargs.pop("status_code", 200)
+            request = context.get("request")
+            remaining = {k: v for k, v in kwargs.items() if k not in ("context", "status_code")}
+            return self._jinja.TemplateResponse(
+                request, name, context=context, status_code=status_code, **remaining,
+            )
+        return self._jinja.TemplateResponse(*args, **kwargs)
+
+
+templates = _CompatTemplates(_jinja_templates)
 
 app = FastAPI(title="KDA Lager (Standalone Modul)")
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
@@ -4131,7 +4164,7 @@ def _parse_eur_to_cents(raw: str | None, field_label: str) -> int | None:
 def _direct_receipt_payload_from_form(db: Session, form) -> tuple[dict, dict[str, str]]:
     errors: dict[str, str] = {}
     try:
-        quantity = int(form.get("receipt_quantity") or 0)
+        quantity = _to_int(form.get("receipt_quantity"))
     except Exception:
         quantity = 0
     if quantity <= 0:
@@ -6290,9 +6323,9 @@ def _purchase_document_prefill(
     line_rows[0]["cost_center_id"] = str(ai_voucher_output.get("suggested_cost_center") or "")
     line_rows[0]["comment"] = description
     if net_total is not None:
-        line_rows[0]["sum_net"] = _format_eur(int(net_total)).replace(" €", "")
+        line_rows[0]["sum_net"] = _format_eur(_to_int(net_total)).replace(" €", "")
     if gross_total is not None:
-        line_rows[0]["sum_gross"] = _format_eur(int(gross_total)).replace(" €", "")
+        line_rows[0]["sum_gross"] = _format_eur(_to_int(gross_total)).replace(" €", "")
     form_data: dict[str, str | list[str]] = {
         "description": description,
         "linked_document_id": str(item.paperless_document_id or ""),
@@ -10739,6 +10772,24 @@ async def http_exception_redirect_handler(request: Request, exc: HTTPException |
     return JSONResponse(status_code=status_code, content={"detail": detail}, headers=headers)
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled exception on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+    if _wants_json(request) or request.url.path.startswith("/api"):
+        return JSONResponse(status_code=500, content={"detail": "Interner Serverfehler"})
+    return templates.TemplateResponse(
+        "error.html",
+        _ctx(
+            request,
+            title="Interner Fehler",
+            error_title="Interner Fehler",
+            error_message="Ein unerwarteter Fehler ist aufgetreten. Bitte versuchen Sie es erneut.",
+            error_code=500,
+        ),
+        status_code=500,
+    )
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -10874,7 +10925,7 @@ async def setup_step_post(step: int, request: Request, db: Session = Depends(db_
 
     if step == 2:
         form = await request.form()
-        port = int(form.get("web_port", "8080"))
+        port = _to_int(form.get("web_port", "8080"), 8080)
         sp = db.query(ServicePort).filter(ServicePort.service_name == "web").one_or_none()
         if not sp:
             sp = ServicePort(service_name="web", port=port, protocol="http", exposed=True)
@@ -11642,7 +11693,7 @@ async def mobile_repair_quick_post(request: Request, user=Depends(require_lager_
     form_errors: dict[str, str] = {}
 
     try:
-        product_id = int(form.get("product_id") or 0)
+        product_id = _to_int(form.get("product_id"))
     except Exception:
         product_id = 0
     product = db.get(Product, product_id) if product_id > 0 else None
@@ -11687,14 +11738,14 @@ async def mobile_repair_quick_post(request: Request, user=Depends(require_lager_
         return render_error("supplier_id", "Bitte einen aktiven Lieferanten wählen.")
 
     try:
-        qty = int(form.get("qty") or 0)
+        qty = _to_int(form.get("qty"))
     except Exception:
         qty = 0
     if qty <= 0:
         return render_error("qty", "Menge muss größer 0 sein.")
 
     try:
-        source_warehouse_id = int(form.get("source_warehouse_id") or 0) or None
+        source_warehouse_id = _to_int(form.get("source_warehouse_id")) or None
     except Exception:
         source_warehouse_id = None
     if source_warehouse_id and not db.get(Warehouse, int(source_warehouse_id)):
@@ -14169,7 +14220,7 @@ async def kind_attributes_add(kind_id: int, request: Request, user=Depends(requi
     if not kind:
         raise HTTPException(status_code=404)
     form = await request.form()
-    attr_id = int(form.get("attribute_id") or 0)
+    attr_id = _to_int(form.get("attribute_id"))
     if not attr_id or not db.get(AttributeDef, attr_id):
         _flash(request, "Bitte ein Attribut auswählen.", "error")
         return RedirectResponse(f"/catalog/kinds/{kind_id}/attributes", status_code=302)
@@ -14285,7 +14336,7 @@ async def type_attributes_add(type_id: int, request: Request, user=Depends(requi
     if not dtype:
         raise HTTPException(status_code=404)
     form = await request.form()
-    attr_id = int(form.get("attribute_id") or 0)
+    attr_id = _to_int(form.get("attribute_id"))
     if not attr_id or not db.get(AttributeDef, attr_id):
         _flash(request, "Bitte ein Attribut auswählen.", "error")
         return RedirectResponse(f"/catalog/types/{type_id}/attributes", status_code=302)
@@ -17713,7 +17764,7 @@ def _parse_column_selection(form, specs: tuple[dict, ...], prefix: str) -> list[
         if form.get(f"{prefix}_visible_{key}") != "on":
             continue
         try:
-            order = int(form.get(f"{prefix}_order_{key}") or idx)
+            order = _to_int(form.get(f"{prefix}_order_{key}"), idx)
         except Exception:
             order = idx
         ranked.append((order, idx, key))
@@ -22377,9 +22428,9 @@ async def product_min_stock_set(product_id: int, request: Request, user=Depends(
     if not product:
         raise HTTPException(status_code=404)
     form = await request.form()
-    warehouse_id = int(form.get("warehouse_id") or 0)
-    bin_id = int(form.get("bin_id") or 0) or None
-    min_qty = int(form.get("min_qty") or 0)
+    warehouse_id = _to_int(form.get("warehouse_id"))
+    bin_id = _to_int(form.get("bin_id")) or None
+    min_qty = _to_int(form.get("min_qty"))
     if not warehouse_id:
         _flash(request, "Bitte Lager auswählen.", "error")
         return RedirectResponse(f"/catalog/products/{product_id}/edit", status_code=302)
@@ -22880,7 +22931,7 @@ async def product_link_add(product_id: int, request: Request, user=Depends(requi
         _flash(request, SETS_ONLY_MESSAGE, "error")
         return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
     form = await request.form()
-    target_id = int(form.get("b_product_id") or 0)
+    target_id = _to_int(form.get("b_product_id"))
     note = (form.get("note") or "").strip() or None
     if not target_id:
         _flash(request, "Bitte kompatibles Gerät auswählen.", "error")
@@ -23127,7 +23178,7 @@ async def set_item_add(set_id: int, request: Request, user=Depends(require_admin
     if not row:
         raise HTTPException(status_code=404)
     form = await request.form()
-    product_id = int(form.get("product_id") or 0)
+    product_id = _to_int(form.get("product_id"))
     if not product_id:
         _flash(request, "Bitte Produkt auswählen.", "error")
         return RedirectResponse(f"/catalog/sets/{set_id}", status_code=302)
@@ -23683,7 +23734,7 @@ async def condition_add(request: Request, user=Depends(require_admin), db: Sessi
     code = _sanitize_condition_code(form.get("code") or "")
     label_de = (form.get("label_de") or "").strip()
     try:
-        sort_order = int(form.get("sort_order") or 0)
+        sort_order = _to_int(form.get("sort_order"))
     except Exception:
         sort_order = 0
     active = form.get("active") == "on"
@@ -23725,7 +23776,7 @@ async def condition_edit_post(code: str, request: Request, user=Depends(require_
         return RedirectResponse(f"/stammdaten/zustaende/{code}/edit", status_code=302)
     row.label_de = label_de
     try:
-        row.sort_order = int(form.get("sort_order") or 0)
+        row.sort_order = _to_int(form.get("sort_order"))
     except Exception:
         row.sort_order = 0
     row.active = form.get("active") == "on"
@@ -23855,7 +23906,7 @@ async def formularregeln_save(request: Request, user=Depends(require_admin), db:
         row.visible = form.get(f"visible_{key}") == "on"
         row.required = row.visible and form.get(f"required_{key}") == "on"
         try:
-            row.sort_order = int(form.get(f"sort_order_{key}") or idx * 10)
+            row.sort_order = _to_int(form.get(f"sort_order_{key}"), idx * 10)
         except Exception:
             row.sort_order = idx * 10
         section = (form.get(f"section_{key}") or "").strip()
@@ -32215,7 +32266,7 @@ async def repair_new_post(request: Request, user=Depends(require_lager_access), 
         return _rerender_template_response(response)
 
     try:
-        article_id = int(form.get("article_id") or 0)
+        article_id = _to_int(form.get("article_id"))
     except Exception:
         article_id = 0
     product = db.get(Product, article_id) if article_id else None
@@ -32230,21 +32281,21 @@ async def repair_new_post(request: Request, user=Depends(require_lager_access), 
         return render_error("supplier_id", "Lieferant wurde nicht gefunden oder ist inaktiv.")
 
     try:
-        qty = int(form.get("qty") or 0)
+        qty = _to_int(form.get("qty"))
     except Exception:
         qty = 0
     if qty <= 0:
         return render_error("qty", "Menge muss größer 0 sein.")
 
     try:
-        source_warehouse_id = int(form.get("source_warehouse_id") or 0)
+        source_warehouse_id = _to_int(form.get("source_warehouse_id"))
     except Exception:
         source_warehouse_id = 0
     if source_warehouse_id <= 0 or not db.get(Warehouse, source_warehouse_id):
         return render_error("source_warehouse_id", "Bitte ein gültiges Quelllager wählen.")
 
     try:
-        target_warehouse_id = int(form.get("target_warehouse_id") or 0)
+        target_warehouse_id = _to_int(form.get("target_warehouse_id"))
     except Exception:
         target_warehouse_id = 0
     if target_warehouse_id and not db.get(Warehouse, target_warehouse_id):
@@ -32397,7 +32448,7 @@ async def repair_send(repair_id: int, request: Request, user=Depends(require_lag
         return _rerender_template_response(response)
 
     try:
-        account_id = int(form.get("email_account_id") or 0) or None
+        account_id = _to_int(form.get("email_account_id")) or None
     except Exception:
         account_id = None
     subject = (form.get("email_subject") or "").strip() or None
@@ -32672,7 +32723,7 @@ async def repair_lager_einbuchen(repair_id: int, request: Request, user=Depends(
         raise HTTPException(status_code=404)
     form = await request.form()
     try:
-        target_warehouse_id = int(form.get("target_warehouse_id") or 0) or None
+        target_warehouse_id = _to_int(form.get("target_warehouse_id")) or None
     except Exception:
         target_warehouse_id = None
     try:
@@ -32702,7 +32753,7 @@ async def repair_reservieren(repair_id: int, request: Request, user=Depends(requ
     form_data = _extract_form_data(form)
     form_errors: dict[str, str] = {}
     try:
-        target_warehouse_id = int(form.get("target_warehouse_id") or 0) or None
+        target_warehouse_id = _to_int(form.get("target_warehouse_id")) or None
     except Exception:
         target_warehouse_id = None
     reservation_ref = (form.get("reservation_ref") or "").strip() or None
@@ -34457,17 +34508,17 @@ async def einkauf_order_from_product(request: Request, user=Depends(require_admi
     form = await request.form()
     form_data = _extract_form_data(form)
     try:
-        product_id = int(form.get("product_id") or 0)
+        product_id = _to_int(form.get("product_id"))
     except Exception:
         product_id = 0
     draft_key = f"draft:/einkauf/bestellungen/aus-produkt:{int(product_id or 0)}"
     _draft_set(request, draft_key, form_data)
     try:
-        supplier_id = int(form.get("supplier_id") or 0)
+        supplier_id = _to_int(form.get("supplier_id"))
     except Exception:
         supplier_id = 0
     try:
-        qty = int(form.get("qty") or 0)
+        qty = _to_int(form.get("qty"))
     except Exception:
         qty = 0
     product = db.get(Product, product_id) if product_id else None
@@ -37176,8 +37227,8 @@ def stocktake_new_get(request: Request, user=Depends(require_lager_access), db: 
 @app.post("/inventory/stocktakes/new")
 async def stocktake_new_post(request: Request, user=Depends(require_lager_access), db: Session = Depends(db_session)):
     form = await request.form()
-    warehouse_id = int(form.get("warehouse_id") or 0)
-    bin_id = int(form.get("bin_id") or 0) or None
+    warehouse_id = _to_int(form.get("warehouse_id"))
+    bin_id = _to_int(form.get("bin_id")) or None
     if not warehouse_id:
         _flash(request, "Bitte ein Lager auswählen.", "error")
         return RedirectResponse("/inventory/stocktakes/new", status_code=302)
@@ -37235,8 +37286,8 @@ async def stocktake_line_add(stocktake_id: int, request: Request, user=Depends(r
         _flash(request, "Inventur ist bereits abgeschlossen.", "error")
         return RedirectResponse(f"/inventory/stocktakes/{stocktake_id}", status_code=302)
     form = await request.form()
-    product_id = int(form.get("product_id") or 0)
-    counted_qty = int(form.get("counted_qty") or 0)
+    product_id = _to_int(form.get("product_id"))
+    counted_qty = _to_int(form.get("counted_qty"))
     serial_number = (form.get("serial_number") or "").strip() or None
     note = (form.get("note") or "").strip() or None
     if not product_id:
@@ -37457,7 +37508,7 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
     if tx_type not in ("receipt", "issue", "transfer", "scrap", "adjust"):
         return render_error("tx_type", "Ungültiger Buchungstyp.")
     try:
-        product_id = int(form.get("product_id") or 0)
+        product_id = _to_int(form.get("product_id"))
     except Exception:
         product_id = 0
     product = db.get(Product, product_id)
@@ -37547,7 +37598,7 @@ async def tx_new_post(request: Request, user=Depends(require_lager_access), db: 
         return render_error("condition", "Ungültiger oder inaktiver Zustand.")
 
     try:
-        qty = int(form.get("quantity") or 0)
+        qty = _to_int(form.get("quantity"))
     except Exception:
         qty = 0
     if tx_type == "adjust":
@@ -37649,14 +37700,14 @@ def reservations_new_get(
 @app.post("/inventory/reservations/new")
 async def reservations_new_post(request: Request, user=Depends(require_reservation_access), db: Session = Depends(db_session)):
     form = await request.form()
-    product_id = int(form.get("product_id") or 0)
-    warehouse_id = int(form.get("warehouse_id") or 0)
+    product_id = _to_int(form.get("product_id"))
+    warehouse_id = _to_int(form.get("warehouse_id"))
     condition = _condition_code_from_input(form.get("condition"))
     if not _condition_exists(db, condition, active_only=True):
         _flash(request, "Ungültiger oder inaktiver Zustand.", "error")
         return RedirectResponse("/inventory/reservations/new", status_code=302)
     reference = (form.get("reference") or "").strip() or None
-    qty = int(form.get("qty") or 1)
+    qty = _to_int(form.get("qty"), 1)
 
     product = db.get(Product, product_id)
     if not product:

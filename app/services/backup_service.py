@@ -91,7 +91,10 @@ def _load_manifest(work_dir: Path) -> dict:
     manifest_path = work_dir / "backup.json"
     if not manifest_path.exists():
         raise ValueError("backup.json fehlt (ungültiges Backup)")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"backup.json ist beschädigt: {exc}") from exc
     if manifest.get("app") != "kda_lager":
         raise ValueError("Backup gehört nicht zu kda_lager")
     if int(manifest.get("schema_version", 0)) > SCHEMA_VERSION:

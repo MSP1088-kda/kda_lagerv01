@@ -571,7 +571,7 @@ def fetch_remote_asset(
                 raise ValueError("Asset-Typ passt nicht zur erwarteten Dokumentart.")
             file_name = Path(str(urlsplit(final_url).path or "").strip()).name or f"asset_{uuid.uuid4().hex[:8]}"
             return payload, (_normalize_mime_type(mime_type) or _guess_mime_type(file_name)), file_name, final_url
-        except (url_error.URLError, ValueError) as exc:
+        except (url_error.URLError, ValueError, OSError) as exc:
             last_error = exc
             continue
     if last_error:
