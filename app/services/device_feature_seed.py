@@ -698,7 +698,8 @@ DEVICE_FEATURE_DEFINITIONS: dict[str, list[dict]] = {
             "filterable": True,
             "options": ["Matt", "Glänzend"],
             "csv_columns": [],
-            "regex": r"(?:matt|glänzend|glaskeramik)",
+            "regex": r"(?:Matt Edition|mattes Glaskeramik)",
+            "derive": "glass_type",
         },
         {
             "key": "geraetebreite",
@@ -1139,6 +1140,25 @@ def _derive_hob_cutout_width(width_mm: str) -> str:
     return "90 cm"
 
 
+def _derive_glass_type(short_desc: str, long_desc: str) -> str:
+    """Glasart des Kochfelds: Matt oder Glänzend.
+
+    Matt-Erkennung aus COL_MAIN (Mattschwarz) oder LONG_DESCRIPTION (Matt Edition).
+    Edelstahl/Gas-Kochfelder haben kein Glas → leer.
+    """
+    # Wird mit short_desc=SHORT_DESCRIPTION, long_desc=LONG_DESCRIPTION aufgerufen.
+    # Aber wir brauchen auch COL_MAIN und SURFACE_BASIC_MAT → die kommen über
+    # den row-Kontext. Da diese Funktion nur short+long bekommt, nutzen wir den Text.
+    combined = f"{short_desc} {long_desc}".lower()
+    if "matt edition" in combined or "mattes glaskeramik" in combined or "mattschwarz" in combined:
+        return "Matt"
+    if any(w in combined for w in ("glaskeramik", "hartglas", "ceranfeld")):
+        return "Glänzend"
+    if "gas" in combined:
+        return ""  # Gas-Kochfelder haben kein Glaskeramik
+    return ""
+
+
 DERIVE_FUNCTIONS = {
     "width_to_baubreite": _derive_width_to_baubreite,
     "niche_height": _derive_niche_height,
@@ -1148,6 +1168,7 @@ DERIVE_FUNCTIONS = {
     "besteckschublade": _derive_besteckschublade,
     "anzeige": _derive_anzeige,
     "dosierung": _derive_dosierung,
+    "glass_type": _derive_glass_type,
 }
 
 
@@ -1372,6 +1393,18 @@ def normalize_csv_feature_value(feature_key: str, raw_value: str) -> str:
             return "Teleskopauszug"
         if "nachrüstbar" in raw_lower:
             return "Auszug nachrüstbar"
+        return raw
+
+    if feature_key == "glasart":
+        # SURFACE_BASIC_MAT: "Glaskeramik", "Hartglas", "Edelstahl"
+        # COL_MAIN: "Mattschwarz" → Matt
+        # LONG_DESCRIPTION: "Matt Edition" → Matt
+        if any(w in raw_lower for w in ("matt",)):
+            return "Matt"
+        if any(w in raw_lower for w in ("glaskeramik", "hartglas", "glas", "ceramic", "glass")):
+            return "Glänzend"
+        if raw_lower in ("edelstahl", "schwarz", "weiß", "silber"):
+            return ""  # Farbe, nicht Glasart
         return raw
 
     if feature_key == "rahmenart":
@@ -1602,7 +1635,8 @@ def extract_features_from_csv_row(
                 niche_max = _pick_csv_value(row, [cols[1]] if len(cols) > 1 else [])
                 raw_value = func(niche_min, niche_max)
             elif derive_func_name in ("hob_heating_type", "bauart_from_short",
-                                       "besteckschublade", "anzeige", "dosierung"):
+                                       "besteckschublade", "anzeige", "dosierung",
+                                       "glass_type"):
                 # Diese Funktionen erwarten (short_desc, long_desc)
                 raw_value = func(short_desc, long_desc)
 
