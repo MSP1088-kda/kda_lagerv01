@@ -280,9 +280,27 @@ NAV_ITEMS: list[dict] = [
                 "roles": ("admin",),
             },
             {
-                "label_de": "Integrationen",
+                "label_de": "Integration: sevDesk",
                 "path": "/system/integrationen/sevdesk",
-                "aliases": "sevdesk outsmart paperless openai integrationen",
+                "aliases": "sevdesk rechnung angebot voucher",
+                "roles": ("admin",),
+            },
+            {
+                "label_de": "Integration: Paperless",
+                "path": "/system/integrationen/paperless",
+                "aliases": "paperless dokumente dms",
+                "roles": ("admin",),
+            },
+            {
+                "label_de": "Integration: OutSmart",
+                "path": "/system/integrationen/outsmart",
+                "aliases": "outsmart workorder serviceauftrag",
+                "roles": ("admin",),
+            },
+            {
+                "label_de": "Integration: OpenAI",
+                "path": "/system/integrationen/openai",
+                "aliases": "openai ki llm",
                 "roles": ("admin",),
             },
             {
