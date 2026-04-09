@@ -431,33 +431,123 @@ def import_product_from_pdf(
     # 5. Kerndaten bestimmen
     ean = tech_data.get("_ean", "")
     pnc = tech_data.get("_pnc", "")
-    model = tech_data.get("_model", "")
 
-    # Modellname aus den ersten Textzeilen
     lines = [l.strip() for l in text.split("\n") if l.strip() and len(l.strip()) > 2]
-    sales_name = model
+
+    # Modellname: Suche nach typischem Muster (alphanumerischer Code)
+    # AEG: steht am Ende des PDFs oder im Dateinamen (z.B. "GI9210X2TF")
+    # Liebherr: steht in der ersten Zeile (z.B. "CNsfa 7723")
+    model = ""
+
+    # Strategie 1: Aus Dateiname extrahieren (z.B. "Datasheet_GI9210X2TF.pdf")
+    pdf_filename = Path(pdf_path).stem
+    fn_match = re.search(r"(?:Datasheet_|datasheet_)?([A-Z]{1,5}[\w]{3,20})", pdf_filename)
+    if fn_match:
+        candidate = fn_match.group(1)
+        if candidate.lower() not in ("datasheet", "download", "product"):
+            model = candidate
+
+    # Strategie 2: Modellcode am Ende des PDFs (AEG-Pattern: letzte kurze Zeile)
+    if not model:
+        for line in reversed(lines[-20:]):
+            if re.match(r"^[A-Z]{1,5}[\w]{3,20}$", line.strip()) and len(line.strip()) < 25:
+                model = line.strip()
+                break
+
+    # Strategie 3: Erste kurze Zeile die wie ein Modellcode aussieht (Liebherr)
+    if not model:
+        for line in lines[:5]:
+            if re.match(r"^[A-Z]{1,5}[\w\s]{2,20}$", line.strip()) and len(line.strip()) < 25:
+                model = line.strip()
+                break
+
+    # Produkttitel: Der qualitative Titel (z.B. "9000 / Vollintegrierter-Geschirrspüler")
+    # AEG: Titelzeile steht VOR dem Modellnamen am Ende ("9000 / ... / Supersilent 37 dB ...")
+    # Liebherr: Steht nach dem Modellnamen (z.B. "Kühl-Gefrierkombination mit EasyFresh und NoFrost")
     product_title_1 = ""
-    for line in lines[:15]:
-        if len(line) > 80:
-            continue
-        if manufacturer_name.lower() in line.lower():
-            continue
-        if line.lower() in ("technische daten", "features", "zubehör", "produktvorteile & ausstattung"):
-            continue
-        if not sales_name:
-            sales_name = line
-        elif not product_title_1 and line != sales_name:
-            product_title_1 = line
+    short_description = ""
+
+    # AEG-Format: Zeile 0 ist SHORT_DESCRIPTION ("Vollintegrierter Geschirrspüler / 82 x 60 cm / 37dB / A")
+    if lines and "/" in lines[0] and any(c.isdigit() for c in lines[0]):
+        short_description = lines[0]
+
+    # Suche den vollständigen Produkttitel (nahe dem Modellnamen)
+    for i, line in enumerate(lines):
+        if line.strip() == model and i > 0:
+            # Zeile(n) VOR dem Modellnamen = Produkttitel
+            candidate_title = lines[i - 1].strip()
+            if 5 < len(candidate_title) < 120 and candidate_title.lower() not in ("technische daten",):
+                product_title_1 = candidate_title
+                # Ggf. noch eine Zeile davor (mehrzeiliger Titel)
+                if i > 1 and 5 < len(lines[i - 2].strip()) < 80:
+                    prev = lines[i - 2].strip()
+                    if prev.lower() not in ("technische daten",) and "/" in prev:
+                        product_title_1 = prev + " " + product_title_1
             break
 
+    # Liebherr-Fallback: Titel aus Zeilen nach dem Modellnamen
+    _SKIP_TITLE_WORDS = {"plus", "standgerät", "einbaugerät", "einbau", "made in germany",
+                          "german engineering", "technische daten", "features", "zubehör"}
+    if not product_title_1:
+        for i, line in enumerate(lines[:10]):
+            if line.strip() == model:
+                for j in range(i + 1, min(i + 6, len(lines))):
+                    candidate = lines[j].strip()
+                    if len(candidate) > 10 and candidate.lower() not in _SKIP_TITLE_WORDS:
+                        product_title_1 = candidate
+                        break
+                break
+
+    # Mehrzeilige Titel zusammenfügen (z.B. "Integrierbare Kühl-\nGefrierkombination\nmit BioFresh")
+    if product_title_1 and product_title_1.endswith("-"):
+        idx = lines.index(product_title_1) if product_title_1 in lines else -1
+        if idx >= 0:
+            combined = product_title_1
+            for k in range(idx + 1, min(idx + 3, len(lines))):
+                next_line = lines[k].strip()
+                if next_line.lower() in _SKIP_TITLE_WORDS or len(next_line) > 60:
+                    break
+                combined += next_line
+                if not next_line.endswith("-"):
+                    break
+            product_title_1 = combined
+
+    # Titel aus Gerätebezeichnung im Text (Liebherr-Muster)
+    if not product_title_1 or product_title_1.lower() in _SKIP_TITLE_WORDS:
+        for line in lines[:20]:
+            low = line.lower().strip()
+            if ("kombination" in low or "kühlschrank" in low or "gefrier" in low
+                    or "waschmaschine" in low or "trockner" in low or "geschirrspüler" in low
+                    or "backofen" in low or "kochfeld" in low):
+                if len(line.strip()) > 15:
+                    product_title_1 = line.strip()
+                    # Mehrzeilig? (z.B. "Integrierbare Kühl-\nGefrierkombination")
+                    if product_title_1.endswith("-"):
+                        idx = lines.index(line) if line in lines else -1
+                        if idx >= 0 and idx + 1 < len(lines):
+                            product_title_1 += lines[idx + 1].strip()
+                    break
+
+    # sales_name: Modellname oder SHORT_DESCRIPTION als Fallback
+    sales_name = model or short_description
+
+    # material_no: PNC (AEG) oder Modellcode
     material_no = pnc or model or sales_name
 
-    # 6. Beschreibung zusammenbauen
+    # 6. Beschreibung: Aus Bullet-Points und beschreibenden Absätzen
     desc_parts = []
-    for line in lines[:30]:
-        if len(line) > 30 and ":" not in line and len(line) < 300:
+    in_features = False
+    for line in lines[:40]:
+        if "Produktvorteile" in line or "Features" in line:
+            in_features = True
+            continue
+        if "Technische Daten" in line:
+            break
+        if in_features and line.startswith("•"):
             desc_parts.append(line)
-        if len(desc_parts) >= 5:
+        elif not in_features and len(line) > 30 and ":" not in line and len(line) < 300:
+            desc_parts.append(line)
+        if len(desc_parts) >= 8:
             break
     description = "\n".join(desc_parts)
 
