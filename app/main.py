@@ -22607,27 +22607,71 @@ def product_detail_get(
         kind_row = db.get(DeviceKind, int(product.device_kind_id))
         if kind_row:
             device_kind_name = str(kind_row.name or "").strip() or "-"
-    distinct_titles = _catalog_unique_product_texts(
-        [
-            str(product.sales_name or "").strip(),
-            str(product.product_title_1 or "").strip(),
-            str(product.product_title_2 or "").strip(),
-            str(product.name or "").strip(),
-        ]
-    )
-    detail_heading = distinct_titles[0] if distinct_titles else (str(product.material_no or "").strip() or f"Produkt #{int(product.id)}")
-    detail_title_lines = distinct_titles[1:3]
-    core_fields = [
-        {"label": "Materialnummer", "value": str(product.material_no or "").strip() or "-"},
-        {"label": "EAN/GTIN", "value": str(product.ean or "").strip() or "-"},
-        {"label": "Status", "value": "Aktiv" if bool(product.active) else "Archiviert"},
+    # Saubere deutsche Produktbezeichnung aufbauen
+    model_code = str(product.material_no or product.sales_name or product.name or "").strip()
+    raw_titles = [
+        str(product.product_title_2 or "").strip(),  # Längster Titel zuerst (enthält oft Serie + Bezeichnung)
+        str(product.product_title_1 or "").strip(),
+        str(product.sales_name or "").strip(),
+        str(product.name or "").strip(),
     ]
-    if str(product.sales_name or "").strip() and normalize_candidate_name(str(product.sales_name or "").strip()) != normalize_candidate_name(detail_heading):
-        core_fields.insert(0, {"label": "Verkaufsbezeichnung", "value": str(product.sales_name or "").strip()})
-    if len(detail_title_lines) >= 1:
-        core_fields.append({"label": "Produkttitel 1", "value": detail_title_lines[0]})
-    if len(detail_title_lines) >= 2:
-        core_fields.append({"label": "Produkttitel 2", "value": detail_title_lines[1]})
+    # Deutschen Produkttitel extrahieren: Modellcode und englische Teile entfernen
+    clean_title = ""
+    for raw in raw_titles:
+        if not raw:
+            continue
+        # Titel bereinigen: Modellcode, Artikelnummern, englische Wörter entfernen
+        parts = [p.strip() for p in raw.replace(", ", " / ").split(" / ") if p.strip()]
+        german_parts = []
+        for part in parts:
+            p_clean = part.strip().rstrip(",").strip()
+            if not p_clean:
+                continue
+            # Modellcode/Artikelnummer überspringen (z.B. "S125EBS03D", "AEG900 258 725")
+            if p_clean == model_code:
+                continue
+            if re.match(r"^[A-Z0-9]{5,}$", p_clean):
+                continue
+            if re.match(r"^[A-Z]+\d{3,}", p_clean):
+                continue
+            # Rein englische Teile überspringen
+            _ENGLISH_WORDS = {"cleaner", "bagless", "built-in", "fridge", "freezer", "dishwasher",
+                              "washing", "machine", "dryer", "oven", "hob", "hood", "cooker", "iron",
+                              "stainless", "steel", "black", "white", "silver", "grey", "door", "panel",
+                              "with", "and", "for", "the", "top", "front", "loading", "free", "standing",
+                              "fully", "integrated", "semi", "induction", "gas", "electric", "ceramic"}
+            words_in_part = [w for w in p_clean.split() if len(w) > 2]
+            if words_in_part and all(w.lower() in _ENGLISH_WORDS for w in words_in_part):
+                continue
+            # Gemischte englisch/deutsche Teile: nur den deutschen Teil behalten
+            if " " in p_clean:
+                de_words = [w for w in p_clean.split() if w.lower() not in _ENGLISH_WORDS]
+                en_ratio = 1 - (len(de_words) / max(len(words_in_part), 1))
+                if en_ratio > 0.6 and de_words:
+                    p_clean = " ".join(de_words)
+            # Reine Merkmalswerte überspringen (Farben, Maße — stehen in den Features)
+            _SKIP_ATTRIBUTE_PARTS = {"weiß", "weiss", "schwarz", "edelstahl", "silber", "grau",
+                                      "gebürsteter stahl", "blacksteel", "graphit", "mattschwarz",
+                                      "deep black inox", "dark inox", "nicht zutreffend"}
+            if p_clean.lower() in _SKIP_ATTRIBUTE_PARTS:
+                continue
+            if re.match(r"^\d{2,4}\s*(cm|mm)$", p_clean):
+                continue
+            german_parts.append(p_clean)
+        if german_parts and len(" / ".join(german_parts)) > len(clean_title):
+            clean_title = " / ".join(german_parts)
+
+    detail_heading = clean_title or model_code or f"Produkt #{int(product.id)}"
+    # Fallback: wenn heading nur der Modellcode ist, zeige Geräteart als Zusatz
+    if detail_heading == model_code and device_kind_name != "-":
+        detail_heading = f"{model_code} — {device_kind_name}"
+
+    core_fields = [
+        {"label": "Modell", "value": model_code or "-"},
+        {"label": "EAN/GTIN", "value": str(product.ean or "").strip() or "-"},
+        {"label": "Hersteller", "value": manufacturer_name},
+        {"label": "Geräteart", "value": device_kind_name},
+    ]
     analysis_fields = [
         {"label": "Quelle", "value": str(product.source_kind or ("legacy" if latest_snapshot else "manuell"))},
         {"label": "Importprofil", "value": str(import_profile.name or "").strip() if import_profile else "-"},
