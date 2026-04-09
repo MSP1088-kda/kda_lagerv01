@@ -9950,6 +9950,64 @@ def _catalog_admin_form_fields() -> list[dict]:
     return [field for field in FORM_FIELDS if str(field.get("key") or "") not in CATALOG_DEPRECATED_FORM_FIELDS]
 
 
+def _fix_existing_product_categories(db: Session) -> None:
+    """Korrigiert Kategorisierung bestehender Produkte.
+
+    1. Dampfbacköfen: Produkte in Einbauherd/Backofen die 'Dampf'/'Steam' enthalten
+       werden nach Dampfbackofen verschoben
+    2. Zubehör: Produkte mit DeviceKind 'Zubehör' bekommen item_type='accessory'
+    """
+    fixed_count = 0
+
+    # 1. Dampfbacköfen umkategorisieren
+    backofen_kind = db.query(DeviceKind).filter(DeviceKind.name == "Einbauherd/Backofen").one_or_none()
+    dampf_kind = db.query(DeviceKind).filter(DeviceKind.name == "Dampfbackofen").one_or_none()
+    if backofen_kind and dampf_kind:
+        candidates = (
+            db.query(Product)
+            .filter(
+                Product.device_kind_id == int(backofen_kind.id),
+                Product.active == True,
+            )
+            .all()
+        )
+        for product in candidates:
+            check_text = " ".join([
+                str(product.sales_name or ""),
+                str(product.name or ""),
+                str(product.product_title_1 or ""),
+                str(product.description or "")[:300],
+            ]).lower()
+            if any(w in check_text for w in ("dampfback", "dampf-back", "mit dampf", "combi steam", "steam oven", "kompaktdampf")):
+                product.device_kind_id = int(dampf_kind.id)
+                db.add(product)
+                fixed_count += 1
+
+    # 2. Zubehör-Produkte: item_type korrigieren
+    zubehoer_kinds = (
+        db.query(DeviceKind)
+        .filter(DeviceKind.name.in_(["Zubehör", "Komplementäre Produkte"]))
+        .all()
+    )
+    for kind in zubehoer_kinds:
+        updated = (
+            db.query(Product)
+            .filter(
+                Product.device_kind_id == int(kind.id),
+                Product.item_type != "accessory",
+            )
+            .update({Product.item_type: "accessory"}, synchronize_session=False)
+        )
+        fixed_count += int(updated or 0)
+
+    if fixed_count > 0:
+        try:
+            db.flush()
+        except Exception:
+            pass
+        logger.info("Produktkategorien korrigiert: %d Produkte", fixed_count)
+
+
 def _seed_manufacturer_datasheet_links(db: Session) -> None:
     """BSH-Marken und weitere Hersteller: Datenblatt-Linklogik konfigurieren.
 
@@ -10071,6 +10129,8 @@ def _seed_defaults(db: Session):
         logger.warning("Feature-Seeding fehlgeschlagen: %s", exc)
     # BSH-Marken: Datenblatt-Linklogik konfigurieren
     _seed_manufacturer_datasheet_links(db)
+    # Bestehende Daten korrigieren
+    _fix_existing_product_categories(db)
     if changed or db.new or db.dirty or db.deleted:
         db.commit()
     else:
