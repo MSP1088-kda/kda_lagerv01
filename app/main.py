@@ -16948,10 +16948,23 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
                     product.item_type = "accessory"
                 else:
                     product.item_type = "appliance"
+
+                # Sub-Kategorie-Erkennung: Dampfbackofen aus Einbauherd/Backofen-CSV
+                actual_kind = row_kind
+                if kind_name_lower in ("einbauherd/backofen", "einbauherd", "backofen", "ovens"):
+                    short_desc = str(core_values.get("sales_name") or "").lower()
+                    long_desc_start = str(core_values.get("product_title_1") or str(core_values.get("description") or ""))[:300].lower()
+                    combined_check = f"{short_desc} {long_desc_start}"
+                    if any(w in combined_check for w in ("dampf", "steam", "combi steam")):
+                        dampf_kind = db.query(DeviceKind).filter(DeviceKind.name == "Dampfbackofen").one_or_none()
+                        if dampf_kind:
+                            actual_kind = dampf_kind
+                            seed_features_for_kind(db, dampf_kind)
+
                 product.track_mode = "quantity"
                 product.manufacturer_id = int(row_manufacturer.id)
                 product.manufacturer = str(row_manufacturer.name or "").strip() or product.manufacturer
-                product.device_kind_id = int(row_kind.id)
+                product.device_kind_id = int(actual_kind.id)
                 product.device_type_id = None
                 product.area_id = None
                 product.active = True
@@ -16987,13 +17000,18 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
 
                 # --- Feature-Extraktion aus CSV-Spalten ---
                 try:
+                    row_kind_name = str(actual_kind.name or selected_kind_name).strip()
+                    row_feature_defs = feature_defs_by_key
+                    if int(actual_kind.id) != int(selected_kind.id):
+                        row_fds = _feature_defs_for_kind(db, int(actual_kind.id))
+                        row_feature_defs = {str(fd.key or "").strip(): fd for fd in row_fds}
                     csv_feature_values = extract_features_from_csv_row(
                         row,
-                        device_kind_name=selected_kind_name,
-                        feature_defs=feature_defs_by_key,
+                        device_kind_name=row_kind_name,
+                        feature_defs=row_feature_defs,
                     )
                     for fkey, fval in csv_feature_values.items():
-                        fdef = feature_defs_by_key.get(fkey)
+                        fdef = row_feature_defs.get(fkey)
                         if fdef and fval:
                             try:
                                 with db.begin_nested():
