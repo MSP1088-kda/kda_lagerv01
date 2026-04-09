@@ -21207,6 +21207,47 @@ def products_new_get(
 
 @app.post("/catalog/products/new/analyze", response_class=HTMLResponse)
 async def products_new_pdf_analyze(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    """PDF-Datenblatt hochladen → Produkt direkt anlegen über den neuen PDF-Import-Service."""
+    form = await request.form()
+    upload: UploadFile = form.get("datasheet_upload")  # type: ignore
+    if not upload or not str(getattr(upload, "filename", "") or "").strip():
+        return _catalog_product_pdf_import_response(request, user=user, global_errors=["Bitte ein Produktdatenblatt auswählen."])
+    payload = await upload.read()
+    if not payload:
+        return _catalog_product_pdf_import_response(request, user=user, global_errors=["Das Produktdatenblatt ist leer."])
+
+    # Neuer Weg: direkt über import_product_from_pdf
+    tmp_root = ensure_dirs()["tmp"] / "imports"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_root / f"pdf_new_{uuid.uuid4().hex[:12]}.pdf"
+    tmp_path.write_bytes(payload)
+    try:
+        result = import_product_from_pdf(db, tmp_path)
+        db.commit()
+        product_id = result["product_id"]
+        action = "angelegt" if result.get("created") else "aktualisiert"
+        _flash(
+            request,
+            f"Produkt '{result['product_name']}' aus Datenblatt {action}. "
+            f"Hersteller: {result['manufacturer']}, Geräteart: {result['device_kind']}, "
+            f"Merkmale: {result['features_set']}, Bilder: {result['images_saved']}"
+            + (f", EAN: {result['ean']}" if result.get("ean") else ""),
+            "info",
+        )
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    except Exception as exc:
+        db.rollback()
+        return _catalog_product_pdf_import_response(request, user=user, global_errors=[f"PDF-Import fehlgeschlagen: {exc}"])
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@app.post("/catalog/products/new/analyze-legacy", response_class=HTMLResponse)
+async def products_new_pdf_analyze_legacy(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    """Legacy PDF-Analyse (alter Weg mit Review-Zwischenschritt)."""
     form = await request.form()
     upload: UploadFile = form.get("datasheet_upload")  # type: ignore
     if not upload or not str(getattr(upload, "filename", "") or "").strip():
@@ -21380,64 +21421,35 @@ async def products_new_pdf_confirm(request: Request, user=Depends(require_admin)
         original_name=str(review_payload.get("source_filename") or source_path.name),
         extract_text_enabled=True,
     )
-    for attr in attrs:
-        value_text = str(parsed_attr_values.get(int(attr.id)) or "").strip()
-        if not value_text:
-            continue
-        _catalog_upsert_product_attribute_value(
-            db,
-            product_id=int(product.id),
-            attribute_id=int(attr.id),
-            value_text=value_text,
-        )
-    created_attr_cache = {normalize_candidate_name(str(attr.name or "")): attr for attr in attrs if str(attr.name or "").strip()}
-    for candidate in candidate_actions:
-        attr = candidate.get("attribute")
-        if not isinstance(attr, AttributeDef):
-            payload = candidate.get("new_attribute_payload") if isinstance(candidate.get("new_attribute_payload"), dict) else {}
-            normalized_name = normalize_candidate_name(payload.get("name"))
-            attr = created_attr_cache.get(normalized_name) if normalized_name else None
-            if not isinstance(attr, AttributeDef):
-                attr = _catalog_create_kind_attribute(
-                    db,
-                    device_kind_id=int(device_kind_row.id),
-                    name=str(payload.get("name") or "").strip(),
-                    value_type=str(payload.get("value_type") or "text"),
-                    group_name=str(payload.get("group_name") or "").strip(),
-                    enum_options_raw=str(payload.get("enum_options_raw") or "").strip(),
-                    is_required=bool(payload.get("is_required")),
-                    is_multi=bool(payload.get("is_multi")),
-                )
-                if normalized_name:
-                    created_attr_cache[normalized_name] = attr
-        confirmed_value = str(candidate.get("confirmed_value") or "").strip()
-        if confirmed_value:
-            _catalog_upsert_product_attribute_value(
-                db,
-                product_id=int(product.id),
-                attribute_id=int(attr.id),
-                value_text=confirmed_value,
-            )
-        source_label = str(candidate.get("source_label") or "").strip()
-        if source_label and confirmed_value:
-            _catalog_upsert_attribute_pdf_alias(
-                db,
-                attribute_id=int(attr.id),
-                alias_text=source_label,
-                manufacturer_id=int(manufacturer_row.id) if manufacturer_row else None,
-                device_kind_id=int(device_kind_row.id) if device_kind_row else None,
-            )
-
-    if not any(str(value or "").strip() for value in parsed_attr_values.values()) and not any(str(item.get("confirmed_value") or "").strip() for item in candidate_actions):
-        datasheet_text = _catalog_product_datasheet_text(db, product)
-        if datasheet_text:
-            _catalog_apply_pdf_review_to_product(
-                db,
-                product=product,
-                pdf_text=datasheet_text,
-                manufacturer_row=manufacturer_row,
-                device_kind_row=device_kind_row,
-            )
+    # Feature-Extraktion aus dem Datenblatt-Text
+    if device_kind_row:
+        try:
+            from .services.pdf_product_import_service import extract_technical_data
+            seed_features_for_kind(db, device_kind_row)
+            db.flush()
+            datasheet_text = _catalog_product_datasheet_text(db, product)
+            if datasheet_text:
+                tech_data = extract_technical_data(datasheet_text)
+                feature_defs = _feature_defs_for_kind(db, int(device_kind_row.id))
+                feature_defs_by_key = {str(fd.key or "").strip(): fd for fd in feature_defs}
+                for feature_key, raw_value in tech_data.items():
+                    if feature_key.startswith("_"):
+                        continue
+                    fdef = feature_defs_by_key.get(feature_key)
+                    if fdef and raw_value:
+                        try:
+                            _set_feature_value(
+                                db,
+                                product_id=int(product.id),
+                                feature_def=fdef,
+                                raw_value=str(raw_value),
+                                manufacturer_id=int(manufacturer_row.id) if manufacturer_row else None,
+                                apply_rules=True,
+                            )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     _refresh_product_search_blob(db, product, kind_name=str(device_kind_row.name or "").strip())
     write_product_outbox_event(db, product, event_type="ProductCreated" if created_new_product else "ProductUpdated")
