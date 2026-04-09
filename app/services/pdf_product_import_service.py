@@ -461,74 +461,117 @@ def import_product_from_pdf(
             break
     description = "\n".join(desc_parts)
 
-    # 7. Produkt anlegen oder updaten
+    # 7. Produkt suchen (4-Stufen-Kaskade) oder neu anlegen
+    from sqlalchemy import func as sqla_func
     product = None
+
+    # Stufe 1: EAN (stärkster Key)
     if ean:
         product = db.query(Product).filter(Product.ean == ean, Product.active == True).first()
+
+    # Stufe 2: material_no mit Hersteller
     if not product and material_no:
         product = (
             db.query(Product)
-            .filter(Product.material_no == material_no, Product.active == True)
+            .filter(
+                Product.material_no == material_no,
+                Product.manufacturer_id == int(manufacturer.id),
+                Product.active == True,
+            )
             .first()
         )
 
-    created = False
-    if not product:
-        product = Product(active=True, track_mode="quantity", item_type="appliance")
-        created = True
+    # Stufe 3: sales_name mit Hersteller
+    if not product and sales_name:
+        product = (
+            db.query(Product)
+            .filter(
+                sqla_func.lower(Product.sales_name) == sales_name.lower(),
+                Product.manufacturer_id == int(manufacturer.id),
+                Product.active == True,
+            )
+            .first()
+        )
 
-    product.name = sales_name or material_no or f"PDF-Import {uuid.uuid4().hex[:8]}"
-    product.sales_name = sales_name or product.sales_name
-    product.material_no = material_no or product.material_no
-    product.ean = ean or product.ean
-    product.product_title_1 = product_title_1 or product.product_title_1
-    product.description = description or product.description
-    product.manufacturer_id = int(manufacturer.id)
-    product.manufacturer = str(manufacturer.name or "")
-    product.device_kind_id = int(device_kind.id)
-    product.source_kind = "pdf"
-    product.item_type = "appliance"
+    # Stufe 4: name-Feld mit Hersteller
+    if not product and sales_name:
+        product = (
+            db.query(Product)
+            .filter(
+                sqla_func.lower(Product.name) == sales_name.lower(),
+                Product.manufacturer_id == int(manufacturer.id),
+                Product.active == True,
+            )
+            .first()
+        )
+
+    created = not product
+    if created:
+        product = Product(active=True, track_mode="quantity", item_type="appliance")
+        product.name = sales_name or material_no or f"PDF-Import {uuid.uuid4().hex[:8]}"
+        product.sales_name = sales_name
+        product.material_no = material_no
+        product.ean = ean
+        product.product_title_1 = product_title_1
+        product.description = description
+        product.manufacturer_id = int(manufacturer.id)
+        product.manufacturer = str(manufacturer.name or "")
+        product.device_kind_id = int(device_kind.id)
+        product.source_kind = "pdf"
+        product.item_type = "appliance"
+    else:
+        # Merge: nur leere Felder aus PDF füllen, CSV-Daten nicht überschreiben
+        product.sales_name = product.sales_name or sales_name
+        product.material_no = product.material_no or material_no
+        product.ean = product.ean or ean
+        product.product_title_1 = product.product_title_1 or product_title_1
+        product.description = product.description or description
+        product.manufacturer_id = product.manufacturer_id or int(manufacturer.id)
+        product.manufacturer = product.manufacturer or str(manufacturer.name or "")
+        product.device_kind_id = product.device_kind_id or int(device_kind.id)
+        if product.source_kind == "csv":
+            product.source_kind = "csv+pdf"
+        elif product.source_kind != "csv+pdf":
+            product.source_kind = "pdf"
 
     db.add(product)
     db.flush()
 
-    # 8. Bilder speichern
+    # 8. Bilder: nur auf freie Slots legen (CSV-Bilder nicht überschreiben)
+    from ..models import ProductAsset
     images_saved = 0
     if content["images"]:
-        from ..models import ProductAsset
+        # Finde den höchsten belegten Slot
+        existing_slots = {
+            int(row.slot_no or 0)
+            for row in db.query(ProductAsset.slot_no)
+            .filter(ProductAsset.product_id == int(product.id), ProductAsset.asset_type == "image")
+            .all()
+            if int(row.slot_no or 0) > 0
+        }
         saved_paths = save_pdf_images(content["images"], int(product.id))
-        for i, rel_path in enumerate(saved_paths):
-            existing = (
-                db.query(ProductAsset)
-                .filter(
-                    ProductAsset.product_id == int(product.id),
-                    ProductAsset.asset_type == "image",
-                    ProductAsset.slot_no == (i + 1),
-                )
-                .first()
+        next_slot = 1
+        for rel_path in saved_paths:
+            while next_slot in existing_slots and next_slot <= 15:
+                next_slot += 1
+            if next_slot > 15:
+                break
+            asset = ProductAsset(
+                product_id=int(product.id),
+                asset_type="image",
+                slot_no=next_slot,
+                local_path=rel_path,
+                download_status="ready",
+                source_kind="pdf",
+                mime_type="image/png",
             )
-            if not existing:
-                asset = ProductAsset(
-                    product_id=int(product.id),
-                    asset_type="image",
-                    slot_no=i + 1,
-                    local_path=rel_path,
-                    download_status="ready",
-                    source_kind="pdf",
-                    mime_type="image/png",
-                )
-                db.add(asset)
-                images_saved += 1
+            db.add(asset)
+            existing_slots.add(next_slot)
+            images_saved += 1
+            next_slot += 1
         db.flush()
 
-    # 9. PDF als Datenblatt-Asset speichern
-    from ..models import ProductAsset
-    pdf_rel_path = f"catalog_assets/{int(product.id)}/datasheet_{uuid.uuid4().hex[:8]}.pdf"
-    pdf_dest = ensure_dirs()["uploads"] / pdf_rel_path
-    pdf_dest.parent.mkdir(parents=True, exist_ok=True)
-    import shutil
-    shutil.copy2(str(pdf_path), str(pdf_dest))
-
+    # 9. PDF als Datenblatt-Asset speichern (nicht überschreiben wenn schon vorhanden)
     existing_ds = (
         db.query(ProductAsset)
         .filter(
@@ -538,6 +581,11 @@ def import_product_from_pdf(
         .first()
     )
     if not existing_ds:
+        import shutil
+        pdf_rel_path = f"catalog_assets/{int(product.id)}/datasheet_{uuid.uuid4().hex[:8]}.pdf"
+        pdf_dest = ensure_dirs()["uploads"] / pdf_rel_path
+        pdf_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(pdf_path), str(pdf_dest))
         ds_asset = ProductAsset(
             product_id=int(product.id),
             asset_type="datasheet_pdf",
@@ -550,7 +598,8 @@ def import_product_from_pdf(
         db.add(ds_asset)
     db.flush()
 
-    # 10. Features setzen
+    # 10. Features setzen (PDF-Werte überschreiben keine CSV-Werte)
+    from ..models import FeatureValue
     feature_defs = (
         db.query(FeatureDef)
         .filter(FeatureDef.device_kind_id == int(device_kind.id))
@@ -561,10 +610,23 @@ def import_product_from_pdf(
     features_set = 0
     for feature_key, raw_value in tech_data.items():
         if feature_key.startswith("_"):
-            continue  # Interne Keys überspringen
+            continue
         fdef = feature_defs_by_key.get(feature_key)
         if not fdef:
             continue
+
+        # Prüfe ob bereits ein CSV-Wert existiert → nicht überschreiben
+        existing_fv = (
+            db.query(FeatureValue)
+            .filter(
+                FeatureValue.product_id == int(product.id),
+                FeatureValue.feature_def_id == int(fdef.id),
+            )
+            .first()
+        )
+        if existing_fv and getattr(existing_fv, "source_kind", None) == "csv":
+            continue  # CSV hat Vorrang
+
         # Normalisieren
         data_type = str(fdef.data_type or "text")
         if data_type == "text":
@@ -581,16 +643,14 @@ def import_product_from_pdf(
             continue
 
         try:
-            from ..models import FeatureValue
-            existing_fv = (
-                db.query(FeatureValue)
-                .filter(
-                    FeatureValue.product_id == int(product.id),
-                    FeatureValue.feature_def_id == int(fdef.id),
-                )
-                .first()
-            )
-            if not existing_fv:
+            if existing_fv:
+                existing_fv.raw_text = raw_value
+                existing_fv.value_text = normalized if data_type == "text" else None
+                existing_fv.value_num = float(normalized) if data_type == "number" and normalized else None
+                existing_fv.value_bool = (normalized.lower() in ("true", "ja", "1")) if data_type == "bool" else None
+                existing_fv.value_norm = normalized.lower() if normalized else None
+                existing_fv.source_kind = "pdf"
+            else:
                 fv = FeatureValue(
                     product_id=int(product.id),
                     feature_def_id=int(fdef.id),
@@ -599,9 +659,10 @@ def import_product_from_pdf(
                     value_num=float(normalized) if data_type == "number" and normalized else None,
                     value_bool=(normalized.lower() in ("true", "ja", "1")) if data_type == "bool" else None,
                     value_norm=normalized.lower() if normalized else None,
+                    source_kind="pdf",
                 )
                 db.add(fv)
-                features_set += 1
+            features_set += 1
         except Exception as exc:
             warnings.append(f"Feature '{feature_key}': {exc}")
 

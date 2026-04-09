@@ -581,6 +581,7 @@ class FeatureValue(Base):
     value_num: Mapped[float | None] = mapped_column(Float, nullable=True)
     value_bool: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     value_norm: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_kind: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     product = relationship("Product", back_populates="feature_values")
     feature_def = relationship("FeatureDef")

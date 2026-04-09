@@ -2639,6 +2639,8 @@ def _ensure_catalog_v2_schema() -> None:
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_text ON feature_values(feature_def_id, value_text)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_num ON feature_values(feature_def_id, value_num)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_featurevalue_feature_bool ON feature_values(feature_def_id, value_bool)")
+        if "source_kind" not in fv_cols:
+            conn.exec_driver_sql("ALTER TABLE feature_values ADD COLUMN source_kind VARCHAR(30)")
 
         conn.exec_driver_sql(
             """
@@ -16946,6 +16948,7 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
                                     raw_value=str(fval),
                                     manufacturer_id=int(row_manufacturer.id),
                                     apply_rules=True,
+                                    source_kind="csv",
                                 )
                             except Exception:
                                 pass
@@ -18275,12 +18278,18 @@ def _set_feature_value(
     raw_value: str,
     manufacturer_id: int | None = None,
     apply_rules: bool = True,
+    source_kind: str | None = None,
 ) -> None:
     existing = (
         db.query(FeatureValue)
         .filter(FeatureValue.product_id == int(product_id), FeatureValue.feature_def_id == int(feature_def.id))
         .one_or_none()
     )
+
+    # Quellen-Priorität: CSV > PDF. PDF darf CSV-Werte nicht überschreiben.
+    if existing and source_kind == "pdf" and getattr(existing, "source_kind", None) == "csv":
+        return
+
     data_type = str(feature_def.data_type or "text").strip().lower()
     raw_clean = str(raw_value or "").strip()
     try:
@@ -18302,6 +18311,8 @@ def _set_feature_value(
 
     row = existing or FeatureValue(product_id=int(product_id), feature_def_id=int(feature_def.id))
     row.raw_text = raw_clean or None
+    if source_kind:
+        row.source_kind = source_kind
 
     if _is_text_like_feature(data_type):
         option = _resolve_feature_option_for_raw(
@@ -21445,6 +21456,7 @@ async def products_new_pdf_confirm(request: Request, user=Depends(require_admin)
                                 raw_value=str(raw_value),
                                 manufacturer_id=int(manufacturer_row.id) if manufacturer_row else None,
                                 apply_rules=True,
+                                source_kind="pdf",
                             )
                         except Exception:
                             pass
