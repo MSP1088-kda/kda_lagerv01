@@ -62,6 +62,7 @@ FILENAME_TO_DEVICE_KIND: dict[str, str] = {
     "dampfbackofen": "Dampfbackofen",
     "dampf-backofen": "Dampfbackofen",
     "combi_steam": "Dampfbackofen",
+    "einbauherde": "Einbauherd/Backofen",
     "mikrowelle": "Mikrowellenbackofen",
     "microwave": "Mikrowellenbackofen",
     "standherd": "Standherd",
@@ -760,6 +761,23 @@ DEVICE_FEATURE_DEFINITIONS: dict[str, list[dict]] = {
     # -----------------------------------------------------------------------
     "Einbauherd/Backofen": [
         {
+            "key": "geraetetyp",
+            "label_de": "Gerätetyp",
+            "data_type": "text",
+            "filterable": True,
+            "options": ["Einbauherd", "Backofen", "Kompaktbackofen"],
+            "csv_columns": ["CONTROL_TYPE", "HEIGHT"],
+            "derive": "oven_type",
+        },
+        {
+            "key": "steuerung",
+            "label_de": "Steuerung",
+            "data_type": "text",
+            "filterable": True,
+            "options": ["Herd gesteuert", "Autark"],
+            "csv_columns": ["CONTROL_TYPE"],
+        },
+        {
             "key": "heizarten",
             "label_de": "Heizarten",
             "data_type": "text",
@@ -789,16 +807,8 @@ DEVICE_FEATURE_DEFINITIONS: dict[str, list[dict]] = {
             "label_de": "Garraumvolumen (Liter)",
             "data_type": "number",
             "filterable": True,
-            "csv_columns": [],
+            "csv_columns": ["CAP_CAVITY"],
             "regex": r"Garraumvolumen:\s*(\d+)\s*l",
-        },
-        {
-            "key": "steuerung",
-            "label_de": "Steuerung",
-            "data_type": "text",
-            "filterable": True,
-            "options": ["Herd gesteuert", "Autark"],
-            "csv_columns": ["CONTROL_TYPE"],
         },
         {
             "key": "energieklasse",
@@ -829,6 +839,13 @@ DEVICE_FEATURE_DEFINITIONS: dict[str, list[dict]] = {
             "data_type": "number",
             "filterable": True,
             "csv_columns": ["WIDTH"],
+        },
+        {
+            "key": "geraetehoehe",
+            "label_de": "Gerätehöhe (mm)",
+            "data_type": "number",
+            "filterable": True,
+            "csv_columns": ["HEIGHT"],
         },
     ],
 
@@ -1206,6 +1223,25 @@ def _derive_glass_type(short_desc: str, long_desc: str) -> str:
     return ""
 
 
+def _derive_oven_type(short_desc: str, long_desc: str) -> str:
+    """Unterscheidet Einbauherd / Backofen / Kompaktbackofen.
+
+    - Einbauherd: steuert ein herdgesteuertes Kochfeld (Mechanisch/Knebel)
+    - Kompaktbackofen: niedrige Bauhöhe (Kompakt im Namen oder Höhe <500mm)
+    - Backofen: autarker Einbaubackofen (Standard)
+
+    Wird mit short_desc + long_desc aufgerufen, aber braucht auch
+    CONTROL_TYPE und HEIGHT → die stehen im CSV-Row-Kontext.
+    Hier nutzen wir den Text als Proxy.
+    """
+    combined = f"{short_desc} {long_desc}".lower()
+    if any(w in combined for w in ("kompaktbackofen", "kompakt-backofen", "compact oven")):
+        return "Kompaktbackofen"
+    if any(w in combined for w in ("einbau-herd", "einbauherd", "herdgebunden")):
+        return "Einbauherd"
+    return "Backofen"
+
+
 DERIVE_FUNCTIONS = {
     "width_to_baubreite": _derive_width_to_baubreite,
     "niche_height": _derive_niche_height,
@@ -1216,6 +1252,7 @@ DERIVE_FUNCTIONS = {
     "anzeige": _derive_anzeige,
     "dosierung": _derive_dosierung,
     "glass_type": _derive_glass_type,
+    "oven_type": _derive_oven_type,
 }
 
 
@@ -1694,7 +1731,7 @@ def extract_features_from_csv_row(
                 raw_value = func(niche_min, niche_max)
             elif derive_func_name in ("hob_heating_type", "bauart_from_short",
                                        "besteckschublade", "anzeige", "dosierung",
-                                       "glass_type"):
+                                       "glass_type", "oven_type"):
                 # Diese Funktionen erwarten (short_desc, long_desc)
                 raw_value = func(short_desc, long_desc)
 
@@ -1771,9 +1808,12 @@ def _normalize_bool(raw: str) -> str:
 # Backöfen/Herde mit passender Breite und Steuerung können empfohlen werden.
 
 COMPATIBLE_DEVICE_KINDS = {
-    "Kochfeld": ["Einbauherd/Backofen", "Standherd"],
-    "Einbauherd/Backofen": ["Kochfeld", "Kochfeld mit integriertem Abzug"],
-    "Standherd": [],  # Standherd hat eigenes Kochfeld
+    "Kochfeld": ["Einbauherd/Backofen"],
+    "Kochfeld mit integriertem Abzug": ["Einbauherd/Backofen"],
+    "Modul-Kochfeld": ["Einbauherd/Backofen"],
+    "Einbauherd/Backofen": ["Kochfeld", "Kochfeld mit integriertem Abzug", "Modul-Kochfeld"],
+    "Dampfbackofen": ["Kochfeld", "Kochfeld mit integriertem Abzug"],
+    "Standherd": [],
     "Herd-Set": [],
 }
 

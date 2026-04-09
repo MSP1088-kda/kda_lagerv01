@@ -10000,6 +10000,17 @@ def _fix_existing_product_categories(db: Session) -> None:
         )
         fixed_count += int(updated or 0)
 
+    # 3. Sets → Herd-Set umkategorisieren
+    set_kind = db.query(DeviceKind).filter(DeviceKind.name == "Set").one_or_none()
+    herdset_kind = db.query(DeviceKind).filter(DeviceKind.name == "Herd-Set").one_or_none()
+    if set_kind and herdset_kind and int(set_kind.id) != int(herdset_kind.id):
+        updated = (
+            db.query(Product)
+            .filter(Product.device_kind_id == int(set_kind.id))
+            .update({Product.device_kind_id: int(herdset_kind.id)}, synchronize_session=False)
+        )
+        fixed_count += int(updated or 0)
+
     if fixed_count > 0:
         try:
             db.flush()
