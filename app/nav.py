@@ -97,13 +97,6 @@ NAV_ITEMS: list[dict] = [
                 "show_in_mobile": False,
             },
             {
-                "label_de": "Sets",
-                "path": "/catalog/sets",
-                "aliases": "kombi set",
-                "show_in_topnav": False,
-                "show_in_mobile": False,
-            },
-            {
                 "label_de": "Merkmale",
                 "path": "/catalog/features",
                 "aliases": "merkmale attribute eigenschaften filter verwalten",
