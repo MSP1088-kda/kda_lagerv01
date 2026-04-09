@@ -16996,15 +16996,16 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
                         fdef = feature_defs_by_key.get(fkey)
                         if fdef and fval:
                             try:
-                                _set_feature_value(
-                                    db,
-                                    product_id=int(product.id),
-                                    feature_def=fdef,
-                                    raw_value=str(fval),
-                                    manufacturer_id=int(row_manufacturer.id),
-                                    apply_rules=True,
-                                    source_kind="csv",
-                                )
+                                with db.begin_nested():
+                                    _set_feature_value(
+                                        db,
+                                        product_id=int(product.id),
+                                        feature_def=fdef,
+                                        raw_value=str(fval),
+                                        manufacturer_id=int(row_manufacturer.id),
+                                        apply_rules=True,
+                                        source_kind="csv",
+                                    )
                             except Exception:
                                 pass
                 except Exception as feat_exc:

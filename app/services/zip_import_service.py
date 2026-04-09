@@ -57,7 +57,8 @@ _MANUFACTURER_PREFIXES: dict[str, str] = {
 }
 
 # Dateien die beim Import übersprungen werden
-_SKIP_PATTERNS = {"assets", "uoms", "komplementäre produkte", "other_products"}
+_SKIP_PATTERNS = {"assets", "uoms", "komplementäre produkte", "other_products",
+                  "piproperties", "packaging"}
 
 
 def detect_manufacturer_from_filename(filename: str) -> str | None:
