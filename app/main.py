@@ -16892,7 +16892,11 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
                     or product.name
                     or f"Produkt {external_key}"
                 )
-                product.item_type = "appliance"
+                kind_name_lower = str(row_kind.name or "").strip().lower()
+                if kind_name_lower in ("zubehör", "zubehoer", "accessory", "accessories", "komplementäre produkte"):
+                    product.item_type = "accessory"
+                else:
+                    product.item_type = "appliance"
                 product.track_mode = "quantity"
                 product.manufacturer_id = int(row_manufacturer.id)
                 product.manufacturer = str(row_manufacturer.name or "").strip() or product.manufacturer
@@ -16954,6 +16958,45 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
                                 pass
                 except Exception as feat_exc:
                     row_warnings.append(f"Zeile {line_no}: Feature-Extraktion: {feat_exc}")
+
+                # --- Zubehör-Verlinkung aus ACCESSORIES-Spalte ---
+                try:
+                    acc_raw = str(row.get("ACCESSORIES") or "").strip()
+                    if acc_raw and product:
+                        for acc_code in acc_raw.split(","):
+                            acc_code = acc_code.strip()
+                            if not acc_code:
+                                continue
+                            acc_product = (
+                                db.query(Product)
+                                .filter(
+                                    or_(
+                                        Product.material_no == acc_code,
+                                        Product.name == acc_code,
+                                        Product.sales_name == acc_code,
+                                    ),
+                                    Product.active == True,
+                                )
+                                .first()
+                            )
+                            if acc_product and int(acc_product.id) != int(product.id):
+                                existing_link = (
+                                    db.query(ProductAccessoryLink.id)
+                                    .filter(
+                                        ProductAccessoryLink.product_id == int(product.id),
+                                        ProductAccessoryLink.accessory_product_id == int(acc_product.id),
+                                    )
+                                    .first()
+                                )
+                                if not existing_link:
+                                    db.add(ProductAccessoryLink(
+                                        product_id=int(product.id),
+                                        accessory_product_id=int(acc_product.id),
+                                        source="csv",
+                                        import_run_id=int(import_run.id),
+                                    ))
+                except Exception:
+                    pass
 
                 unknown_columns = _import_unknown_columns_from_row(
                     row,
@@ -22301,6 +22344,44 @@ def product_detail_get(
     except Exception:
         pass
 
+    # Zubehör-Links laden
+    accessory_items: list[dict] = []
+    try:
+        acc_links = (
+            db.query(ProductAccessoryLink)
+            .filter(ProductAccessoryLink.product_id == int(product.id))
+            .all()
+        )
+        for link in acc_links[:20]:
+            acc_product = db.get(Product, int(link.accessory_product_id))
+            if not acc_product or not acc_product.active:
+                continue
+            acc_image = ""
+            acc_asset = (
+                db.query(ProductAsset)
+                .filter(
+                    ProductAsset.product_id == int(acc_product.id),
+                    ProductAsset.asset_type == "image",
+                )
+                .order_by(ProductAsset.slot_no.asc())
+                .first()
+            )
+            if acc_asset:
+                acc_image = str(acc_asset.source_url_raw or "").strip() or str(acc_asset.local_path or "").strip()
+                if acc_image and not acc_image.startswith(("http", "/")):
+                    acc_image = f"/uploads/{acc_image}"
+            if not acc_image:
+                acc_image = str(acc_product.image_url or "").strip()
+            accessory_items.append({
+                "id": int(acc_product.id),
+                "name": acc_product.name or acc_product.sales_name or "",
+                "material_no": acc_product.material_no or "",
+                "ean": acc_product.ean or "",
+                "image_url": acc_image,
+            })
+    except Exception:
+        pass
+
     # Loadbee Hersteller-Detailseite
     lb = _loadbee_settings(db, include_secret=True)
     lb_gtin = str(product.ean or "").strip()
@@ -22336,6 +22417,7 @@ def product_detail_get(
             format_date=_format_date_local,
             receipt_saved=(int(receipt_saved or 0) == 1),
             compatible_devices=compatible_devices,
+            accessory_items=accessory_items,
             loadbee_enabled=bool(lb["enabled"]) and bool(lb["api_key_set"]),
             loadbee_api_key=str(lb.get("api_key") or ""),
             loadbee_gtin=lb_gtin,

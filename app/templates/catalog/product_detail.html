@@ -201,6 +201,25 @@
       </div>
       {% endif %}
 
+      {% if accessory_items %}
+      <div class="box product-detail-section">
+        <div class="box-title">Zubehör ({{ accessory_items|length }})</div>
+        <div class="box-body">
+          <div class="product-detail-feature-grid">
+            {% for acc in accessory_items %}
+            <a href="/catalog/products/{{ acc.id }}" class="product-detail-feature-card" style="text-decoration:none;color:inherit;">
+              {% if acc.image_url %}
+              <img src="{{ acc.image_url }}" alt="{{ acc.name }}" style="max-height:60px;max-width:80px;object-fit:contain;margin-bottom:4px;" loading="lazy">
+              {% endif %}
+              <strong style="font-size:0.85em;">{{ acc.name }}</strong>
+              {% if acc.material_no %}<span class="muted" style="font-size:0.8em;">{{ acc.material_no }}</span>{% endif %}
+            </a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="box product-detail-section">
         <div class="box-title">Artikelbeschreibung</div>
         <div class="box-body">
