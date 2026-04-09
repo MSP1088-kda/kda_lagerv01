@@ -178,6 +178,29 @@
         </div>
       </div>
 
+      {% if compatible_devices %}
+      <div class="box product-detail-section">
+        <div class="box-title">Passende Geräte</div>
+        <div class="box-body">
+          <div class="hint" style="margin-bottom:8px;">
+            Kompatible Geräte vom gleichen Hersteller, die zu diesem Produkt passen.
+          </div>
+          <div class="product-detail-feature-grid">
+            {% for dev in compatible_devices %}
+            <a href="/catalog/products/{{ dev.id }}" class="product-detail-feature-card" style="text-decoration:none;color:inherit;">
+              {% if dev.image_url %}
+              <img src="{{ dev.image_url }}" alt="{{ dev.name }}" style="max-height:60px;max-width:80px;object-fit:contain;margin-bottom:4px;" loading="lazy">
+              {% endif %}
+              <span class="label">{{ dev.device_kind }}</span>
+              <strong>{{ dev.name }}</strong>
+              {% if dev.material_no %}<span class="muted">{{ dev.material_no }}</span>{% endif %}
+            </a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="box product-detail-section">
         <div class="box-title">Artikelbeschreibung</div>
         <div class="box-body">
@@ -241,6 +264,27 @@
           {% endif %}
         </div>
       </div>
+
+      {% if loadbee_enabled and loadbee_gtin %}
+      <div class="box product-detail-section">
+        <div class="box-title" style="display:flex;align-items:center;justify-content:space-between;">
+          <span>Hersteller-Details (loadbee)</span>
+          <button class="btn small" type="button" id="lbToggleBtn" aria-expanded="false">Hersteller-Details öffnen</button>
+        </div>
+        <div class="box-body">
+          <div id="lbStatus" class="hint" style="margin-bottom:6px;"></div>
+          <div id="lbPanel" class="loadbee-panel" data-gtin="{{ loadbee_gtin }}">
+            <div class="loadbeeTabContent" id="loadbeeTabContentId"
+                 data-loadbee-apikey="{{ loadbee_api_key }}"
+                 data-loadbee-gtin="{{ loadbee_gtin }}"
+                 data-loadbee-locale="{{ loadbee_locales }}"
+                 {% if loadbee_debug %}data-loadbee-debug="true"{% endif %}
+            ></div>
+            <script id="loadbeeScript" async src="https://cdn.loadbee.com/js/loadbee_integration.js"></script>
+          </div>
+        </div>
+      </div>
+      {% endif %}
     </div>
 
     <aside class="product-detail-sidecolumn">

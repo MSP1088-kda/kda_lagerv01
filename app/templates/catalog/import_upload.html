@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-  <h1>CSV-Import</h1>
+  <h1>Produkt-Import</h1>
 
   {% if global_errors %}
   <div class="import-error-block">
@@ -12,12 +12,14 @@
   {% endif %}
 
   <form method="post" action="/catalog/import/upload" enctype="multipart/form-data" class="form" data-import-upload-form="1">
-    <label>CSV-Datei</label>
-    <input type="file" name="csv_file" accept=".csv,text/csv" required>
+    <label>CSV- oder ZIP-Datei</label>
+    <input type="file" name="csv_file" accept=".csv,.zip,text/csv,application/zip" required>
 
     <div class="hint">
-      Nach dem Upload werden Trennzeichen, Encoding und Header automatisch erkannt.
-      Danach mapst du nur noch Geräteart, Hersteller, EAN, Verkaufsbezeichnung, Materialnummer, Produkttitel 1, Produkttitel 2 und Bild 1-10.
+      <strong>CSV-Datei:</strong> Einzelne Geräteart importieren. Geräteart und Hersteller werden aus dem Dateinamen erkannt.<br>
+      <strong>ZIP-Datei:</strong> Mehrere CSVs auf einmal importieren. Jede CSV wird automatisch der richtigen Geräteart zugeordnet.<br>
+      Dateinamen-Format: <code>all in_[Hersteller_]Geräteart.csv</code> (z.B. <code>all in_miele_Geschirrspüler.csv</code>)<br>
+      Merkmale wie Energieklasse, Bauart, Lautstärke etc. werden automatisch aus den CSV-Spalten und Beschreibungstexten extrahiert und sind danach filterbar.
     </div>
 
     <div class="row">
@@ -65,10 +67,10 @@
 
 {% block help %}
 <ul>
-  <li>Vor dem Upload muss nichts mehr vorgegeben werden. Du lädst nur die CSV hoch.</li>
-  <li>Im Mapping bleiben nur Kernfelder, Beschreibung und Bild 1-10 sichtbar.</li>
-  <li>Das Datenblatt wird danach automatisch aus der Hersteller-Linklogik gebaut, lokal gespeichert und ausgewertet.</li>
-  <li>Die Merkmale werden direkt aus CSV-Spalten und Beschreibungstexten je Hersteller und Geräteart abgeleitet.</li>
-  <li>Über „Letzte Import-Entwürfe“ kannst du abgebrochene Importe fortsetzen.</li>
+  <li><strong>ZIP-Import:</strong> Lade eine ZIP-Datei mit mehreren CSVs hoch. Geräteart und Hersteller werden automatisch aus den Dateinamen erkannt.</li>
+  <li><strong>CSV-Import:</strong> Einzelne CSV hochladen. Geräteart wird aus dem Dateinamen erkannt.</li>
+  <li>Merkmale (Energieklasse, Baubreite, Lautstärke, Installationsart etc.) werden automatisch aus den CSV-Spalten extrahiert.</li>
+  <li>Fehlende Gerätearten und Merkmalsdefinitionen werden automatisch angelegt.</li>
+  <li>Über „Letzte Import-Entwürfe” kannst du abgebrochene Importe fortsetzen.</li>
 </ul>
 {% endblock %}

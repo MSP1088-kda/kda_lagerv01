@@ -243,6 +243,20 @@ from .services.catalog_v1_service import (
     sync_uploaded_product_asset,
     upsert_product_asset,
 )
+from .services.device_feature_seed import (
+    detect_device_kind_from_filename,
+    ensure_device_kind,
+    extract_features_from_csv_row,
+    find_compatible_devices,
+    seed_features_for_kind,
+    seed_all_device_kinds_and_features,
+)
+from .services.zip_import_service import (
+    detect_manufacturer_from_filename,
+    ensure_manufacturer as zip_ensure_manufacturer,
+    extract_zip_csvs,
+    prepare_zip_import,
+)
 from .services.condition_service import calculate_condition_progress, get_supplier_condition_summary
 from .services.accounting_seed_service import local_skr03_seed, merged_category_choices
 from .services.email_service import (
@@ -9996,6 +10010,11 @@ def _seed_defaults(db: Session):
         changed = True
     if db.query(User).filter(User.role == "user").update({User.role: "lesen"}):
         changed = True
+    # Gerätearten und Features seeden
+    try:
+        seed_all_device_kinds_and_features(db)
+    except Exception as exc:
+        logger.warning("Feature-Seeding fehlgeschlagen: %s", exc)
     if changed or db.new or db.dirty or db.deleted:
         db.commit()
     else:
@@ -15734,6 +15753,8 @@ def _import_resolve_scope_from_row(
     kind_lookup: dict[str, list[DeviceKind]],
     fallback_manufacturer: Manufacturer | None = None,
     fallback_kind: DeviceKind | None = None,
+    db: Session | None = None,
+    auto_create: bool = False,
 ) -> tuple[Manufacturer | None, DeviceKind | None, list[str], dict[str, str]]:
     manufacturer_column = str(product_field_map.get("manufacturer_name") or "").strip()
     kind_column = str(product_field_map.get("device_kind_name") or "").strip()
@@ -15744,6 +15765,31 @@ def _import_resolve_scope_from_row(
     kind_row = fallback_kind if not raw_kind else _catalog_resolve_named_row(raw_kind, kind_lookup)
 
     issues: list[str] = []
+
+    # Auto-Create: Hersteller automatisch anlegen wenn nicht gefunden
+    if raw_manufacturer and manufacturer_row is None and auto_create and db is not None:
+        clean_name = str(raw_manufacturer).strip()
+        if clean_name:
+            manufacturer_row = db.query(Manufacturer).filter(Manufacturer.name.ilike(clean_name)).first()
+            if not manufacturer_row:
+                manufacturer_row = Manufacturer(name=clean_name, active=True)
+                db.add(manufacturer_row)
+                db.flush()
+            # In Lookup eintragen für nächste Zeilen
+            _catalog_scope_register(manufacturer_lookup, manufacturer_row)
+
+    # Auto-Create: Geräteart automatisch anlegen wenn nicht gefunden
+    if raw_kind and kind_row is None and auto_create and db is not None:
+        clean_name = str(raw_kind).strip()
+        if clean_name:
+            kind_row = db.query(DeviceKind).filter(DeviceKind.name.ilike(clean_name)).first()
+            if not kind_row:
+                kind_row = ensure_device_kind(db, clean_name)
+                seed_features_for_kind(db, kind_row)
+                db.flush()
+            # In Lookup eintragen für nächste Zeilen
+            _catalog_scope_register(kind_lookup, kind_row)
+
     if raw_manufacturer and manufacturer_row is None:
         issues.append(f"Hersteller '{raw_manufacturer}' ist nicht bekannt.")
     if raw_kind and kind_row is None:
@@ -15756,6 +15802,16 @@ def _import_resolve_scope_from_row(
         "manufacturer_name": raw_manufacturer,
         "device_kind_name": raw_kind,
     }
+
+
+def _catalog_scope_register(lookup: dict[str, list], entity) -> None:
+    """Registriert eine neu erstellte Entität in der Scope-Lookup-Map."""
+    name = str(getattr(entity, "name", "") or "").strip()
+    if not name:
+        return
+    for key in (_catalog_scope_label_key(name), _catalog_scope_compact_key(name)):
+        if key:
+            lookup.setdefault(key, []).append(entity)
 
 
 def _import_resolve_scope_from_rows(
@@ -15787,6 +15843,8 @@ def _import_resolve_scope_from_rows(
             kind_lookup=kind_lookup,
             fallback_manufacturer=fallback_manufacturer,
             fallback_kind=fallback_kind,
+            db=db,
+            auto_create=True,
         )
         if raw_values.get("manufacturer_name"):
             manufacturer_samples.add(str(raw_values["manufacturer_name"]))
@@ -16890,6 +16948,142 @@ def _catalog_enqueue_auto_import_from_attachment(
     }
 
 
+def _catalog_auto_import_zip_from_attachment(
+    db: Session,
+    *,
+    attachment: MailAttachment,
+    message: EmailMessage | None,
+) -> int:
+    """Verarbeitet einen ZIP-Anhang aus einer E-Mail: extrahiert CSVs und importiert jede einzeln."""
+    abs_path = _mail_attachment_abs_path(str(attachment.file_path or "").strip())
+    if not abs_path or not abs_path.is_file():
+        raise ValueError("ZIP-Anhang wurde nicht gefunden.")
+    if abs_path.stat().st_size > CATALOG_AUTO_IMPORT_MAX_ATTACHMENT_BYTES * 5:
+        raise ValueError("ZIP-Anhang ist größer als das erlaubte Limit.")
+
+    zip_data = abs_path.read_bytes()
+    zip_result = prepare_zip_import(db, zip_data, zip_filename=str(attachment.filename or ""))
+    csv_files = zip_result["csv_files"]
+    if not csv_files:
+        raise ValueError(f"Keine importierbaren CSVs im ZIP: {'; '.join(zip_result['errors'][:3])}")
+
+    imported_count = 0
+    for csv_entry in csv_files:
+        try:
+            csv_data = csv_entry["data"]
+            csv_filename = csv_entry["filename"]
+            manufacturer = csv_entry["manufacturer"]
+            device_kind = csv_entry["device_kind"]
+            if not manufacturer or not device_kind:
+                continue
+
+            detected_settings = _detect_csv_upload_settings(csv_data)
+            delimiter = str(detected_settings.get("delimiter") or ";").strip()
+            encoding = str(detected_settings.get("encoding") or "utf-8").strip() or "utf-8"
+
+            draft = ImportDraft(
+                created_at=_utcnow_naive(),
+                updated_at=_utcnow_naive(),
+                status=IMPORT_DRAFT_STATUS_VALIDATED,
+                filename_original=csv_filename,
+                file_path_tmp="",
+                delimiter=delimiter,
+                encoding=encoding,
+                has_header=True,
+                manufacturer_id=int(manufacturer.id),
+                device_kind_id=int(device_kind.id),
+                import_profile_id=None,
+                current_step="run",
+                mapping_json=None,
+                validation_errors_json=None,
+                last_preview_json=None,
+                created_by_user_id=None,
+            )
+            db.add(draft)
+            db.commit()
+            db.refresh(draft)
+
+            tmp_root = (ensure_dirs()["tmp"] / "imports" / str(int(draft.id))).resolve()
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            csv_path = tmp_root / "source.csv"
+            csv_path.write_bytes(csv_data)
+            draft.file_path_tmp = str(csv_path)
+
+            columns, rows, csv_error = _import_read_draft_csv(draft)
+            if csv_error or not rows:
+                draft.status = IMPORT_DRAFT_STATUS_FAILED
+                draft.validation_errors_json = _json_dump({"global_errors": [csv_error or "Keine Daten"], "field_errors": {}})
+                db.add(draft)
+                db.commit()
+                continue
+
+            feature_defs_by_key: dict[str, FeatureDef] = {}
+            feature_defs_for_kind = _feature_defs_for_kind(db, int(device_kind.id))
+            feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs_for_kind}
+
+            mapping_data = _import_default_mapping_data(
+                db, columns=columns, feature_defs_by_key=feature_defs_by_key,
+                profile_id=0, profile_name_default=_catalog_import_profile_name_default(
+                    manufacturer=manufacturer, device_kind=device_kind, filename=csv_filename),
+            )
+            mapping_data["manufacturer_name"] = str(manufacturer.name or "")
+            mapping_data["resolved_manufacturer_id"] = int(manufacturer.id)
+            mapping_data["device_kind_name"] = str(device_kind.name or "")
+            mapping_data["resolved_device_kind_id"] = int(device_kind.id)
+
+            validated_mapping, errors = _import_validate_mapping(
+                mapping_data, db=db, columns=columns, rows=rows,
+                feature_defs_by_key=feature_defs_by_key,
+                fallback_manufacturer_id=int(manufacturer.id),
+                fallback_kind_id=int(device_kind.id),
+            )
+            if errors["global_errors"] or errors["field_errors"]:
+                draft.status = IMPORT_DRAFT_STATUS_FAILED
+                draft.validation_errors_json = _json_dump(errors)
+                db.add(draft)
+                db.commit()
+                continue
+
+            draft.mapping_json = _json_dump(validated_mapping)
+            draft.last_preview_json = _json_dump({"columns": columns, "rows": rows[:10], "total_rows": len(rows)})
+            draft.updated_at = _utcnow_naive()
+            db.add(draft)
+            db.commit()
+
+            import_run = ImportRun(
+                profile_id=None,
+                filename=csv_filename,
+                started_at=_utcnow_naive(),
+            )
+            db.add(import_run)
+            db.commit()
+            db.refresh(import_run)
+
+            job, created_job = _enqueue_sync_job(
+                db,
+                system_name="catalog",
+                direction="pull",
+                entity_type="catalog_import_run",
+                title=f"ZIP-Import: {csv_filename}",
+                job_key=_catalog_import_run_job_key(int(draft.id)),
+                log_text=f"ZIP-Import aus Mail-Anhang #{int(attachment.id)}: {csv_filename}",
+                progress={
+                    "draft_id": int(draft.id),
+                    "import_run_id": int(import_run.id),
+                    "phase": "ZIP-Import wird vorbereitet",
+                    "total_count": len(rows),
+                },
+                result_url=f"/catalog/import/runs/{int(import_run.id)}",
+            )
+            db.commit()
+            imported_count += 1
+
+        except Exception as exc:
+            logger.warning("ZIP-Import: %s fehlgeschlagen: %s", csv_entry.get("filename", "?"), exc)
+
+    return imported_count
+
+
 def _catalog_auto_import_mail_attachments(db: Session, *, limit: int = 3) -> dict[str, int]:
     enabled = _bool_from_setting(_system_setting_get(db, CATALOG_AUTO_IMPORT_MAIL, "1"), default=True)
     if not enabled:
@@ -16912,15 +17106,21 @@ def _catalog_auto_import_mail_attachments(db: Session, *, limit: int = 3) -> dic
         current_last_id = max(current_last_id, attachment_id)
         filename = str(attachment.filename or "").strip().lower()
         mime_type = str(attachment.mime_type or "").strip().lower()
-        if not (filename.endswith(".csv") or mime_type in {"text/csv", "application/csv", "application/vnd.ms-excel"}):
+        is_csv = filename.endswith(".csv") or mime_type in {"text/csv", "application/csv", "application/vnd.ms-excel"}
+        is_zip = filename.endswith(".zip") or mime_type in {"application/zip", "application/x-zip-compressed"}
+        if not (is_csv or is_zip):
             processed += 1
             _system_setting_set(db, CATALOG_AUTO_IMPORT_MAIL_LAST_ATTACHMENT_ID, str(current_last_id))
             db.commit()
             continue
         try:
-            _catalog_enqueue_auto_import_from_attachment(db, attachment=attachment, message=message)
+            if is_zip:
+                zip_imported = _catalog_auto_import_zip_from_attachment(db, attachment=attachment, message=message)
+                imported += zip_imported
+            else:
+                _catalog_enqueue_auto_import_from_attachment(db, attachment=attachment, message=message)
+                imported += 1
             _catalog_auto_import_resolve_error(db, attachment_id=attachment_id)
-            imported += 1
         except RuntimeError as exc:
             if str(exc).startswith("defer:"):
                 break
@@ -17023,9 +17223,20 @@ def _import_asset_inputs_from_row(
         images[next_slot] = fallback_url
         seen_urls.add(dedupe_key)
         next_slot += 1
+    # Dokumente: Energielabel aus CSV (Datenblatt wird über die
+    # Hersteller-Linklogik in _catalog_sync_product_assets gebaut)
+    documents: dict[str, str] = {}
+    for col in ("Energy_label", "ENERGY_LABEL"):
+        raw_url = str(row.get(col) or "").strip()
+        if raw_url and raw_url.lower().startswith("http"):
+            normalized = _normalize_absolute_url(raw_url)
+            if normalized:
+                documents["energy_label"] = normalized
+                break
+
     return {
         "images": images,
-        "documents": {},
+        "documents": documents,
     }
 
 
@@ -17118,6 +17329,12 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
         raise ValueError("Hersteller oder Geräteart konnten aus der CSV nicht eindeutig erkannt werden.")
     draft.manufacturer_id = int(manufacturer.id)
     draft.device_kind_id = int(selected_kind.id)
+    # Feature-Definitionen seeden (legt fehlende automatisch an)
+    try:
+        seed_features_for_kind(db, selected_kind)
+        db.flush()
+    except Exception:
+        pass
     feature_defs = _feature_defs_for_kind(db, int(selected_kind.id))
     feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs}
 
@@ -17181,14 +17398,13 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
     product_field_map = validated_mapping.get("product_field_map") or {}
     ean_column = str(validated_mapping.get("ean_column") or "")
     description_columns = list(validated_mapping.get("description_columns") or [])
-    attrs = _applicable_attributes(db, int(selected_kind.id), None)
     import_plan = _catalog_csv_import_plan_ai(
         db,
         manufacturer=manufacturer,
         device_kind=selected_kind,
         columns=columns,
         rows=rows,
-        attrs=attrs,
+        attrs=[],
         mapping_data=validated_mapping,
     )
     planned_description_columns = [str(column).strip() for column in list(import_plan.get("description_columns") or []) if str(column).strip()]
@@ -17257,6 +17473,8 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
                 kind_lookup=kind_lookup,
                 fallback_manufacturer=manufacturer,
                 fallback_kind=selected_kind,
+                db=db,
+                auto_create=True,
             )
             if scope_issues:
                 skipped += 1
@@ -17265,10 +17483,6 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
             if row_manufacturer is None or row_kind is None:
                 skipped += 1
                 errors_list.append(f"Zeile {line_no}: Hersteller oder Geräteart konnten nicht erkannt werden.")
-                continue
-            if int(row_manufacturer.id) != int(manufacturer.id) or int(row_kind.id) != int(selected_kind.id):
-                skipped += 1
-                errors_list.append(f"Zeile {line_no}: CSV enthält einen anderen Hersteller oder eine andere Geräteart als der aktuelle Import.")
                 continue
 
             product: Product | None = None
@@ -17341,18 +17555,30 @@ def _catalog_import_execute_job(db: Session, job: ExternalSyncJob) -> dict[str, 
                 except Exception as asset_exc:
                     row_warnings.append(f"Zeile {line_no}: Assets konnten nicht vollständig verarbeitet werden ({asset_exc}).")
                 _catalog_sync_legacy_image_fields(product, asset_inputs)
-                if attrs:
-                    applied_count, attr_notes = _catalog_apply_csv_attributes(
-                        db,
-                        product=product,
-                        attrs=attrs,
-                        row=row,
-                        manufacturer_id=int(row_manufacturer.id),
-                        device_kind_id=int(row_kind.id),
-                        import_plan=import_plan,
+
+                # --- Feature-Extraktion aus CSV-Spalten ---
+                try:
+                    csv_feature_values = extract_features_from_csv_row(
+                        row,
+                        device_kind_name=selected_kind_name,
+                        feature_defs=feature_defs_by_key,
                     )
-                    row_attribute_updates += int(applied_count or 0)
-                    row_warnings.extend([f"Zeile {line_no}: {note}" for note in list(attr_notes)[:4]])
+                    for fkey, fval in csv_feature_values.items():
+                        fdef = feature_defs_by_key.get(fkey)
+                        if fdef and fval:
+                            try:
+                                _set_feature_value(
+                                    db,
+                                    product_id=int(product.id),
+                                    feature_def=fdef,
+                                    raw_value=str(fval),
+                                    manufacturer_id=int(row_manufacturer.id),
+                                    apply_rules=True,
+                                )
+                            except Exception:
+                                pass
+                except Exception as feat_exc:
+                    row_warnings.append(f"Zeile {line_no}: Feature-Extraktion: {feat_exc}")
 
                 unknown_columns = _import_unknown_columns_from_row(
                     row,
@@ -19642,163 +19868,6 @@ def products_list(
     if kind_id:
         query = query.filter(Product.device_kind_id == kind_id)
 
-    appliance_attribute_mode = False
-    if kind_id:
-        appliance_attribute_mode = (
-            db.query(ProductAttributeValue.id)
-            .join(Product, Product.id == ProductAttributeValue.product_id)
-            .filter(
-                Product.active == True,
-                Product.item_type == "appliance",
-                Product.device_kind_id == int(kind_id),
-            )
-            .first()
-            is not None
-        )
-
-    if appliance_attribute_mode:
-        feature_filters: list[dict[str, object]] = []
-        applicable_attrs = _applicable_attributes(db, int(kind_id), None)[:24]
-        for attr in applicable_attrs:
-            data_type = str(attr.value_type or "text")
-            fid = int(attr.id)
-            filter_row: dict[str, object] = {
-                "id": fid,
-                "label": str(attr.name or f"Merkmal {fid}"),
-                "data_type": data_type,
-                "text_mode": "legacy_text",
-                "value": "",
-                "min": "",
-                "max": "",
-                "options": [],
-                "min_options": [],
-                "max_options": [],
-                "bool_options": [],
-            }
-
-            if data_type == "number":
-                number_values, has_more = _attribute_filter_number_options(
-                    db,
-                    device_kind_id=int(kind_id),
-                    attribute_id=fid,
-                    limit=FEATURE_FILTER_OPTION_LIMIT,
-                )
-                number_options = [
-                    {"value": _format_feature_number_option(value), "label": _format_feature_number_option(value), "disabled": False}
-                    for value in number_values
-                ]
-                if has_more:
-                    number_options.append({"value": "", "label": "(weitere Werte vorhanden ...)", "disabled": True})
-                filter_row["min_options"] = list(number_options)
-                filter_row["max_options"] = list(number_options)
-
-                raw_min = (request.query_params.get(f"f_{fid}_min") or "").strip()
-                raw_max = (request.query_params.get(f"f_{fid}_max") or "").strip()
-                min_selected = _resolve_number_filter_selection(raw_min, number_values)
-                max_selected = _resolve_number_filter_selection(raw_max, number_values)
-                filter_row["min"] = str(min_selected[0]) if min_selected else ""
-                filter_row["max"] = str(max_selected[0]) if max_selected else ""
-            elif data_type == "bool":
-                bool_values = _attribute_filter_bool_options(db, device_kind_id=int(kind_id), attribute_id=fid)
-                bool_options: list[dict[str, object]] = []
-                if True in bool_values:
-                    bool_options.append({"value": "1", "label": "Ja", "disabled": False})
-                if False in bool_values:
-                    bool_options.append({"value": "0", "label": "Nein", "disabled": False})
-                filter_row["bool_options"] = bool_options
-
-                raw_bool = (request.query_params.get(f"f_{fid}") or "").strip().lower()
-                if raw_bool in ("1", "true", "ja") and True in bool_values:
-                    filter_row["value"] = "1"
-                    query = query.filter(
-                        exists().where(
-                            and_(
-                                ProductAttributeValue.product_id == Product.id,
-                                ProductAttributeValue.attribute_id == fid,
-                                func.lower(func.trim(ProductAttributeValue.value_text)).in_(["true", "ja", "1", "yes", "x"]),
-                            )
-                        )
-                    )
-                elif raw_bool in ("0", "false", "nein") and False in bool_values:
-                    filter_row["value"] = "0"
-                    query = query.filter(
-                        exists().where(
-                            and_(
-                                ProductAttributeValue.product_id == Product.id,
-                                ProductAttributeValue.attribute_id == fid,
-                                func.lower(func.trim(ProductAttributeValue.value_text)).in_(["false", "nein", "0", "no"]),
-                            )
-                        )
-                    )
-            else:
-                text_options, has_more = _attribute_filter_text_options(
-                    db,
-                    device_kind_id=int(kind_id),
-                    attribute_id=fid,
-                    limit=FEATURE_FILTER_OPTION_LIMIT,
-                )
-                options_for_ui = list(text_options)
-                if has_more:
-                    options_for_ui.append({"value": "", "label": "(weitere Werte vorhanden ...)", "disabled": True})
-                filter_row["options"] = options_for_ui
-
-                raw_filter_value = str(request.query_params.get(f"f_{fid}") or "").strip()
-                if raw_filter_value:
-                    selected_opt = next(
-                        (
-                            row
-                            for row in text_options
-                            if str(row.get("value") or "").strip().casefold() == raw_filter_value.casefold()
-                        ),
-                        None,
-                    )
-                    if selected_opt and not bool(selected_opt.get("disabled")):
-                        selected_value = str(selected_opt.get("value") or "")
-                        filter_row["value"] = selected_value
-                        query = query.filter(_attribute_text_filter_exists(fid, selected_value))
-            feature_filters.append(filter_row)
-
-        products = query.order_by(Product.id.desc()).limit(300).all()
-        stock_total_map: dict[int, int] = {}
-        product_ids = [int(p.id) for p in products]
-        if product_ids:
-            stock_rows = (
-                db.query(
-                    StockBalance.product_id,
-                    func.coalesce(func.sum(StockBalance.quantity), 0).label("qty_sum"),
-                )
-                .filter(StockBalance.product_id.in_(product_ids))
-                .group_by(StockBalance.product_id)
-                .all()
-            )
-            for product_id, qty_sum in stock_rows:
-                stock_total_map[int(product_id)] = int(qty_sum or 0)
-        for p in products:
-            stock_total_map.setdefault(int(p.id), 0)
-
-        feature_values_map = _products_list_attribute_rows(db, kind_id=int(kind_id), product_ids=product_ids)
-        product_rows = _catalog_product_list_rows(
-            db,
-            products=products,
-            stock_total_map=stock_total_map,
-            trait_map=feature_values_map,
-        )
-        return templates.TemplateResponse(
-            "catalog/products_list.html",
-            _ctx(
-                request,
-                user=user,
-                products=products,
-                product_rows=product_rows,
-                q=q,
-                kinds=kinds,
-                kind_id=kind_id,
-                feature_filters=feature_filters,
-                feature_values_map=feature_values_map,
-                stock_total_map=stock_total_map,
-            ),
-        )
-
     feature_defs: list[FeatureDef] = []
     feature_filters: list[dict[str, object]] = []
     if kind_id:
@@ -20068,10 +20137,10 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
     global_errors: list[str] = []
     upload: UploadFile = form.get("csv_file")  # type: ignore
     if not upload or not getattr(upload, "filename", ""):
-        global_errors.append("Bitte eine CSV-Datei auswählen.")
+        global_errors.append("Bitte eine CSV- oder ZIP-Datei auswählen.")
     raw = await upload.read() if upload else b""
     if upload and not raw:
-        global_errors.append("Die CSV-Datei ist leer.")
+        global_errors.append("Die Datei ist leer.")
 
     if global_errors:
         return templates.TemplateResponse(
@@ -20085,6 +20154,182 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
             ),
         )
 
+    filename = str(upload.filename or "").strip()
+    is_zip = filename.lower().endswith(".zip") or raw[:4] == b"PK\x03\x04"
+
+    # --- ZIP-Import: Batch-Verarbeitung mehrerer CSVs ---
+    if is_zip:
+        return await _handle_zip_upload(request, db, user, raw, filename)
+
+    # --- Einzel-CSV-Import (bisheriges Verhalten) ---
+    return await _handle_single_csv_upload(request, db, user, raw, filename, upload_form_data)
+
+
+async def _handle_zip_upload(request: Request, db: Session, user, raw: bytes, filename: str):
+    """Verarbeitet einen ZIP-Upload mit mehreren CSVs."""
+    zip_result = prepare_zip_import(db, raw, zip_filename=filename)
+    csv_files = zip_result["csv_files"]
+    if not csv_files:
+        errors_msg = "; ".join(zip_result["errors"]) if zip_result["errors"] else "Keine importierbaren CSV-Dateien im ZIP gefunden."
+        return templates.TemplateResponse(
+            "catalog/import_upload.html",
+            _import_upload_page_ctx(
+                request, db=db, user=user,
+                global_errors=[errors_msg],
+            ),
+        )
+
+    # Für jede CSV einen ImportDraft + ImportRun erstellen und als Batch-Job starten
+    draft_ids: list[int] = []
+    batch_errors: list[str] = []
+    for csv_entry in csv_files:
+        try:
+            csv_data = csv_entry["data"]
+            csv_filename = csv_entry["filename"]
+            manufacturer = csv_entry["manufacturer"]
+            device_kind = csv_entry["device_kind"]
+
+            detected_settings = _detect_csv_upload_settings(csv_data)
+            delimiter = str(detected_settings.get("delimiter") or ";").strip()
+            if delimiter not in (";", ","):
+                delimiter = ";"
+            encoding = str(detected_settings.get("encoding") or "utf-8").strip() or "utf-8"
+            has_header = bool(detected_settings.get("has_header"))
+
+            draft = ImportDraft(
+                created_at=_utcnow_naive(),
+                updated_at=_utcnow_naive(),
+                status=IMPORT_DRAFT_STATUS_UPLOADED,
+                filename_original=csv_filename,
+                file_path_tmp="",
+                delimiter=delimiter,
+                encoding=encoding,
+                has_header=bool(has_header),
+                manufacturer_id=int(manufacturer.id) if manufacturer else None,
+                device_kind_id=int(device_kind.id) if device_kind else None,
+                import_profile_id=None,
+                current_step="map",
+                mapping_json=None,
+                validation_errors_json=None,
+                last_preview_json=None,
+                created_by_user_id=int(getattr(user, "id", 0) or 0) or None,
+            )
+            db.add(draft)
+            db.commit()
+            db.refresh(draft)
+
+            tmp_root = (ensure_dirs()["tmp"] / "imports" / str(int(draft.id))).resolve()
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            csv_path = tmp_root / "source.csv"
+            csv_path.write_bytes(csv_data)
+            draft.file_path_tmp = str(csv_path)
+
+            columns, rows, csv_error = _import_read_draft_csv(draft)
+            if csv_error:
+                draft.status = IMPORT_DRAFT_STATUS_FAILED
+                draft.validation_errors_json = _json_dump({"global_errors": [csv_error], "field_errors": {}})
+                draft.updated_at = _utcnow_naive()
+                db.add(draft)
+                db.commit()
+                batch_errors.append(f"{csv_filename}: {csv_error}")
+                continue
+
+            # Feature-Defs für diese Geräteart
+            feature_defs_by_key: dict[str, FeatureDef] = {}
+            if device_kind:
+                feature_defs_for_kind = _feature_defs_for_kind(db, int(device_kind.id))
+                feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs_for_kind}
+
+            profile_name_default = _catalog_import_profile_name_default(
+                manufacturer=manufacturer,
+                device_kind=device_kind,
+                filename=csv_filename,
+            )
+            mapping_data = _import_default_mapping_data(
+                db,
+                columns=columns,
+                feature_defs_by_key=feature_defs_by_key,
+                profile_id=0,
+                profile_name_default=profile_name_default,
+            )
+            # Hersteller und Geräteart automatisch setzen
+            if manufacturer:
+                mapping_data["product_field_map"] = mapping_data.get("product_field_map") or {}
+                mapping_data["manufacturer_name"] = str(manufacturer.name or "")
+                mapping_data["resolved_manufacturer_id"] = int(manufacturer.id)
+            if device_kind:
+                mapping_data["device_kind_name"] = str(device_kind.name or "")
+                mapping_data["resolved_device_kind_id"] = int(device_kind.id)
+
+            draft.import_profile_id = None
+            draft.mapping_json = _json_dump(mapping_data)
+            draft.validation_errors_json = None
+            draft.last_preview_json = _json_dump({
+                "columns": columns,
+                "rows": rows[:10],
+                "total_rows": len(rows),
+            })
+            draft.status = IMPORT_DRAFT_STATUS_VALIDATED
+            draft.current_step = "run"
+            draft.updated_at = _utcnow_naive()
+            db.add(draft)
+            db.commit()
+
+            # Import-Job direkt enqueuen
+            import_run = ImportRun(
+                profile_id=None,
+                filename=csv_filename,
+                started_at=_utcnow_naive(),
+                inserted_count=0,
+                updated_count=0,
+                error_count=0,
+            )
+            db.add(import_run)
+            db.commit()
+            db.refresh(import_run)
+
+            job, _ = _enqueue_sync_job(
+                db,
+                system_name="catalog",
+                direction="pull",
+                entity_type="catalog_import_run",
+                title=f"ZIP-Import: {csv_filename}",
+                job_key=_catalog_import_run_job_key(int(draft.id)),
+                lock_key="catalog_import",
+                log_text=f"ZIP-Batch-Import: {csv_filename}",
+                progress={
+                    "draft_id": int(draft.id),
+                    "import_run_id": int(import_run.id),
+                    "phase": "ZIP-Import wird vorbereitet",
+                    "total_count": len(rows),
+                },
+                result_url=f"/catalog/import/runs/{int(import_run.id)}",
+            )
+            db.commit()
+            draft_ids.append(int(draft.id))
+
+        except Exception as exc:
+            batch_errors.append(f"{csv_entry.get('filename', '?')}: {exc}")
+
+    # Ergebnisseite: Zeige alle erstellten Drafts
+    if draft_ids:
+        # Zum ersten Draft weiterleiten, oder eine Übersicht zeigen
+        if len(draft_ids) == 1:
+            return RedirectResponse(f"/catalog/import/{draft_ids[0]}/run", status_code=302)
+        # Mehrere: Zeige Import-Runs-Übersicht
+        return RedirectResponse(f"/catalog/import/profiles?zip_batch={len(draft_ids)}&errors={len(batch_errors)}", status_code=302)
+
+    return templates.TemplateResponse(
+        "catalog/import_upload.html",
+        _import_upload_page_ctx(
+            request, db=db, user=user,
+            global_errors=batch_errors or ["ZIP-Import fehlgeschlagen."],
+        ),
+    )
+
+
+async def _handle_single_csv_upload(request: Request, db: Session, user, raw: bytes, filename: str, upload_form_data: dict):
+    """Verarbeitet einen einzelnen CSV-Upload (bisheriges Verhalten)."""
     detected_settings = _detect_csv_upload_settings(raw)
     delimiter = str(detected_settings.get("delimiter") or ";").strip()
     if delimiter not in (";", ","):
@@ -20092,17 +20337,42 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
     encoding = str(detected_settings.get("encoding") or "utf-8").strip() or "utf-8"
     has_header = bool(detected_settings.get("has_header"))
 
+    # Geräteart aus Dateinamen erkennen
+    detected_kind_name = detect_device_kind_from_filename(filename)
+    detected_kind = None
+    if detected_kind_name:
+        detected_kind = db.query(DeviceKind).filter(DeviceKind.name == detected_kind_name).one_or_none()
+        if not detected_kind:
+            detected_kind = ensure_device_kind(db, detected_kind_name)
+            db.flush()
+        # Features seeden
+        try:
+            seed_features_for_kind(db, detected_kind)
+            db.flush()
+        except Exception:
+            pass
+
+    # Hersteller aus Dateinamen erkennen
+    detected_manufacturer_name = detect_manufacturer_from_filename(filename)
+    detected_manufacturer = None
+    if detected_manufacturer_name:
+        detected_manufacturer = (
+            db.query(Manufacturer)
+            .filter(Manufacturer.name.ilike(detected_manufacturer_name))
+            .first()
+        )
+
     draft = ImportDraft(
         created_at=_utcnow_naive(),
         updated_at=_utcnow_naive(),
         status=IMPORT_DRAFT_STATUS_UPLOADED,
-        filename_original=str(upload.filename or "").strip(),
+        filename_original=filename,
         file_path_tmp="",
         delimiter=delimiter,
         encoding=encoding,
         has_header=bool(has_header),
-        manufacturer_id=None,
-        device_kind_id=None,
+        manufacturer_id=int(detected_manufacturer.id) if detected_manufacturer else None,
+        device_kind_id=int(detected_kind.id) if detected_kind else None,
         import_profile_id=None,
         current_step="map",
         mapping_json=None,
@@ -20146,10 +20416,14 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
         )
 
     feature_defs_by_key: dict[str, FeatureDef] = {}
+    if detected_kind:
+        feature_defs_for_kind = _feature_defs_for_kind(db, int(detected_kind.id))
+        feature_defs_by_key = {str(row.key or "").strip(): row for row in feature_defs_for_kind}
+
     profile_name_default = _catalog_import_profile_name_default(
-        manufacturer=None,
-        device_kind=None,
-        filename=str(upload.filename or ""),
+        manufacturer=detected_manufacturer,
+        device_kind=detected_kind,
+        filename=filename,
     )
     mapping_data = _import_default_mapping_data(
         db,
@@ -20158,6 +20432,14 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
         profile_id=0,
         profile_name_default=profile_name_default,
     )
+
+    # Auto-erkannte Werte ins Mapping eintragen
+    if detected_manufacturer:
+        mapping_data["manufacturer_name"] = str(detected_manufacturer.name or "")
+        mapping_data["resolved_manufacturer_id"] = int(detected_manufacturer.id)
+    if detected_kind:
+        mapping_data["device_kind_name"] = str(detected_kind.name or "")
+        mapping_data["resolved_device_kind_id"] = int(detected_kind.id)
 
     draft.import_profile_id = None
     draft.mapping_json = _json_dump(mapping_data)
@@ -22482,63 +22764,29 @@ def product_detail_get(
     if not product:
         raise HTTPException(status_code=404)
     feature_sections: list[dict[str, object]] = []
-    if str(product.item_type or "").strip().lower() == "appliance":
-        attr_rows = (
-            db.query(AttributeDef.group_name, AttributeDef.name, ProductAttributeValue.value_text)
-            .join(ProductAttributeValue, ProductAttributeValue.attribute_id == AttributeDef.id)
-            .filter(ProductAttributeValue.product_id == int(product_id))
-            .order_by(AttributeDef.group_name.asc(), AttributeDef.name.asc(), AttributeDef.id.asc())
-            .all()
+    feature_rows_for_detail: list[dict[str, str]] = []
+    feature_rows = (
+        db.query(
+            FeatureDef.label_de,
+            FeatureDef.key,
+            FeatureDef.data_type,
+            func.coalesce(FeatureOption.label_de, FeatureValue.value_text),
+            FeatureValue.value_num,
+            FeatureValue.value_bool,
         )
-        grouped_attrs: dict[str, list[dict[str, str]]] = {}
-        for group_name, label, value_text in attr_rows:
-            value = str(value_text or "").strip()
-            if not value:
-                continue
-            group_label = str(group_name or "").strip() or "Merkmale"
-            grouped_attrs.setdefault(group_label, []).append({"label": str(label or "Attribut"), "value": value})
-        feature_sections = [
-            {"label": group_label, "items": items}
-            for group_label, items in grouped_attrs.items()
-            if items
-        ]
-    else:
-        feature_rows_for_detail: list[dict[str, str]] = []
-        feature_rows = (
-            db.query(
-                FeatureDef.label_de,
-                FeatureDef.key,
-                FeatureDef.data_type,
-                func.coalesce(FeatureOption.label_de, FeatureValue.value_text),
-                FeatureValue.value_num,
-                FeatureValue.value_bool,
-            )
-            .join(FeatureValue, FeatureValue.feature_def_id == FeatureDef.id)
-            .outerjoin(FeatureOption, FeatureOption.id == FeatureValue.option_id)
-            .filter(FeatureValue.product_id == int(product_id))
-            .order_by(FeatureDef.label_de.asc(), FeatureDef.id.asc())
-            .all()
-        )
-        for label_de, key, data_type, value_text, value_num, value_bool in feature_rows:
-            formatted_value = _feature_value_display_value(str(data_type or "text"), value_text, value_num, value_bool)
-            if not formatted_value:
-                continue
-            label = str(label_de or key or "").strip() or "Merkmal"
-            feature_rows_for_detail.append({"label": label, "value": formatted_value})
-        if not feature_rows_for_detail:
-            legacy_rows = (
-                db.query(AttributeDef.name, ProductAttributeValue.value_text)
-                .join(ProductAttributeValue, ProductAttributeValue.attribute_id == AttributeDef.id)
-                .filter(ProductAttributeValue.product_id == int(product_id))
-                .order_by(AttributeDef.name.asc(), AttributeDef.id.asc())
-                .all()
-            )
-            for label, value_text in legacy_rows:
-                value = str(value_text or "").strip()
-                if not value:
-                    continue
-                feature_rows_for_detail.append({"label": str(label or "Attribut"), "value": value})
-        feature_sections = _catalog_group_feature_rows(feature_rows_for_detail)
+        .join(FeatureValue, FeatureValue.feature_def_id == FeatureDef.id)
+        .outerjoin(FeatureOption, FeatureOption.id == FeatureValue.option_id)
+        .filter(FeatureValue.product_id == int(product_id))
+        .order_by(FeatureDef.label_de.asc(), FeatureDef.id.asc())
+        .all()
+    )
+    for label_de, key, data_type, value_text, value_num, value_bool in feature_rows:
+        formatted_value = _feature_value_display_value(str(data_type or "text"), value_text, value_num, value_bool)
+        if not formatted_value:
+            continue
+        label = str(label_de or key or "").strip() or "Merkmal"
+        feature_rows_for_detail.append({"label": label, "value": formatted_value})
+    feature_sections = _catalog_group_feature_rows(feature_rows_for_detail)
     manufacturer_row = db.get(Manufacturer, int(product.manufacturer_id or 0)) if product.manufacturer_id else None
     manufacturer_name = (
         str(getattr(manufacturer_row, "name", "") or "").strip()
@@ -22606,6 +22854,17 @@ def product_detail_get(
         {"label": "Letzter Import", "value": _format_date_local(product.last_imported_at) if product.last_imported_at else "-"},
     ]
 
+    # Kompatible Geräte (z.B. passender Herd für ein Kochfeld)
+    compatible_devices = []
+    try:
+        compatible_devices = find_compatible_devices(db, product_id=int(product.id), limit=10)
+    except Exception:
+        pass
+
+    # Loadbee Hersteller-Detailseite
+    lb = _loadbee_settings(db, include_secret=True)
+    lb_gtin = str(product.ean or "").strip()
+
     return templates.TemplateResponse(
         "catalog/product_detail.html",
         _ctx(
@@ -22636,6 +22895,13 @@ def product_detail_get(
             analysis_fields=analysis_fields,
             format_date=_format_date_local,
             receipt_saved=(int(receipt_saved or 0) == 1),
+            compatible_devices=compatible_devices,
+            loadbee_enabled=bool(lb["enabled"]) and bool(lb["api_key_set"]),
+            loadbee_api_key=str(lb.get("api_key") or ""),
+            loadbee_gtin=lb_gtin,
+            loadbee_locales=str(lb.get("locales") or "de_DE"),
+            loadbee_debug=bool(lb.get("debug")),
+            loadbee_load_mode=str(lb.get("load_mode") or "on_demand"),
         ),
     )
 
