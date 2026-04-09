@@ -56,25 +56,40 @@ def extract_pdf_content(pdf_path: str | Path) -> dict:
     images: list[dict] = []
     seen_checksums: set[str] = set()
 
+    # Rendere sichtbare Bildbereiche statt Rohbilder zu extrahieren.
+    # Liebherr-PDFs clippen Bilder — fitz.Pixmap(doc, xref) gibt das
+    # unbeschnittene Originalbild zurück (Gerät abgeschnitten). Durch
+    # page.get_pixmap(clip=bbox) wird der tatsächlich sichtbare Bereich
+    # in hoher Auflösung gerendert.
+    render_scale = fitz.Matrix(3, 3)  # 3x Auflösung für scharfe Bilder
+
     for page in doc:
         pages.append(page.get_text())
 
-        for img_info in page.get_images(full=True):
-            xref = img_info[0]
+        for img_info in page.get_image_info():
             try:
-                pix = fitz.Pixmap(doc, xref)
-                # Nur relevante Bilder (Produktfotos, keine Icons)
-                if pix.width < 100 or pix.height < 100:
+                orig_w = img_info["width"]
+                orig_h = img_info["height"]
+                bbox = img_info["bbox"]  # (x0, y0, x1, y1) auf der Seite
+
+                # Angezeigte Größe auf der Seite (in PDF-Punkten)
+                disp_w = bbox[2] - bbox[0]
+                disp_h = bbox[3] - bbox[1]
+
+                # Nur relevante Bilder: mind. 40pt auf der Seite (keine Icons)
+                if disp_w < 40 or disp_h < 40:
                     continue
-                # Seitenverhältnis-Filter: keine extrem schmalen Streifen
-                ratio = max(pix.width, pix.height) / max(min(pix.width, pix.height), 1)
-                if ratio > 10:
+                # Keine extrem schmalen Streifen (Linien, Trennbalken)
+                disp_ratio = max(disp_w, disp_h) / max(min(disp_w, disp_h), 1)
+                if disp_ratio > 8:
                     continue
-                # CMYK → RGB konvertieren
-                if pix.n > 4:
-                    pix = fitz.Pixmap(fitz.csRGB, pix)
-                elif pix.n == 4:
-                    pix = fitz.Pixmap(fitz.csRGB, pix)
+
+                # Sichtbaren Bereich rendern
+                clip_rect = fitz.Rect(bbox[0], bbox[1], bbox[2], bbox[3])
+                pix = page.get_pixmap(matrix=render_scale, clip=clip_rect)
+
+                if pix.width < 80 or pix.height < 80:
+                    continue
 
                 img_bytes = pix.tobytes("png")
                 checksum = hashlib.md5(img_bytes).hexdigest()
