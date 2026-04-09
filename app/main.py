@@ -9950,6 +9950,55 @@ def _catalog_admin_form_fields() -> list[dict]:
     return [field for field in FORM_FIELDS if str(field.get("key") or "") not in CATALOG_DEPRECATED_FORM_FIELDS]
 
 
+def _seed_manufacturer_datasheet_links(db: Session) -> None:
+    """BSH-Marken und weitere Hersteller: Datenblatt-Linklogik konfigurieren.
+
+    BSH-URL-Schema: https://media3.bsh-group.com/Documents/specsheet/de-DE/{sales_name}.pdf
+    Gilt für: Siemens, Neff, Bosch, Constructa, Gaggenau, Junker
+
+    Miele, AEG/Electrolux, Liebherr haben individuelle URLs → kein Pattern,
+    Datenblatt kommt aus der CSV-Spalte Product_fiche.
+    """
+    BSH_SPECSHEET_BASE = "https://media3.bsh-group.com/Documents/specsheet/de-DE/"
+    BSH_SPECSHEET_SUFFIX = ".pdf"
+
+    # (Name, v1, v4, v2_source) — nur für Hersteller mit berechenbarer URL
+    MANUFACTURER_LINKS: list[tuple[str, str, str, str]] = [
+        ("Siemens", BSH_SPECSHEET_BASE, BSH_SPECSHEET_SUFFIX, "sales_name"),
+        ("Neff", BSH_SPECSHEET_BASE, BSH_SPECSHEET_SUFFIX, "sales_name"),
+        ("Bosch", BSH_SPECSHEET_BASE, BSH_SPECSHEET_SUFFIX, "sales_name"),
+        ("Constructa", BSH_SPECSHEET_BASE, BSH_SPECSHEET_SUFFIX, "sales_name"),
+        ("Gaggenau", BSH_SPECSHEET_BASE, BSH_SPECSHEET_SUFFIX, "sales_name"),
+        ("Junker", BSH_SPECSHEET_BASE, BSH_SPECSHEET_SUFFIX, "sales_name"),
+    ]
+
+    for name, v1, v4, v2_source in MANUFACTURER_LINKS:
+        existing = db.query(Manufacturer).filter(Manufacturer.name == name).one_or_none()
+        if not existing:
+            existing = db.query(Manufacturer).filter(Manufacturer.name.ilike(name)).first()
+        if existing:
+            if not str(existing.datasheet_var_1 or "").strip():
+                existing.datasheet_var_1 = v1
+                existing.datasheet_var_3 = None
+                existing.datasheet_var_4 = v4
+                existing.datasheet_var2_source = v2_source
+                db.add(existing)
+        else:
+            mfg = Manufacturer(
+                name=name,
+                datasheet_var_1=v1,
+                datasheet_var_3=None,
+                datasheet_var_4=v4,
+                datasheet_var2_source=v2_source,
+                active=True,
+            )
+            db.add(mfg)
+    try:
+        db.flush()
+    except Exception:
+        pass
+
+
 def _seed_defaults(db: Session):
     changed = False
     # instance
@@ -10020,6 +10069,8 @@ def _seed_defaults(db: Session):
         seed_all_device_kinds_and_features(db)
     except Exception as exc:
         logger.warning("Feature-Seeding fehlgeschlagen: %s", exc)
+    # BSH-Marken: Datenblatt-Linklogik konfigurieren
+    _seed_manufacturer_datasheet_links(db)
     if changed or db.new or db.dirty or db.deleted:
         db.commit()
     else:
