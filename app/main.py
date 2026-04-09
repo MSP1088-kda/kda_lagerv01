@@ -257,6 +257,9 @@ from .services.zip_import_service import (
     extract_zip_csvs,
     prepare_zip_import,
 )
+from .services.pdf_product_import_service import (
+    import_product_from_pdf,
+)
 from .services.condition_service import calculate_condition_progress, get_supplier_condition_summary
 from .services.accounting_seed_service import local_skr03_seed, merged_category_choices
 from .services.email_service import (
@@ -19525,6 +19528,11 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
 
     filename = str(upload.filename or "").strip()
     is_zip = filename.lower().endswith(".zip") or raw[:4] == b"PK\x03\x04"
+    is_pdf = filename.lower().endswith(".pdf") or raw[:5] == b"%PDF-"
+
+    # --- PDF-Import: Produkt aus Datenblatt-PDF anlegen ---
+    if is_pdf:
+        return await _handle_pdf_upload(request, db, user, raw, filename)
 
     # --- ZIP-Import: Batch-Verarbeitung mehrerer CSVs ---
     if is_zip:
@@ -19532,6 +19540,45 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
 
     # --- Einzel-CSV-Import (bisheriges Verhalten) ---
     return await _handle_single_csv_upload(request, db, user, raw, filename, upload_form_data)
+
+
+async def _handle_pdf_upload(request: Request, db: Session, user, raw: bytes, filename: str):
+    """Verarbeitet einen PDF-Upload: Erstellt ein Produkt aus dem Datenblatt."""
+    tmp_root = ensure_dirs()["tmp"] / "imports"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_root / f"pdf_upload_{uuid.uuid4().hex[:12]}.pdf"
+    tmp_path.write_bytes(raw)
+
+    try:
+        result = import_product_from_pdf(db, tmp_path)
+        db.commit()
+        product_id = result["product_id"]
+        action = "angelegt" if result.get("created") else "aktualisiert"
+        _flash(
+            request,
+            f"Produkt '{result['product_name']}' aus PDF {action}. "
+            f"Hersteller: {result['manufacturer']}, Geräteart: {result['device_kind']}, "
+            f"Merkmale: {result['features_set']}, Bilder: {result['images_saved']}"
+            + (f", EAN: {result['ean']}" if result.get("ean") else ""),
+            "info",
+        )
+        for warn in result.get("warnings", [])[:5]:
+            _flash(request, warn, "warn")
+        return RedirectResponse(f"/catalog/products/{product_id}", status_code=302)
+    except Exception as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "catalog/import_upload.html",
+            _import_upload_page_ctx(
+                request, db=db, user=user,
+                global_errors=[f"PDF-Import fehlgeschlagen: {exc}"],
+            ),
+        )
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 async def _handle_zip_upload(request: Request, db: Session, user, raw: bytes, filename: str):
