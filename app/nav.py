@@ -31,14 +31,6 @@ NAV_ITEMS: list[dict] = [
                 "show_in_mobile": True,
             },
             {
-                "label_de": "Katalog",
-                "path": "/catalog/products",
-                "hotkey": "Alt+3",
-                "aliases": "katalog produkte artikel",
-                "show_in_topnav": True,
-                "show_in_mobile": True,
-            },
-            {
                 "label_de": "Menü",
                 "path": "/menu",
                 "hotkey": "Alt+9",
@@ -57,9 +49,12 @@ NAV_ITEMS: list[dict] = [
         "label_de": "Katalog",
         "items": [
             {
-                "label_de": "Produkte",
+                "label_de": "Katalog",
                 "path": "/catalog/products",
-                "aliases": "katalog artikel suche filtern geräte",
+                "hotkey": "Alt+3",
+                "aliases": "katalog produkte artikel suche filtern geräte",
+                "show_in_topnav": True,
+                "show_in_mobile": True,
             },
             {
                 "label_de": "Produkt anlegen",
