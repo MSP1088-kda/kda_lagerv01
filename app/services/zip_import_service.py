@@ -34,10 +34,26 @@ from .device_feature_seed import (
 log = logging.getLogger(__name__)
 
 # Bekannte Hersteller-Präfixe in Dateinamen
+# WICHTIG: Längere Präfixe zuerst, damit "all in_EluxAEG_" vor "all in_" matcht
 _MANUFACTURER_PREFIXES: dict[str, str] = {
+    "all in_eluxaeg_": "AEG",
+    "all in_aeg_": "AEG",
     "all in_neff_": "Neff",
     "all in_miele_": "Miele",
-    "all in_": "Siemens",  # Default bei BSH ohne Markenpräfix
+    "all in_liebherr_": "LIEBHERR",
+    "all in_bosch_": "Bosch",
+    "all in_gaggenau_": "Gaggenau",
+    "all in_constructa_": "Constructa",
+    "all in_junker_": "Junker",
+    "all in_samsung_": "Samsung",
+    "all in_lg_": "LG",
+    "all in_beko_": "Beko",
+    "all in_grundig_": "Grundig",
+    "all in_bauknecht_": "Bauknecht",
+    "all in_whirlpool_": "Whirlpool",
+    "all in_gorenje_": "Gorenje",
+    "all in_smeg_": "Smeg",
+    "all in_": "",  # Kein Default-Hersteller - wird aus CSV-Daten erkannt
 }
 
 # Dateien die beim Import übersprungen werden
@@ -48,11 +64,13 @@ def detect_manufacturer_from_filename(filename: str) -> str | None:
     """Erkennt den Hersteller aus dem CSV-Dateinamen.
 
     Beispiel: "all in_miele_Geschirrspüler.csv" → "Miele"
+             "all in_EluxAEG_Geschirrspüler.csv" → "AEG"
+             "all in_Geschirrspüler.csv" → None (wird aus CSV erkannt)
     """
     name_lower = str(filename or "").lower().strip()
     for prefix, manufacturer in sorted(_MANUFACTURER_PREFIXES.items(), key=lambda x: -len(x[0])):
         if name_lower.startswith(prefix):
-            return manufacturer
+            return manufacturer or None  # Leerer String → None
     return None
 
 

@@ -1385,17 +1385,25 @@ def detect_device_kind_from_filename(filename: str) -> str | None:
     """Erkennt die Geräteart aus einem CSV-Dateinamen.
 
     Beispiel: "all in_miele_Geschirrspüler.csv" → "Geschirrspüler"
+             "all in_EluxAEG_Kochfeld.csv" → "Kochfeld"
     """
     name = str(filename or "").strip()
     # Dateiendung entfernen
     if name.lower().endswith(".csv"):
         name = name[:-4]
-    # Präfixe entfernen (z.B. "all in_", "all in_miele_", "all in_neff_")
+    # "all in_" Prefix entfernen, dann optionalen Hersteller-Teil entfernen
+    # Format: "all in_[Hersteller_]Geräteart"
     name_lower = name.lower()
-    for prefix in ("all in_neff_", "all in_miele_", "all in_"):
-        if name_lower.startswith(prefix):
-            name = name[len(prefix):]
-            break
+    if name_lower.startswith("all in_"):
+        name = name[7:]  # "all in_" entfernen
+        # Wenn ein weiterer "_" vorkommt, könnte der Teil davor der Hersteller sein
+        # Prüfe ob der Teil VOR dem "_" eine bekannte Geräteart ist
+        if "_" in name:
+            before_underscore = name.split("_", 1)[0].lower().strip()
+            after_underscore = name.split("_", 1)[1].strip()
+            # Wenn der Teil vor dem _ KEINE bekannte Geräteart ist → Hersteller-Prefix
+            if before_underscore not in FILENAME_TO_DEVICE_KIND:
+                name = after_underscore
     name_lower = name.lower().strip()
     if not name_lower:
         return None

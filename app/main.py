@@ -17066,6 +17066,7 @@ def _catalog_auto_import_zip_from_attachment(
                 entity_type="catalog_import_run",
                 title=f"ZIP-Import: {csv_filename}",
                 job_key=_catalog_import_run_job_key(int(draft.id)),
+                lock_key=f"catalog_import_{int(draft.id)}",
                 log_text=f"ZIP-Import aus Mail-Anhang #{int(attachment.id)}: {csv_filename}",
                 progress={
                     "draft_id": int(draft.id),
@@ -20295,7 +20296,7 @@ async def _handle_zip_upload(request: Request, db: Session, user, raw: bytes, fi
                 entity_type="catalog_import_run",
                 title=f"ZIP-Import: {csv_filename}",
                 job_key=_catalog_import_run_job_key(int(draft.id)),
-                lock_key="catalog_import",
+                lock_key=f"catalog_import_{int(draft.id)}",
                 log_text=f"ZIP-Batch-Import: {csv_filename}",
                 progress={
                     "draft_id": int(draft.id),
