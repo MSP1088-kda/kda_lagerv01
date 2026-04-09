@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>Import-Ergebnis</h1>
+
+  <div class="import-batch-summary" style="display:flex;gap:16px;margin-bottom:16px;">
+    <div class="box" style="flex:1;padding:12px;text-align:center;">
+      <div style="font-size:2em;font-weight:bold;">{{ total_files }}</div>
+      <div class="muted">Dateien verarbeitet</div>
+    </div>
+    <div class="box" style="flex:1;padding:12px;text-align:center;{% if ok_count > 0 %}border-left:3px solid var(--green,#2a5);{% endif %}">
+      <div style="font-size:2em;font-weight:bold;color:var(--green,#2a5);">{{ ok_count }}</div>
+      <div class="muted">Erfolgreich</div>
+    </div>
+    {% if error_count > 0 %}
+    <div class="box" style="flex:1;padding:12px;text-align:center;border-left:3px solid var(--red,#c33);">
+      <div style="font-size:2em;font-weight:bold;color:var(--red,#c33);">{{ error_count }}</div>
+      <div class="muted">Fehler</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="table">
+    <div class="tr th" style="grid-template-columns: 50px 1.5fr 60px 2fr 100px;">
+      <div>#</div>
+      <div>Datei</div>
+      <div>Typ</div>
+      <div>Ergebnis</div>
+      <div>Status</div>
+    </div>
+    {% for item in import_report %}
+    <div class="tr{% if item.status == 'error' %} is-error{% endif %}" style="grid-template-columns: 50px 1.5fr 60px 2fr 100px;">
+      <div>{{ loop.index }}</div>
+      <div style="word-break:break-all;">{{ item.file }}</div>
+      <div><span class="badge">{{ item.type }}</span></div>
+      <div>
+        {{ item.message }}
+        {% if item.product_id %}
+          <a href="/catalog/products/{{ item.product_id }}" class="btn small" style="margin-left:6px;">Produkt ansehen</a>
+        {% endif %}
+        {% if item.features %}
+          <span class="muted" style="margin-left:4px;">{{ item.features }} Merkmale</span>
+        {% endif %}
+        {% if item.images %}
+          <span class="muted" style="margin-left:4px;">{{ item.images }} Bilder</span>
+        {% endif %}
+        {% if item.ean %}
+          <span class="muted" style="margin-left:4px;">EAN: {{ item.ean }}</span>
+        {% endif %}
+        {% if item.warnings %}
+          <div style="margin-top:4px;">
+            {% for warn in item.warnings[:5] %}
+            <div class="muted" style="color:var(--orange,#c80);font-size:0.85em;">{{ warn }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if item.details %}
+          <details style="margin-top:6px;">
+            <summary class="muted" style="cursor:pointer;">{{ item.details|length }} CSVs — Details anzeigen</summary>
+            <div style="margin-top:4px;font-size:0.85em;">
+              {% for detail in item.details %}
+              <div style="padding:2px 0;">{{ detail }}</div>
+              {% endfor %}
+            </div>
+          </details>
+        {% endif %}
+        {% if item.skipped %}
+          <details style="margin-top:4px;">
+            <summary class="muted" style="cursor:pointer;color:var(--orange,#c80);">{{ item.skipped|length }} übersprungen</summary>
+            <div style="margin-top:4px;font-size:0.85em;">
+              {% for skip in item.skipped %}
+              <div style="padding:2px 0;">{{ skip }}</div>
+              {% endfor %}
+            </div>
+          </details>
+        {% endif %}
+      </div>
+      <div>
+        {% if item.status == 'created' %}
+        <span style="color:var(--green,#2a5);font-weight:bold;">Neu angelegt</span>
+        {% elif item.status == 'updated' %}
+        <span style="color:var(--blue,#38c);font-weight:bold;">Aktualisiert</span>
+        {% elif item.status == 'enqueued' %}
+        <span style="color:var(--green,#2a5);">Eingeplant</span>
+        {% elif item.status == 'error' %}
+        <span style="color:var(--red,#c33);font-weight:bold;">Fehler</span>
+        {% elif item.status == 'info' %}
+        <span class="muted">Hinweis</span>
+        {% else %}
+        <span class="muted">{{ item.status }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="row" style="margin-top:16px;">
+    <a class="btn primary" href="/catalog/import">Weiteren Import starten</a>
+    <a class="btn" href="/catalog/products">Zum Produktkatalog</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li><strong>Neu angelegt:</strong> Produkt wurde erstmals aus dem Datenblatt im Katalog erstellt.</li>
+  <li><strong>Aktualisiert:</strong> Bestehendes Produkt wurde mit neuen Daten ergänzt (CSV-Daten haben Vorrang).</li>
+  <li><strong>Eingeplant:</strong> CSV-Import-Jobs laufen im Hintergrund. Ergebnisse erscheinen unter Import-Entwürfe.</li>
+  <li><strong>Fehler:</strong> Datei konnte nicht verarbeitet werden. Bitte Dateiformat und Inhalt prüfen.</li>
+</ul>
+{% endblock %}

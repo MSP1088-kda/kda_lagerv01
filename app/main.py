@@ -19649,14 +19649,13 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
             return await _handle_zip_upload(request, db, user, raw, filename)
         return await _handle_single_csv_upload(request, db, user, raw, filename, upload_form_data)
 
-    # Mehrere Dateien: jede einzeln verarbeiten
-    batch_results: list[str] = []
-    batch_errors: list[str] = []
+    # Mehrere Dateien: jede einzeln verarbeiten, Ergebnisse für Kontrollseite sammeln
+    import_report: list[dict] = []
     for upload in valid_uploads:
         raw = await upload.read()
         filename = str(upload.filename or "").strip()
         if not raw:
-            batch_errors.append(f"{filename}: Datei ist leer.")
+            import_report.append({"file": filename, "status": "error", "message": "Datei ist leer.", "type": "?"})
             continue
         is_zip = filename.lower().endswith(".zip") or raw[:4] == b"PK\x03\x04"
         is_pdf = filename.lower().endswith(".pdf") or raw[:5] == b"%PDF-"
@@ -19669,8 +19668,19 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
                 try:
                     result = import_product_from_pdf(db, tmp_path)
                     db.commit()
-                    action = "angelegt" if result.get("created") else "aktualisiert"
-                    batch_results.append(f"{filename}: {result['product_name']} {action} (Merkmale: {result['features_set']}, Bilder: {result['images_saved']})")
+                    import_report.append({
+                        "file": filename, "type": "PDF",
+                        "status": "created" if result.get("created") else "updated",
+                        "message": f"{result['product_name']} — {result['manufacturer']} / {result['device_kind']}",
+                        "product_id": result.get("product_id"),
+                        "product_name": result.get("product_name", ""),
+                        "manufacturer": result.get("manufacturer", ""),
+                        "device_kind": result.get("device_kind", ""),
+                        "features": result.get("features_set", 0),
+                        "images": result.get("images_saved", 0),
+                        "ean": result.get("ean", ""),
+                        "warnings": result.get("warnings", []),
+                    })
                 finally:
                     try:
                         tmp_path.unlink(missing_ok=True)
@@ -19680,9 +19690,11 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
                 zip_result = prepare_zip_import(db, raw, zip_filename=filename)
                 csv_files = zip_result["csv_files"]
                 if not csv_files:
-                    batch_errors.append(f"{filename}: Keine importierbaren CSVs im ZIP.")
+                    import_report.append({"file": filename, "type": "ZIP", "status": "error",
+                                          "message": "Keine importierbaren CSVs im ZIP."})
                     continue
                 enqueued = 0
+                zip_details: list[str] = []
                 for csv_entry in csv_files:
                     try:
                         csv_data = csv_entry["data"]
@@ -19717,6 +19729,7 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
                             draft.status = IMPORT_DRAFT_STATUS_FAILED
                             db.add(draft)
                             db.commit()
+                            zip_details.append(f"{csv_filename}: Fehler ({csv_error or 'keine Daten'})")
                             continue
                         feature_defs_by_key = {}
                         if device_kind:
@@ -19754,21 +19767,40 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
                         )
                         db.commit()
                         enqueued += 1
+                        kind_name = str(device_kind.name) if device_kind else "?"
+                        mfg_name = str(manufacturer.name) if manufacturer else "?"
+                        zip_details.append(f"{csv_filename}: {len(rows)} Zeilen — {mfg_name} / {kind_name}")
                     except Exception as exc:
-                        batch_errors.append(f"{filename}/{csv_entry.get('filename', '?')}: {exc}")
-                batch_results.append(f"{filename}: {enqueued} CSVs importiert")
+                        zip_details.append(f"{csv_entry.get('filename', '?')}: Fehler ({exc})")
+                import_report.append({
+                    "file": filename, "type": "ZIP",
+                    "status": "enqueued" if enqueued > 0 else "error",
+                    "message": f"{enqueued} von {len(csv_files)} CSVs eingeplant",
+                    "details": zip_details,
+                    "skipped": zip_result.get("skipped", []),
+                })
             else:
-                # CSV — als Einzel-Import über Mapping-Seite
-                batch_results.append(f"{filename}: CSV-Einzelimport — bitte einzeln hochladen")
+                import_report.append({"file": filename, "type": "CSV", "status": "info",
+                                      "message": "CSV-Einzelimport — bitte einzeln hochladen für Spalten-Mapping."})
         except Exception as exc:
             db.rollback()
-            batch_errors.append(f"{filename}: {exc}")
+            import_report.append({"file": filename, "type": "?", "status": "error", "message": str(exc)})
 
-    for msg in batch_results:
-        _flash(request, msg, "info")
-    for msg in batch_errors[:10]:
-        _flash(request, msg, "error")
-    return RedirectResponse("/catalog/import", status_code=302)
+    # Kontrollseite rendern
+    total_files = len(import_report)
+    ok_count = sum(1 for r in import_report if r["status"] in ("created", "updated", "enqueued"))
+    error_count = sum(1 for r in import_report if r["status"] == "error")
+    return templates.TemplateResponse(
+        "catalog/import_batch_result.html",
+        _ctx(
+            request,
+            user=user,
+            import_report=import_report,
+            total_files=total_files,
+            ok_count=ok_count,
+            error_count=error_count,
+        ),
+    )
 
 
 async def _handle_pdf_upload(request: Request, db: Session, user, raw: bytes, filename: str):
