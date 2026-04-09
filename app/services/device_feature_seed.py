@@ -688,8 +688,8 @@ DEVICE_FEATURE_DEFINITIONS: dict[str, list[dict]] = {
             "data_type": "text",
             "filterable": True,
             "options": ["Flachrahmen", "Facetten", "Glas aufliegend", "Flächenbündig"],
-            "csv_columns": [],
-            "regex": r"(?:Flachrahmen|Facette|aufliegend|Flächenbündig|Edelstahlrahmen)",
+            "csv_columns": ["FRAME_TYPE"],
+            "regex": r"Rahmen:\s*(.+?)(?:\s{2,}|$)",
         },
         {
             "key": "glasart",
@@ -1372,6 +1372,22 @@ def normalize_csv_feature_value(feature_key: str, raw_value: str) -> str:
             return "Teleskopauszug"
         if "nachrüstbar" in raw_lower:
             return "Auszug nachrüstbar"
+        return raw
+
+    if feature_key == "rahmenart":
+        # CSV FRAME_TYPE: "Facette vo+hi, Profile seitl.", "Flächenbündig", "Rahmen"
+        # LONG_DESCRIPTION: "Rahmen: Flachrahmen-Design", "Rahmen: U-Facette"
+        # ProductTitle: "Mit Rahmen aufliegend", "Rahmenlos aufliegend"
+        if any(w in raw_lower for w in ("flächenbündig", "flushfit", "flush", "rahmenlos")):
+            return "Flächenbündig"
+        if any(w in raw_lower for w in ("flachrahmen", "flach")):
+            return "Flachrahmen"
+        if any(w in raw_lower for w in ("facette", "u-facette")):
+            return "Facetten"
+        if any(w in raw_lower for w in ("aufliegend", "glas aufliegend")):
+            return "Glas aufliegend"
+        if raw_lower in ("rahmen", "profile seitlich", "profile seitl."):
+            return "Flachrahmen"
         return raw
 
     return raw
