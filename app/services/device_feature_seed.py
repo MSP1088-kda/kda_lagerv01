@@ -881,11 +881,19 @@ DEVICE_FEATURE_DEFINITIONS: dict[str, list[dict]] = {
     # -----------------------------------------------------------------------
     "Mikrowellenbackofen": [
         {
+            "key": "installationsart",
+            "label_de": "Installationsart",
+            "data_type": "text",
+            "filterable": True,
+            "options": ["Einbau/Vollintegriert", "Freistehend"],
+            "csv_columns": ["INST_TYPE", "CONSTR_TYPE"],
+        },
+        {
             "key": "garraumvolumen",
             "label_de": "Garraumvolumen (Liter)",
             "data_type": "number",
             "filterable": True,
-            "csv_columns": [],
+            "csv_columns": ["CAP_CAVITY"],
             "regex": r"Garraumvolumen:\s*(\d+)\s*l",
         },
         {
@@ -893,8 +901,48 @@ DEVICE_FEATURE_DEFINITIONS: dict[str, list[dict]] = {
             "label_de": "Mikrowellenleistung (Watt)",
             "data_type": "number",
             "filterable": True,
+            "csv_columns": ["MICRO_WAVE_MAX_POWER"],
+            "regex": r"Max\.\s*Leistung:\s*(\d+)\s*W",
+        },
+        {
+            "key": "grill",
+            "label_de": "Grill",
+            "data_type": "bool",
+            "filterable": True,
+            "csv_columns": ["GRILL_COOKING"],
+            "regex": r"(?:Grill|Quarz-Grill|Heißluftgrill)",
+        },
+        {
+            "key": "heissluft",
+            "label_de": "Heißluft",
+            "data_type": "bool",
+            "filterable": True,
             "csv_columns": [],
-            "regex": r"Mikrowellenleistung[^:]*:\s*(\d+)\s*W",
+            "regex": r"(?:Heißluft|Umluft|hot air)",
+        },
+        {
+            "key": "dampf",
+            "label_de": "Dampffunktion",
+            "data_type": "bool",
+            "filterable": True,
+            "csv_columns": [],
+            "regex": r"(?:Dampf|Steam|dampfunterstütz)",
+        },
+        {
+            "key": "tueranschlag",
+            "label_de": "Türanschlag",
+            "data_type": "text",
+            "filterable": True,
+            "options": ["Links", "Rechts", "Klapptür"],
+            "csv_columns": ["DOOR_HINGE"],
+        },
+        {
+            "key": "farbe",
+            "label_de": "Farbe",
+            "data_type": "text",
+            "filterable": True,
+            "options": ["Weiß", "Edelstahl", "Schwarz", "Graphit"],
+            "csv_columns": ["COL_MAIN", "COL_BASIC"],
         },
         {
             "key": "wlan",
@@ -904,19 +952,18 @@ DEVICE_FEATURE_DEFINITIONS: dict[str, list[dict]] = {
             "csv_columns": ["WIRELESS_CAPABILITY"],
         },
         {
-            "key": "farbe",
-            "label_de": "Farbe",
-            "data_type": "text",
-            "filterable": True,
-            "options": ["Weiß", "Edelstahl", "Schwarz"],
-            "csv_columns": ["COL_MAIN"],
-        },
-        {
             "key": "geraetebreite",
             "label_de": "Gerätebreite (mm)",
             "data_type": "number",
             "filterable": True,
             "csv_columns": ["WIDTH"],
+        },
+        {
+            "key": "geraetehoehe",
+            "label_de": "Gerätehöhe (mm)",
+            "data_type": "number",
+            "filterable": True,
+            "csv_columns": ["HEIGHT"],
         },
     ],
 
@@ -1382,6 +1429,17 @@ def normalize_csv_feature_value(feature_key: str, raw_value: str) -> str:
         match = re.search(r"\b([A-D])\b", raw)
         if match:
             return match.group(1).upper()
+        return raw
+
+    if feature_key == "tueranschlag":
+        if any(w in raw_lower for w in ("wechselbar", "reversible", "changeable")):
+            return "Wechselbar"
+        if any(w in raw_lower for w in ("links", "left")):
+            return "Links"
+        if any(w in raw_lower for w in ("rechts", "right")):
+            return "Rechts"
+        if any(w in raw_lower for w in ("klapptür", "klapp", "drop")):
+            return "Klapptür"
         return raw
 
     if feature_key == "auszugssystem":
