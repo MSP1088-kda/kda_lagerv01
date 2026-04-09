@@ -104,9 +104,9 @@ NAV_ITEMS: list[dict] = [
                 "show_in_mobile": False,
             },
             {
-                "label_de": "Attribute",
-                "path": "/catalog/attributes",
-                "aliases": "attribute eigenschaften verwalten",
+                "label_de": "Merkmale",
+                "path": "/catalog/features",
+                "aliases": "merkmale attribute eigenschaften filter verwalten",
                 "roles": ("admin",),
                 "show_in_topnav": False,
                 "show_in_mobile": False,
