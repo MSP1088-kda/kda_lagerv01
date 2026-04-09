@@ -19612,12 +19612,11 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
     form = await request.form()
     upload_form_data = {}
     global_errors: list[str] = []
-    upload: UploadFile = form.get("csv_file")  # type: ignore
-    if not upload or not getattr(upload, "filename", ""):
-        global_errors.append("Bitte eine CSV- oder ZIP-Datei auswählen.")
-    raw = await upload.read() if upload else b""
-    if upload and not raw:
-        global_errors.append("Die Datei ist leer.")
+
+    # Mehrere Dateien: form.getlist("csv_file")
+    uploads = form.getlist("csv_file")
+    if not uploads or all(not getattr(u, "filename", "") for u in uploads):
+        global_errors.append("Bitte mindestens eine Datei auswählen.")
 
     if global_errors:
         return templates.TemplateResponse(
@@ -19631,20 +19630,145 @@ async def catalog_import_upload_post(request: Request, user=Depends(require_admi
             ),
         )
 
-    filename = str(upload.filename or "").strip()
-    is_zip = filename.lower().endswith(".zip") or raw[:4] == b"PK\x03\x04"
-    is_pdf = filename.lower().endswith(".pdf") or raw[:5] == b"%PDF-"
+    # Bei nur einer Datei: bisheriges Verhalten
+    valid_uploads = [u for u in uploads if getattr(u, "filename", "")]
+    if len(valid_uploads) == 1:
+        upload = valid_uploads[0]
+        raw = await upload.read()
+        if not raw:
+            return templates.TemplateResponse(
+                "catalog/import_upload.html",
+                _import_upload_page_ctx(request, db=db, user=user, global_errors=["Die Datei ist leer."]),
+            )
+        filename = str(upload.filename or "").strip()
+        is_zip = filename.lower().endswith(".zip") or raw[:4] == b"PK\x03\x04"
+        is_pdf = filename.lower().endswith(".pdf") or raw[:5] == b"%PDF-"
+        if is_pdf:
+            return await _handle_pdf_upload(request, db, user, raw, filename)
+        if is_zip:
+            return await _handle_zip_upload(request, db, user, raw, filename)
+        return await _handle_single_csv_upload(request, db, user, raw, filename, upload_form_data)
 
-    # --- PDF-Import: Produkt aus Datenblatt-PDF anlegen ---
-    if is_pdf:
-        return await _handle_pdf_upload(request, db, user, raw, filename)
+    # Mehrere Dateien: jede einzeln verarbeiten
+    batch_results: list[str] = []
+    batch_errors: list[str] = []
+    for upload in valid_uploads:
+        raw = await upload.read()
+        filename = str(upload.filename or "").strip()
+        if not raw:
+            batch_errors.append(f"{filename}: Datei ist leer.")
+            continue
+        is_zip = filename.lower().endswith(".zip") or raw[:4] == b"PK\x03\x04"
+        is_pdf = filename.lower().endswith(".pdf") or raw[:5] == b"%PDF-"
+        try:
+            if is_pdf:
+                tmp_root = ensure_dirs()["tmp"] / "imports"
+                tmp_root.mkdir(parents=True, exist_ok=True)
+                tmp_path = tmp_root / f"pdf_upload_{uuid.uuid4().hex[:12]}.pdf"
+                tmp_path.write_bytes(raw)
+                try:
+                    result = import_product_from_pdf(db, tmp_path)
+                    db.commit()
+                    action = "angelegt" if result.get("created") else "aktualisiert"
+                    batch_results.append(f"{filename}: {result['product_name']} {action} (Merkmale: {result['features_set']}, Bilder: {result['images_saved']})")
+                finally:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            elif is_zip:
+                zip_result = prepare_zip_import(db, raw, zip_filename=filename)
+                csv_files = zip_result["csv_files"]
+                if not csv_files:
+                    batch_errors.append(f"{filename}: Keine importierbaren CSVs im ZIP.")
+                    continue
+                enqueued = 0
+                for csv_entry in csv_files:
+                    try:
+                        csv_data = csv_entry["data"]
+                        csv_filename = csv_entry["filename"]
+                        manufacturer = csv_entry["manufacturer"]
+                        device_kind = csv_entry["device_kind"]
+                        detected_settings = _detect_csv_upload_settings(csv_data)
+                        delimiter = str(detected_settings.get("delimiter") or ";").strip()
+                        if delimiter not in (";", ","):
+                            delimiter = ";"
+                        encoding = str(detected_settings.get("encoding") or "utf-8").strip() or "utf-8"
+                        draft = ImportDraft(
+                            created_at=_utcnow_naive(), updated_at=_utcnow_naive(),
+                            status=IMPORT_DRAFT_STATUS_VALIDATED,
+                            filename_original=csv_filename, file_path_tmp="",
+                            delimiter=delimiter, encoding=encoding, has_header=True,
+                            manufacturer_id=int(manufacturer.id) if manufacturer else None,
+                            device_kind_id=int(device_kind.id) if device_kind else None,
+                            import_profile_id=None, current_step="run",
+                            created_by_user_id=int(getattr(user, "id", 0) or 0) or None,
+                        )
+                        db.add(draft)
+                        db.commit()
+                        db.refresh(draft)
+                        tmp_root = (ensure_dirs()["tmp"] / "imports" / str(int(draft.id))).resolve()
+                        tmp_root.mkdir(parents=True, exist_ok=True)
+                        csv_path = tmp_root / "source.csv"
+                        csv_path.write_bytes(csv_data)
+                        draft.file_path_tmp = str(csv_path)
+                        columns, rows, csv_error = _import_read_draft_csv(draft)
+                        if csv_error or not rows:
+                            draft.status = IMPORT_DRAFT_STATUS_FAILED
+                            db.add(draft)
+                            db.commit()
+                            continue
+                        feature_defs_by_key = {}
+                        if device_kind:
+                            fds = _feature_defs_for_kind(db, int(device_kind.id))
+                            feature_defs_by_key = {str(fd.key or "").strip(): fd for fd in fds}
+                        mapping_data = _import_default_mapping_data(
+                            db, columns=columns, feature_defs_by_key=feature_defs_by_key, profile_id=0,
+                            profile_name_default=_catalog_import_profile_name_default(
+                                manufacturer=manufacturer, device_kind=device_kind, filename=csv_filename),
+                        )
+                        if manufacturer:
+                            mapping_data["manufacturer_name"] = str(manufacturer.name or "")
+                            mapping_data["resolved_manufacturer_id"] = int(manufacturer.id)
+                        if device_kind:
+                            mapping_data["device_kind_name"] = str(device_kind.name or "")
+                            mapping_data["resolved_device_kind_id"] = int(device_kind.id)
+                        draft.mapping_json = _json_dump(mapping_data)
+                        draft.last_preview_json = _json_dump({"columns": columns, "rows": rows[:10], "total_rows": len(rows)})
+                        draft.updated_at = _utcnow_naive()
+                        db.add(draft)
+                        db.commit()
+                        import_run = ImportRun(profile_id=None, filename=csv_filename, started_at=_utcnow_naive())
+                        db.add(import_run)
+                        db.commit()
+                        db.refresh(import_run)
+                        _enqueue_sync_job(
+                            db, system_name="catalog", direction="pull",
+                            entity_type="catalog_import_run",
+                            title=f"ZIP-Import: {csv_filename}",
+                            job_key=_catalog_import_run_job_key(int(draft.id)),
+                            lock_key=f"catalog_import_{int(draft.id)}",
+                            progress={"draft_id": int(draft.id), "import_run_id": int(import_run.id),
+                                      "phase": "ZIP-Import", "total_count": len(rows)},
+                            result_url=f"/catalog/import/runs/{int(import_run.id)}",
+                        )
+                        db.commit()
+                        enqueued += 1
+                    except Exception as exc:
+                        batch_errors.append(f"{filename}/{csv_entry.get('filename', '?')}: {exc}")
+                batch_results.append(f"{filename}: {enqueued} CSVs importiert")
+            else:
+                # CSV — als Einzel-Import über Mapping-Seite
+                batch_results.append(f"{filename}: CSV-Einzelimport — bitte einzeln hochladen")
+        except Exception as exc:
+            db.rollback()
+            batch_errors.append(f"{filename}: {exc}")
 
-    # --- ZIP-Import: Batch-Verarbeitung mehrerer CSVs ---
-    if is_zip:
-        return await _handle_zip_upload(request, db, user, raw, filename)
-
-    # --- Einzel-CSV-Import (bisheriges Verhalten) ---
-    return await _handle_single_csv_upload(request, db, user, raw, filename, upload_form_data)
+    for msg in batch_results:
+        _flash(request, msg, "info")
+    for msg in batch_errors[:10]:
+        _flash(request, msg, "error")
+    return RedirectResponse("/catalog/import", status_code=302)
 
 
 async def _handle_pdf_upload(request: Request, db: Session, user, raw: bytes, filename: str):

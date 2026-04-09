@@ -12,8 +12,8 @@
   {% endif %}
 
   <form method="post" action="/catalog/import/upload" enctype="multipart/form-data" class="form" data-import-upload-form="1">
-    <label>CSV-, ZIP- oder PDF-Datei</label>
-    <input type="file" name="csv_file" accept=".csv,.zip,.pdf,text/csv,application/zip,application/pdf" required>
+    <label>CSV-, ZIP- oder PDF-Dateien</label>
+    <input type="file" name="csv_file" accept=".csv,.zip,.pdf,text/csv,application/zip,application/pdf" required multiple>
 
     <div class="hint">
       <strong>CSV-Datei:</strong> Einzelne Geräteart importieren. Geräteart und Hersteller werden aus dem Dateinamen erkannt.<br>
