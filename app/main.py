@@ -48850,22 +48850,23 @@ def system_sevdesk_test_invoice_pdf(request: Request, user=Depends(require_admin
         saved = 0
         for inv in invoices[:5]:
             invoice_id = str(inv.get("id") or "").strip()
-            invoice_number = str(inv.get("invoiceNumber") or inv.get("header") or f"RE-{invoice_id}").strip()
+            invoice_title = str(inv.get("header") or "").strip()
+            invoice_number = str(inv.get("invoiceNumber") or "").strip()
+            display_title = invoice_title or invoice_number or f"RE-{invoice_id}"
             contact = inv.get("contact") or {}
             contact_name = str(contact.get("name") or "").strip() if isinstance(contact, dict) else ""
-            status = str(inv.get("status") or "").strip()
 
             try:
                 pdf_data = download_invoice_pdf(sevdesk_settings, invoice_id)
                 if not pdf_data or len(pdf_data) < 100:
-                    _flash(request, f"{invoice_number}: PDF leer oder zu klein.", "error")
+                    _flash(request, f"{display_title}: PDF leer oder zu klein.", "error")
                     continue
 
-                safe_name = re.sub(r"[^\w\-.]", "_", invoice_number)
+                safe_name = re.sub(r"[^\w\-.]", "_", display_title)
                 pdf_path = output_dir / f"{safe_name}.pdf"
                 pdf_path.write_bytes(pdf_data)
                 saved += 1
-                _flash(request, f"{invoice_number} ({contact_name}) — {len(pdf_data) // 1024} KB → {pdf_path}", "info")
+                _flash(request, f"{display_title} ({contact_name}) — {len(pdf_data) // 1024} KB → {pdf_path}", "info")
             except Exception as exc:
                 _flash(request, f"{invoice_number}: PDF-Download fehlgeschlagen: {exc}", "error")
 
@@ -48913,7 +48914,9 @@ def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin
 
         for inv in invoices:
             invoice_id = str(inv.get("id") or "").strip()
-            invoice_number = str(inv.get("invoiceNumber") or inv.get("header") or f"RE-{invoice_id}").strip()
+            invoice_title = str(inv.get("header") or "").strip()
+            invoice_number = str(inv.get("invoiceNumber") or "").strip()
+            display_title = invoice_title or invoice_number or f"RE-{invoice_id}"
             if not invoice_id:
                 continue
 
@@ -48936,7 +48939,7 @@ def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin
             try:
                 pdf_data = download_invoice_pdf(sevdesk_settings, invoice_id)
                 if not pdf_data or len(pdf_data) < 100:
-                    errors_list.append(f"{invoice_number}: PDF leer oder zu klein")
+                    errors_list.append(f"{display_title}: PDF leer oder zu klein")
                     continue
 
                 # Temporär speichern
@@ -48948,7 +48951,7 @@ def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin
                     result = paperless_upload(
                         tmp_path,
                         paperless_settings,
-                        title=f"Rechnung {invoice_number}",
+                        title=display_title,
                         correspondent=contact_name or "",
                         document_type="Ausgangsrechnung",
                         created=invoice_date or "",
@@ -48960,14 +48963,14 @@ def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin
                     db.commit()
                     archived += 1
                 except Exception as exc:
-                    errors_list.append(f"{invoice_number}: Paperless-Upload: {exc}")
+                    errors_list.append(f"{display_title}: Paperless-Upload: {exc}")
                 finally:
                     try:
                         tmp_path.unlink(missing_ok=True)
                     except Exception:
                         pass
             except Exception as exc:
-                errors_list.append(f"{invoice_number}: PDF-Download: {exc}")
+                errors_list.append(f"{display_title}: PDF-Download: {exc}")
 
     summary = f"Archiviert: {archived}, Übersprungen (bereits archiviert): {skipped}"
     if errors_list:
