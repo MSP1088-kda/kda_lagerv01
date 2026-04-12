@@ -48820,6 +48820,105 @@ def system_integration_sevdesk_test(request: Request, user=Depends(require_admin
     )
 
 
+@app.post("/system/integrationen/sevdesk/archive-invoices", response_class=HTMLResponse)
+def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    """Holt alle nicht-Entwurf-Rechnungen von sevDesk als PDF und schiebt sie nach Paperless."""
+    from .services.sevdesk_service import list_invoices, download_invoice_pdf
+    from .services.paperless_service import upload_document as paperless_upload
+
+    sevdesk_settings = _sevdesk_settings(db, include_secret=True)
+    paperless_settings = _paperless_settings(db, include_secret=True)
+
+    if not str(sevdesk_settings.get("api_token") or "").strip():
+        _flash(request, "sevDesk API-Token ist nicht konfiguriert.", "error")
+        return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
+    if not str(paperless_settings.get("base_url") or "").strip() or not str(paperless_settings.get("token") or "").strip():
+        _flash(request, "Paperless ist nicht konfiguriert.", "error")
+        return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
+
+    # Alle Rechnungen mit Status != Entwurf (50) holen
+    # Status 100=offen, 200=offen, 750=teilbezahlt, 1000=bezahlt
+    archived = 0
+    skipped = 0
+    errors_list: list[str] = []
+    tmp_dir = ensure_dirs()["tmp"] / "sevdesk_archive"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    for status_code in ("100", "200", "750", "1000"):
+        try:
+            invoices = list_invoices(sevdesk_settings, status=status_code, limit=500, embed="contact")
+        except Exception as exc:
+            errors_list.append(f"sevDesk-Abruf (Status {status_code}): {exc}")
+            continue
+
+        for inv in invoices:
+            invoice_id = str(inv.get("id") or "").strip()
+            invoice_number = str(inv.get("invoiceNumber") or inv.get("header") or f"RE-{invoice_id}").strip()
+            if not invoice_id:
+                continue
+
+            # Prüfe ob bereits archiviert (über SystemSetting als Marker)
+            archive_key = f"sevdesk_archived_invoice_{invoice_id}"
+            if _system_setting_get(db, archive_key, None) is not None:
+                skipped += 1
+                continue
+
+            # Kontaktname für Paperless-Korrespondent
+            contact = inv.get("contact") or {}
+            if isinstance(contact, dict):
+                contact_name = str(contact.get("name") or "").strip()
+            else:
+                contact_name = ""
+
+            # Rechnungsdatum
+            invoice_date = str(inv.get("invoiceDate") or "").strip()[:10]
+
+            try:
+                pdf_data = download_invoice_pdf(sevdesk_settings, invoice_id)
+                if not pdf_data or len(pdf_data) < 100:
+                    errors_list.append(f"{invoice_number}: PDF leer oder zu klein")
+                    continue
+
+                # Temporär speichern
+                tmp_path = tmp_dir / f"sevdesk_invoice_{invoice_id}.pdf"
+                tmp_path.write_bytes(pdf_data)
+
+                # An Paperless senden
+                try:
+                    result = paperless_upload(
+                        tmp_path,
+                        paperless_settings,
+                        title=f"Rechnung {invoice_number}",
+                        correspondent=contact_name or "",
+                        document_type="Ausgangsrechnung",
+                        created=invoice_date or "",
+                        tags="sevDesk,Rechnung",
+                        mime="application/pdf",
+                    )
+                    # Als archiviert markieren
+                    _system_setting_set(db, archive_key, str(result.get("document_id") or "ok"))
+                    db.commit()
+                    archived += 1
+                except Exception as exc:
+                    errors_list.append(f"{invoice_number}: Paperless-Upload: {exc}")
+                finally:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                errors_list.append(f"{invoice_number}: PDF-Download: {exc}")
+
+    summary = f"Archiviert: {archived}, Übersprungen (bereits archiviert): {skipped}"
+    if errors_list:
+        summary += f", Fehler: {len(errors_list)}"
+    _flash(request, summary, "info" if not errors_list else "warn")
+    for err in errors_list[:10]:
+        _flash(request, err, "error")
+
+    return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
+
+
 @app.get("/system/integrationen/openai", response_class=HTMLResponse)
 def system_integration_openai_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     ai_ensure_prompt_definitions(db)

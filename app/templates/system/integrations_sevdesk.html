@@ -64,6 +64,21 @@
     </div>
   </div>
 
+  {% if settings.enabled and settings.api_token_set %}
+  <div class="box" style="margin-top:10px;">
+    <div class="box-title">Rechnungen archivieren</div>
+    <div class="box-body">
+      <div class="hint" style="margin-bottom:8px;">
+        Holt alle Rechnungen (nicht Entwürfe) als PDF von sevDesk und archiviert sie in Paperless.
+        Bereits archivierte Rechnungen werden übersprungen.
+      </div>
+      <form method="post" action="/system/integrationen/sevdesk/archive-invoices">
+        <button class="btn primary" type="submit">Rechnungen nach Paperless archivieren</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="box" style="margin-top:10px;">
     <div class="box-title">Letzte Export-Jobs</div>
     <div class="box-body">

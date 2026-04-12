@@ -581,6 +581,51 @@ def list_invoices(
     return _extract_rows(payload)
 
 
+def download_invoice_pdf(settings: dict[str, str | bool], invoice_id: str | int) -> bytes:
+    """Lädt das PDF einer Rechnung von sevDesk herunter.
+
+    Nutzt den /Invoice/{id}/getPdf Endpunkt, der base64-encodiertes PDF zurückgibt.
+    Alternativ den /Invoice/{id}/render Endpunkt.
+    """
+    import base64
+
+    clean_id = str(invoice_id or "").strip()
+    if not clean_id:
+        raise ValueError("Rechnungs-ID fehlt.")
+    payload = _request_candidates(
+        settings,
+        method="GET",
+        paths=(
+            f"/Invoice/{clean_id}/getPdf",
+            f"/Invoice/{clean_id}/render",
+        ),
+        query={},
+    )
+    # sevDesk gibt {"objects": {"filename": "...", "base64": "..."}} zurück
+    if isinstance(payload, dict):
+        objects = payload.get("objects") or payload
+        if isinstance(objects, dict):
+            b64 = str(objects.get("content") or objects.get("base64") or "").strip()
+            if b64:
+                return base64.b64decode(b64)
+        # Fallback: filename-basierter Download
+        filename = first_value(payload, ("filename",))
+        if filename:
+            base_url = str(settings.get("base_url") or "").strip()
+            download_url = _sevdesk_url(base_url, f"/Invoice/{clean_id}/getPdf")
+            headers = _headers(settings, with_json=False)
+            headers["Accept"] = "application/pdf"
+            req = url_request.Request(url=download_url, headers=headers, method="GET")
+            try:
+                with url_request.urlopen(req, timeout=30) as resp:
+                    data = resp.read()
+                    if data and data[:5] == b"%PDF-":
+                        return data
+            except Exception:
+                pass
+    raise ValueError(f"PDF für Rechnung {clean_id} konnte nicht heruntergeladen werden.")
+
+
 def list_vouchers(
     settings: dict[str, str | bool],
     *,
