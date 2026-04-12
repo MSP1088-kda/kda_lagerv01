@@ -49052,6 +49052,29 @@ def system_sevdesk_invoice_reset_get(request: Request, user=Depends(require_admi
         })
 
     invoices.sort(key=lambda x: x["nr"])
+
+    # Live-Status von sevDesk holen um bereits zurückgesetzte zu markieren
+    from .services.sevdesk_service import request_json as sevdesk_request_json
+    settings = _sevdesk_settings(db, include_secret=True)
+    reset_count = 0
+    if str(settings.get("api_token") or "").strip():
+        for inv in invoices:
+            try:
+                live = sevdesk_request_json(
+                    settings, method="GET",
+                    path=f"/Invoice/{inv['id']}",
+                )
+                live_obj = live.get("objects", live)
+                if isinstance(live_obj, list) and live_obj:
+                    live_obj = live_obj[0]
+                if isinstance(live_obj, dict):
+                    live_status = str(live_obj.get("status") or "")
+                    inv["status"] = live_status
+                    if live_status == "50":
+                        reset_count += 1
+            except Exception:
+                pass
+
     return templates.TemplateResponse(
         "system/sevdesk_invoice_reset.html",
         _ctx(
@@ -49060,6 +49083,7 @@ def system_sevdesk_invoice_reset_get(request: Request, user=Depends(require_admi
             invoices=invoices,
             write_enabled=write_enabled,
             last_reset=None,
+            reset_count=reset_count,
         ),
     )
 

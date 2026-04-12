@@ -41,6 +41,9 @@
       <div class="hint" style="margin-bottom:8px;">
         Rechnungen die vor dem 11.4.2026 erstellt aber am 12.4.2026 automatisch versendet wurden.
         Nur Rechnungen ab RE26-4024 werden angezeigt.
+        {% if reset_count is defined and reset_count > 0 %}
+        <br><strong style="color:var(--green,#2a5);">{{ reset_count }} bereits auf Entwurf zurückgesetzt.</strong>
+        {% endif %}
       </div>
 
       <div class="table">
@@ -55,7 +58,7 @@
           <div>Aktion</div>
         </div>
         {% for inv in invoices %}
-        <div class="tr{% if inv.reset_done %} is-success{% endif %}" style="grid-template-columns: 50px 120px 160px 160px 60px 100px 1fr 120px;">
+        <div class="tr" style="grid-template-columns: 50px 120px 160px 160px 60px 100px 1fr 120px;{% if inv.status == '50' %}background:rgba(40,160,80,0.1);{% endif %}">
           <div>{{ loop.index }}</div>
           <div><strong>{{ inv.nr }}</strong></div>
           <div>{{ inv.created[:16] }}</div>
