@@ -49148,9 +49148,14 @@ def system_sevdesk_invoice_reset_all(request: Request, user=Depends(require_admi
         send = str(raw.get("sendDate") or "")[:19]
         if not (create < "2026-04-11T23:30" and send >= "2026-04-11T23:30"):
             continue
-        invoice_ids.append((str(row.sevdesk_invoice_id or "").strip(), nr))
+        inv_id = str(row.sevdesk_invoice_id or "").strip()
+        # Bereits erledigte überspringen
+        if _system_setting_get(db, f"sevdesk_reset_done_{inv_id}", None) is not None:
+            continue
+        invoice_ids.append((inv_id, nr))
 
     success = 0
+    skipped_done = 0
     errors = 0
     for inv_id, inv_nr in invoice_ids:
         try:

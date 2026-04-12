@@ -92,12 +92,13 @@
         {% endfor %}
       </div>
 
-      {% if invoices and write_enabled %}
+      {% set remaining = invoices|selectattr("done", "equalto", false)|list|length %}
+      {% if remaining > 0 and write_enabled %}
       <div style="margin-top:12px;padding:12px;border:1px solid var(--red,#c33);">
-        <strong style="color:var(--red,#c33);">Alle zurücksetzen</strong>
-        <div class="hint" style="margin:6px 0;">Setzt alle {{ invoices|length }} Rechnungen auf Entwurf zurück. Nicht rückgängig machbar!</div>
+        <strong style="color:var(--red,#c33);">Offene zurücksetzen</strong>
+        <div class="hint" style="margin:6px 0;">Setzt die {{ remaining }} noch nicht erledigten Rechnungen auf Entwurf zurück. Bereits erledigte werden übersprungen.</div>
         <form method="post" action="/system/sevdesk-invoice-reset/reset-all">
-          <button class="btn" type="submit" style="color:var(--red,#c33);" onclick="return confirm('ALLE {{ invoices|length }} Rechnungen auf Entwurf zurücksetzen? Das kann nicht rückgängig gemacht werden!');">Alle {{ invoices|length }} zurücksetzen</button>
+          <button class="btn" type="submit" style="color:var(--red,#c33);" onclick="return confirm('{{ remaining }} offene Rechnungen auf Entwurf zurücksetzen?');">{{ remaining }} offene zurücksetzen</button>
         </form>
       </div>
       {% endif %}
