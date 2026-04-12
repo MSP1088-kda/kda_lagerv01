@@ -48883,9 +48883,18 @@ def system_sevdesk_test_invoice_pdf(request: Request, user=Depends(require_admin
 
 @app.post("/system/integrationen/sevdesk/archive-invoices", response_class=HTMLResponse)
 def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
-    """Holt alle nicht-Entwurf-Rechnungen von sevDesk als PDF und schiebt sie nach Paperless."""
+    """Archiviert sevDesk-Rechnungen nach Paperless in 50er-Batches.
+
+    Ablauf pro Batch:
+    1. 50 PDFs von sevDesk herunterladen → lokaler Zwischenspeicher
+    2. Alle 50 an Paperless hochladen
+    3. Zwischenspeicher leeren
+    4. Nächste 50 holen
+    """
     from .services.sevdesk_service import list_invoices, download_invoice_pdf
     from .services.paperless_service import upload_document as paperless_upload
+
+    BATCH_SIZE = 50
 
     sevdesk_settings = _sevdesk_settings(db, include_secret=True)
     paperless_settings = _paperless_settings(db, include_secret=True)
@@ -48897,86 +48906,108 @@ def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin
         _flash(request, "Paperless ist nicht konfiguriert.", "error")
         return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
 
-    # Alle Rechnungen mit Status != Entwurf (50) holen
-    # Status 100=offen, 200=offen, 750=teilbezahlt, 1000=bezahlt
     archived = 0
     skipped = 0
-    errors_list: list[str] = []
+    download_errors: list[str] = []
+    upload_errors: list[str] = []
     tmp_dir = ensure_dirs()["tmp"] / "sevdesk_archive"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
+    # Alle nicht-Entwurf-Rechnungen sammeln
+    all_invoices: list[dict] = []
     for status_code in ("100", "200", "750", "1000"):
         try:
-            invoices = list_invoices(sevdesk_settings, status=status_code, limit=500, embed="contact")
+            batch = list_invoices(sevdesk_settings, status=status_code, limit=1000, embed="contact")
+            all_invoices.extend(batch)
         except Exception as exc:
-            errors_list.append(f"sevDesk-Abruf (Status {status_code}): {exc}")
-            continue
+            download_errors.append(f"sevDesk-Abruf (Status {status_code}): {exc}")
 
-        for inv in invoices:
+    # Bereits archivierte herausfiltern
+    pending: list[dict] = []
+    for inv in all_invoices:
+        invoice_id = str(inv.get("id") or "").strip()
+        if not invoice_id:
+            continue
+        archive_key = f"sevdesk_archived_invoice_{invoice_id}"
+        if _system_setting_get(db, archive_key, None) is not None:
+            skipped += 1
+            continue
+        pending.append(inv)
+
+    # In 50er-Batches verarbeiten
+    total_batches = (len(pending) + BATCH_SIZE - 1) // BATCH_SIZE
+    for batch_idx in range(total_batches):
+        batch_start = batch_idx * BATCH_SIZE
+        batch_invoices = pending[batch_start : batch_start + BATCH_SIZE]
+        downloaded_files: list[dict] = []
+
+        # Phase 1: PDFs herunterladen
+        for inv in batch_invoices:
             invoice_id = str(inv.get("id") or "").strip()
             invoice_title = str(inv.get("header") or "").strip()
             invoice_number = str(inv.get("invoiceNumber") or "").strip()
             display_title = invoice_title or invoice_number or f"RE-{invoice_id}"
-            if not invoice_id:
-                continue
-
-            # Prüfe ob bereits archiviert (über SystemSetting als Marker)
-            archive_key = f"sevdesk_archived_invoice_{invoice_id}"
-            if _system_setting_get(db, archive_key, None) is not None:
-                skipped += 1
-                continue
-
-            # Kontaktname für Paperless-Korrespondent
             contact = inv.get("contact") or {}
-            if isinstance(contact, dict):
-                contact_name = str(contact.get("name") or "").strip()
-            else:
-                contact_name = ""
-
-            # Rechnungsdatum
+            contact_name = str(contact.get("name") or "").strip() if isinstance(contact, dict) else ""
             invoice_date = str(inv.get("invoiceDate") or "").strip()[:10]
 
             try:
                 pdf_data = download_invoice_pdf(sevdesk_settings, invoice_id)
                 if not pdf_data or len(pdf_data) < 100:
-                    errors_list.append(f"{display_title}: PDF leer oder zu klein")
+                    download_errors.append(f"{display_title}: PDF leer")
                     continue
-
-                # Temporär speichern
                 tmp_path = tmp_dir / f"sevdesk_invoice_{invoice_id}.pdf"
                 tmp_path.write_bytes(pdf_data)
-
-                # An Paperless senden
-                try:
-                    result = paperless_upload(
-                        tmp_path,
-                        paperless_settings,
-                        title=display_title,
-                        correspondent=contact_name or "",
-                        document_type="Ausgangsrechnung",
-                        created=invoice_date or "",
-                        tags="sevDesk,Rechnung",
-                        mime="application/pdf",
-                    )
-                    # Als archiviert markieren
-                    _system_setting_set(db, archive_key, str(result.get("document_id") or "ok"))
-                    db.commit()
-                    archived += 1
-                except Exception as exc:
-                    errors_list.append(f"{display_title}: Paperless-Upload: {exc}")
-                finally:
-                    try:
-                        tmp_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                downloaded_files.append({
+                    "path": tmp_path,
+                    "invoice_id": invoice_id,
+                    "title": display_title,
+                    "contact": contact_name,
+                    "date": invoice_date,
+                })
             except Exception as exc:
-                errors_list.append(f"{display_title}: PDF-Download: {exc}")
+                download_errors.append(f"{display_title}: {exc}")
 
-    summary = f"Archiviert: {archived}, Übersprungen (bereits archiviert): {skipped}"
-    if errors_list:
-        summary += f", Fehler: {len(errors_list)}"
-    _flash(request, summary, "info" if not errors_list else "warn")
-    for err in errors_list[:10]:
+        # Phase 2: Heruntergeladene PDFs an Paperless senden
+        for item in downloaded_files:
+            try:
+                result = paperless_upload(
+                    item["path"],
+                    paperless_settings,
+                    title=item["title"],
+                    correspondent=item["contact"],
+                    document_type="Ausgangsrechnung",
+                    created=item["date"],
+                    tags="sevDesk,Rechnung",
+                    mime="application/pdf",
+                )
+                archive_key = f"sevdesk_archived_invoice_{item['invoice_id']}"
+                _system_setting_set(db, archive_key, str(result.get("document_id") or "ok"))
+                archived += 1
+            except Exception as exc:
+                upload_errors.append(f"{item['title']}: {exc}")
+
+        # Phase 3: Zwischenspeicher leeren
+        for item in downloaded_files:
+            try:
+                item["path"].unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        # Nach jedem Batch committen
+        db.commit()
+
+    # Zusammenfassung
+    total_errors = download_errors + upload_errors
+    summary = f"Archiviert: {archived} von {len(pending)}"
+    if skipped:
+        summary += f", bereits archiviert: {skipped}"
+    if total_errors:
+        summary += f", Fehler: {len(total_errors)}"
+    if total_batches > 1:
+        summary += f" ({total_batches} Batches à {BATCH_SIZE})"
+    _flash(request, summary, "info" if not total_errors else "warn")
+    for err in total_errors[:10]:
         _flash(request, err, "error")
 
     return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
