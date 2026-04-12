@@ -1933,29 +1933,19 @@ def startup():
 @app.on_event("startup")
 async def startup_background_jobs():
     start = dt.datetime.now()
+    # Nur Wartung und Hintergrundjob-Verarbeitung — alles andere manuell
     task = getattr(app.state, "startup_maintenance_task", None)
     if task is None or task.done():
         app.state.startup_maintenance_task = asyncio.create_task(_startup_maintenance_loop())
-    if EMAIL_SENDER_ENABLED:
-        task = getattr(app.state, "email_sender_task", None)
-        if task is None or task.done():
-            app.state.email_sender_task = asyncio.create_task(_email_sender_loop())
-    if EMAIL_IMAP_ENABLED:
-        task = getattr(app.state, "email_imap_task", None)
-        if task is None or task.done():
-            app.state.email_imap_task = asyncio.create_task(_email_imap_loop())
-    task = getattr(app.state, "outsmart_sync_task", None)
-    if task is None or task.done():
-        app.state.outsmart_sync_task = asyncio.create_task(_outsmart_sync_loop())
-    task = getattr(app.state, "sevdesk_sync_task", None)
-    if task is None or task.done():
-        app.state.sevdesk_sync_task = asyncio.create_task(_sevdesk_sync_loop())
-    task = getattr(app.state, "paperless_sync_task", None)
-    if task is None or task.done():
-        app.state.paperless_sync_task = asyncio.create_task(_paperless_sync_loop())
     task = getattr(app.state, "background_job_task", None)
     if task is None or task.done():
         app.state.background_job_task = asyncio.create_task(_background_job_loop())
+    # Deaktiviert — volle manuelle Kontrolle:
+    # - E-Mail Sender (_email_sender_loop)
+    # - E-Mail IMAP Fetch (_email_imap_loop)
+    # - OutSmart Sync (_outsmart_sync_loop)
+    # - sevDesk Sync (_sevdesk_sync_loop)
+    # - Paperless Sync (_paperless_sync_loop)
     duration = (dt.datetime.now() - start).total_seconds()
     logger.info("startup_background_jobs_complete total=%.3fs", duration)
 
