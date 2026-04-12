@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+  <h1>sevDesk: Rechnungen auf Entwurf zurücksetzen</h1>
+
+  <div class="box" style="margin-bottom:12px;{% if write_enabled %}border-left:3px solid var(--red,#c33);{% else %}border-left:3px solid var(--green,#2a5);{% endif %}">
+    <div class="box-body" style="display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <strong>Schreibschutz:</strong>
+        {% if write_enabled %}
+          <span style="color:var(--red,#c33);font-weight:bold;">AUS — Zurücksetzen ist aktiv!</span>
+        {% else %}
+          <span style="color:var(--green,#2a5);font-weight:bold;">EIN — Nur Ansicht, kein Zurücksetzen möglich</span>
+        {% endif %}
+      </div>
+      <form method="post" action="/system/sevdesk-invoice-reset/toggle-write" style="display:inline;">
+        {% if write_enabled %}
+          <button class="btn" type="submit">Schreibschutz aktivieren</button>
+        {% else %}
+          <button class="btn" type="submit" style="color:var(--red,#c33);">Schreibschutz deaktivieren</button>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+
+  {% if flash_messages %}
+  {% for msg in flash_messages %}
+  <div class="flash {{ msg.level }}">{{ msg.text }}</div>
+  {% endfor %}
+  {% endif %}
+
+  {% if last_reset %}
+  <div class="flash info" style="margin-bottom:10px;">
+    Letzte Aktion: {{ last_reset }}
+  </div>
+  {% endif %}
+
+  <div class="box" style="margin-bottom:12px;">
+    <div class="box-title">Ehemalige Entwürfe ({{ invoices|length }} Rechnungen)</div>
+    <div class="box-body">
+      <div class="hint" style="margin-bottom:8px;">
+        Rechnungen die vor dem 11.4.2026 erstellt aber am 12.4.2026 automatisch versendet wurden.
+        Nur Rechnungen ab RE26-4024 werden angezeigt.
+      </div>
+
+      <div class="table">
+        <div class="tr th" style="grid-template-columns: 50px 120px 160px 160px 60px 100px 1fr 120px;">
+          <div>#</div>
+          <div>Nummer</div>
+          <div>Erstellt</div>
+          <div>Versendet</div>
+          <div>Tage</div>
+          <div>Betrag</div>
+          <div>Titel</div>
+          <div>Aktion</div>
+        </div>
+        {% for inv in invoices %}
+        <div class="tr{% if inv.reset_done %} is-success{% endif %}" style="grid-template-columns: 50px 120px 160px 160px 60px 100px 1fr 120px;">
+          <div>{{ loop.index }}</div>
+          <div><strong>{{ inv.nr }}</strong></div>
+          <div>{{ inv.created[:16] }}</div>
+          <div>{{ inv.sent[:16] }}</div>
+          <div>{{ inv.days }}d</div>
+          <div>{{ "%.2f"|format(inv.amount) }}</div>
+          <div style="font-size:0.85em;">{{ inv.header }}</div>
+          <div>
+            {% if inv.status == "50" %}
+              <span style="color:var(--green,#2a5);">Entwurf</span>
+            {% elif write_enabled %}
+              <form method="post" action="/system/sevdesk-invoice-reset/reset" style="display:inline;">
+                <input type="hidden" name="invoice_id" value="{{ inv.id }}">
+                <input type="hidden" name="invoice_nr" value="{{ inv.nr }}">
+                <button class="btn small" type="submit" onclick="return confirm('{{ inv.nr }} wirklich auf Entwurf zurücksetzen?');">Zurücksetzen</button>
+              </form>
+            {% else %}
+              <span class="muted">Gesperrt</span>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      {% if invoices and write_enabled %}
+      <div style="margin-top:12px;padding:12px;border:1px solid var(--red,#c33);">
+        <strong style="color:var(--red,#c33);">Alle zurücksetzen</strong>
+        <div class="hint" style="margin:6px 0;">Setzt alle {{ invoices|length }} Rechnungen auf Entwurf zurück. Nicht rückgängig machbar!</div>
+        <form method="post" action="/system/sevdesk-invoice-reset/reset-all">
+          <button class="btn" type="submit" style="color:var(--red,#c33);" onclick="return confirm('ALLE {{ invoices|length }} Rechnungen auf Entwurf zurücksetzen? Das kann nicht rückgängig gemacht werden!');">Alle {{ invoices|length }} zurücksetzen</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="row">
+    <a class="btn" href="/system/integrationen/sevdesk">Zurück zu sevDesk</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block help %}
+<ul>
+  <li>Zeigt Rechnungen die automatisch vom Entwurf versendet wurden.</li>
+  <li>Schreibschutz muss explizit deaktiviert werden um zurückzusetzen.</li>
+  <li>Einzeln oder alle auf einmal zurücksetzbar.</li>
+  <li>Rechnungsnummern bleiben erhalten.</li>
+</ul>
+{% endblock %}

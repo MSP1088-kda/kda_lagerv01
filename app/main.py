@@ -49020,6 +49020,171 @@ def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin
     return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
 
 
+SEVDESK_RESET_WRITE_SETTING = "sevdesk_invoice_reset_write_enabled"
+
+
+@app.get("/system/sevdesk-invoice-reset", response_class=HTMLResponse)
+def system_sevdesk_invoice_reset_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    """Zeigt die 84 ehemaligen Entwürfe und erlaubt einzelnes Zurücksetzen."""
+    import sqlite3 as _sqlite3
+    write_enabled = _bool_from_setting(_system_setting_get(db, SEVDESK_RESET_WRITE_SETTING, "0"), default=False)
+
+    # Lade die betroffenen Rechnungen aus der Stage-Tabelle
+    invoices = []
+    for row in (
+        db.query(SevdeskInvoiceStage)
+        .filter(SevdeskInvoiceStage.invoice_number.isnot(None))
+        .order_by(SevdeskInvoiceStage.invoice_number.asc())
+        .all()
+        if hasattr(db, "query") else []
+    ):
+        raw = _json_load_dict(row.raw_json) if hasattr(row, "raw_json") and row.raw_json else {}
+        nr = str(row.invoice_number or "").strip()
+        if not nr.startswith("RE26-"):
+            continue
+        try:
+            nr_num = int(nr.replace("RE26-", ""))
+        except ValueError:
+            continue
+        if nr_num < 4024:
+            continue
+        create = str(raw.get("create") or "")[:19]
+        send = str(raw.get("sendDate") or "")[:19]
+        status = str(raw.get("status") or row.status or "")
+        if not (create < "2026-04-11T23:30" and send >= "2026-04-11T23:30"):
+            continue
+        try:
+            from datetime import datetime as _dt
+            days = (_dt.fromisoformat(send) - _dt.fromisoformat(create)).days
+        except Exception:
+            days = 0
+        try:
+            amount = float(raw.get("sumGross") or 0)
+        except Exception:
+            amount = 0
+        invoices.append({
+            "id": str(row.sevdesk_invoice_id or "").strip(),
+            "nr": nr,
+            "created": create,
+            "sent": send,
+            "days": days,
+            "amount": amount,
+            "header": str(raw.get("header") or "")[:60],
+            "status": status,
+        })
+
+    invoices.sort(key=lambda x: x["nr"])
+    return templates.TemplateResponse(
+        "system/sevdesk_invoice_reset.html",
+        _ctx(
+            request,
+            user=user,
+            invoices=invoices,
+            write_enabled=write_enabled,
+            last_reset=None,
+        ),
+    )
+
+
+@app.post("/system/sevdesk-invoice-reset/toggle-write")
+def system_sevdesk_invoice_reset_toggle(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    current = _bool_from_setting(_system_setting_get(db, SEVDESK_RESET_WRITE_SETTING, "0"), default=False)
+    _system_setting_set(db, SEVDESK_RESET_WRITE_SETTING, "0" if current else "1")
+    db.commit()
+    _flash(request, "Schreibschutz deaktiviert — Zurücksetzen ist jetzt möglich." if current else "Schreibschutz aktiviert.", "info" if current else "warn")
+    return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
+
+
+@app.post("/system/sevdesk-invoice-reset/reset")
+async def system_sevdesk_invoice_reset_single(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    """Setzt eine einzelne Rechnung in sevDesk auf Entwurf zurück."""
+    write_enabled = _bool_from_setting(_system_setting_get(db, SEVDESK_RESET_WRITE_SETTING, "0"), default=False)
+    if not write_enabled:
+        _flash(request, "Schreibschutz ist aktiv. Bitte zuerst deaktivieren.", "error")
+        return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
+
+    form = await request.form()
+    invoice_id = str(form.get("invoice_id") or "").strip()
+    invoice_nr = str(form.get("invoice_nr") or "").strip()
+    if not invoice_id:
+        _flash(request, "Keine Rechnungs-ID angegeben.", "error")
+        return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
+
+    from .services.sevdesk_service import request_json as sevdesk_request_json
+    settings = _sevdesk_settings(db, include_secret=True)
+
+    try:
+        result = sevdesk_request_json(
+            settings,
+            method="PUT",
+            path=f"/Invoice/{invoice_id}/resetToDraft",
+        )
+        _flash(request, f"{invoice_nr} (ID {invoice_id}) erfolgreich auf Entwurf zurückgesetzt.", "info")
+    except Exception as exc:
+        _flash(request, f"{invoice_nr}: Zurücksetzen fehlgeschlagen — {exc}", "error")
+
+    return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
+
+
+@app.post("/system/sevdesk-invoice-reset/reset-all")
+def system_sevdesk_invoice_reset_all(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    """Setzt alle 84 ehemaligen Entwürfe in sevDesk zurück."""
+    write_enabled = _bool_from_setting(_system_setting_get(db, SEVDESK_RESET_WRITE_SETTING, "0"), default=False)
+    if not write_enabled:
+        _flash(request, "Schreibschutz ist aktiv. Bitte zuerst deaktivieren.", "error")
+        return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
+
+    from .services.sevdesk_service import request_json as sevdesk_request_json
+    settings = _sevdesk_settings(db, include_secret=True)
+
+    # Gleiche Logik wie GET: betroffene Rechnungen laden
+    invoice_ids = []
+    for row in (
+        db.query(SevdeskInvoiceStage)
+        .filter(SevdeskInvoiceStage.invoice_number.isnot(None))
+        .all()
+    ):
+        raw = _json_load_dict(row.raw_json) if hasattr(row, "raw_json") and row.raw_json else {}
+        nr = str(row.invoice_number or "").strip()
+        if not nr.startswith("RE26-"):
+            continue
+        try:
+            nr_num = int(nr.replace("RE26-", ""))
+        except ValueError:
+            continue
+        if nr_num < 4024:
+            continue
+        create = str(raw.get("create") or "")[:19]
+        send = str(raw.get("sendDate") or "")[:19]
+        if not (create < "2026-04-11T23:30" and send >= "2026-04-11T23:30"):
+            continue
+        invoice_ids.append((str(row.sevdesk_invoice_id or "").strip(), nr))
+
+    success = 0
+    errors = 0
+    for inv_id, inv_nr in invoice_ids:
+        try:
+            sevdesk_request_json(
+                settings,
+                method="PUT",
+                path=f"/Invoice/{inv_id}/resetToDraft",
+            )
+            success += 1
+        except Exception as exc:
+            errors += 1
+            if errors <= 3:
+                _flash(request, f"{inv_nr}: {exc}", "error")
+
+    _flash(request, f"Zurückgesetzt: {success}, Fehler: {errors} von {len(invoice_ids)}", "info" if errors == 0 else "warn")
+
+    # Schreibschutz automatisch wieder aktivieren
+    _system_setting_set(db, SEVDESK_RESET_WRITE_SETTING, "0")
+    db.commit()
+    _flash(request, "Schreibschutz wurde automatisch wieder aktiviert.", "info")
+
+    return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
+
+
 @app.get("/system/integrationen/openai", response_class=HTMLResponse)
 def system_integration_openai_get(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     ai_ensure_prompt_definitions(db)
