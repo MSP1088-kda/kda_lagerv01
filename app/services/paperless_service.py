@@ -73,25 +73,24 @@ def _safe_filename(filename: str, fallback: str = "dokument") -> str:
 
 def _encode_multipart(document_field: str, filename: str, mime: str, payload: bytes, fields: dict[str, str]) -> tuple[bytes, str]:
     boundary = f"----kda-{uuid.uuid4().hex}"
+    CRLF = b"\r\n"
     body = bytearray()
     for key, value in fields.items():
         text = (value or "").strip()
         if not text:
             continue
-        body.extend(f"--{boundary}\\r\\n".encode("utf-8"))
-        body.extend(f'Content-Disposition: form-data; name="{key}"\\r\\n\\r\\n'.encode("utf-8"))
+        body.extend(f"--{boundary}".encode("utf-8") + CRLF)
+        body.extend(f'Content-Disposition: form-data; name="{key}"'.encode("utf-8") + CRLF + CRLF)
         body.extend(text.encode("utf-8"))
-        body.extend(b"\\r\\n")
-    body.extend(f"--{boundary}\\r\\n".encode("utf-8"))
+        body.extend(CRLF)
+    body.extend(f"--{boundary}".encode("utf-8") + CRLF)
     body.extend(
-        (
-            f'Content-Disposition: form-data; name="{document_field}"; filename="{_safe_filename(filename, "dokument")}"\\r\\n'
-            f"Content-Type: {mime or 'application/octet-stream'}\\r\\n\\r\\n"
-        ).encode("utf-8")
+        f'Content-Disposition: form-data; name="{document_field}"; filename="{_safe_filename(filename, "dokument")}"'.encode("utf-8") + CRLF
     )
+    body.extend(f"Content-Type: {mime or 'application/octet-stream'}".encode("utf-8") + CRLF + CRLF)
     body.extend(payload)
-    body.extend(b"\\r\\n")
-    body.extend(f"--{boundary}--\\r\\n".encode("utf-8"))
+    body.extend(CRLF)
+    body.extend(f"--{boundary}--".encode("utf-8") + CRLF)
     return bytes(body), f"multipart/form-data; boundary={boundary}"
 
 
