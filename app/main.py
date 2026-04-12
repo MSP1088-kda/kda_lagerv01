@@ -48844,7 +48844,7 @@ def system_sevdesk_test_invoice_pdf(request: Request, user=Depends(require_admin
             return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
 
         # Ausgabeverzeichnis
-        output_dir = ensure_dirs()["data"] / "sevdesk_test_pdfs"
+        output_dir = Path.home() / "Downloads" / "sevdesk_rechnungen"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         saved = 0
