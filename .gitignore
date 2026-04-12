@@ -12,6 +12,10 @@
 /data/secrets/*
 !/data/secrets/.gitkeep
 
+# Environment (nie Secrets committen)
+.env
+!.env.example
+
 # Python-Artefakte
 __pycache__/
 *.pyc
