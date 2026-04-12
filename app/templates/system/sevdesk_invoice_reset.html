@@ -41,13 +41,13 @@
       <div class="hint" style="margin-bottom:8px;">
         Rechnungen die vor dem 11.4.2026 erstellt aber am 12.4.2026 automatisch versendet wurden.
         Nur Rechnungen ab RE26-4024 werden angezeigt.
-        {% if reset_count is defined and reset_count > 0 %}
-        <br><strong style="color:var(--green,#2a5);">{{ reset_count }} bereits auf Entwurf zurückgesetzt.</strong>
+        {% if done_count is defined and done_count > 0 %}
+        <br><strong style="color:var(--green,#2a5);">{{ done_count }} von {{ invoices|length }} erledigt.</strong>
         {% endif %}
       </div>
 
       <div class="table">
-        <div class="tr th" style="grid-template-columns: 50px 120px 160px 160px 60px 100px 1fr 120px;">
+        <div class="tr th" style="grid-template-columns: 50px 120px 140px 140px 50px 90px 1fr 180px;">
           <div>#</div>
           <div>Nummer</div>
           <div>Erstellt</div>
@@ -58,25 +58,34 @@
           <div>Aktion</div>
         </div>
         {% for inv in invoices %}
-        <div class="tr" style="grid-template-columns: 50px 120px 160px 160px 60px 100px 1fr 120px;{% if inv.status == '50' %}background:rgba(40,160,80,0.1);{% endif %}">
+        <div class="tr" style="grid-template-columns: 50px 120px 140px 140px 50px 90px 1fr 180px;{% if inv.done %}background:rgba(40,160,80,0.1);{% endif %}">
           <div>{{ loop.index }}</div>
           <div><strong>{{ inv.nr }}</strong></div>
-          <div>{{ inv.created[:16] }}</div>
-          <div>{{ inv.sent[:16] }}</div>
+          <div style="font-size:0.85em;">{{ inv.created[:16] }}</div>
+          <div style="font-size:0.85em;">{{ inv.sent[:16] }}</div>
           <div>{{ inv.days }}d</div>
           <div>{{ "%.2f"|format(inv.amount) }}</div>
           <div style="font-size:0.85em;">{{ inv.header }}</div>
-          <div>
-            {% if inv.status == "50" %}
-              <span style="color:var(--green,#2a5);">Entwurf</span>
-            {% elif write_enabled %}
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            {% if inv.done %}
+              <form method="post" action="/system/sevdesk-invoice-reset/toggle-done" style="display:inline;">
+                <input type="hidden" name="invoice_id" value="{{ inv.id }}">
+                <input type="hidden" name="invoice_nr" value="{{ inv.nr }}">
+                <button class="btn small" type="submit" style="color:var(--green,#2a5);">Erledigt</button>
+              </form>
+            {% else %}
+              {% if write_enabled %}
               <form method="post" action="/system/sevdesk-invoice-reset/reset" style="display:inline;">
                 <input type="hidden" name="invoice_id" value="{{ inv.id }}">
                 <input type="hidden" name="invoice_nr" value="{{ inv.nr }}">
-                <button class="btn small" type="submit" onclick="return confirm('{{ inv.nr }} wirklich auf Entwurf zurücksetzen?');">Zurücksetzen</button>
+                <button class="btn small" type="submit" onclick="return confirm('{{ inv.nr }} wirklich auf Entwurf zurücksetzen?');">Reset</button>
               </form>
-            {% else %}
-              <span class="muted">Gesperrt</span>
+              {% endif %}
+              <form method="post" action="/system/sevdesk-invoice-reset/toggle-done" style="display:inline;">
+                <input type="hidden" name="invoice_id" value="{{ inv.id }}">
+                <input type="hidden" name="invoice_nr" value="{{ inv.nr }}">
+                <button class="btn small" type="submit">Erledigt</button>
+              </form>
             {% endif %}
           </div>
         </div>

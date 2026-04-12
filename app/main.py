@@ -49053,27 +49053,13 @@ def system_sevdesk_invoice_reset_get(request: Request, user=Depends(require_admi
 
     invoices.sort(key=lambda x: x["nr"])
 
-    # Live-Status von sevDesk holen um bereits zurückgesetzte zu markieren
-    from .services.sevdesk_service import request_json as sevdesk_request_json
-    settings = _sevdesk_settings(db, include_secret=True)
-    reset_count = 0
-    if str(settings.get("api_token") or "").strip():
-        for inv in invoices:
-            try:
-                live = sevdesk_request_json(
-                    settings, method="GET",
-                    path=f"/Invoice/{inv['id']}",
-                )
-                live_obj = live.get("objects", live)
-                if isinstance(live_obj, list) and live_obj:
-                    live_obj = live_obj[0]
-                if isinstance(live_obj, dict):
-                    live_status = str(live_obj.get("status") or "")
-                    inv["status"] = live_status
-                    if live_status == "50":
-                        reset_count += 1
-            except Exception:
-                pass
+    # "Erledigt"-Markierung aus lokaler DB laden (kein Live-API-Call)
+    done_count = 0
+    for inv in invoices:
+        marker = _system_setting_get(db, f"sevdesk_reset_done_{inv['id']}", None)
+        inv["done"] = marker is not None
+        if inv["done"]:
+            done_count += 1
 
     return templates.TemplateResponse(
         "system/sevdesk_invoice_reset.html",
@@ -49083,7 +49069,7 @@ def system_sevdesk_invoice_reset_get(request: Request, user=Depends(require_admi
             invoices=invoices,
             write_enabled=write_enabled,
             last_reset=None,
-            reset_count=reset_count,
+            done_count=done_count,
         ),
     )
 
@@ -49121,6 +49107,8 @@ async def system_sevdesk_invoice_reset_single(request: Request, user=Depends(req
             method="PUT",
             path=f"/Invoice/{invoice_id}/resetToDraft",
         )
+        _system_setting_set(db, f"sevdesk_reset_done_{invoice_id}", _utcnow_naive().isoformat())
+        db.commit()
         _flash(request, f"{invoice_nr} (ID {invoice_id}) erfolgreich auf Entwurf zurückgesetzt.", "info")
     except Exception as exc:
         _flash(request, f"{invoice_nr}: Zurücksetzen fehlgeschlagen — {exc}", "error")
@@ -49171,6 +49159,7 @@ def system_sevdesk_invoice_reset_all(request: Request, user=Depends(require_admi
                 method="PUT",
                 path=f"/Invoice/{inv_id}/resetToDraft",
             )
+            _system_setting_set(db, f"sevdesk_reset_done_{inv_id}", _utcnow_naive().isoformat())
             success += 1
         except Exception as exc:
             errors += 1
@@ -49184,6 +49173,26 @@ def system_sevdesk_invoice_reset_all(request: Request, user=Depends(require_admi
     db.commit()
     _flash(request, "Schreibschutz wurde automatisch wieder aktiviert.", "info")
 
+    return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
+
+
+@app.post("/system/sevdesk-invoice-reset/toggle-done")
+async def system_sevdesk_invoice_reset_toggle_done(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    """Markiert eine Rechnung als erledigt/nicht erledigt."""
+    form = await request.form()
+    invoice_id = str(form.get("invoice_id") or "").strip()
+    invoice_nr = str(form.get("invoice_nr") or "").strip()
+    if not invoice_id:
+        return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
+    key = f"sevdesk_reset_done_{invoice_id}"
+    current = _system_setting_get(db, key, None)
+    if current is not None:
+        db.query(SystemSetting).filter(SystemSetting.key == key).delete()
+        _flash(request, f"{invoice_nr}: Erledigt-Markierung entfernt.", "info")
+    else:
+        _system_setting_set(db, key, _utcnow_naive().isoformat())
+        _flash(request, f"{invoice_nr}: Als erledigt markiert.", "info")
+    db.commit()
     return RedirectResponse("/system/sevdesk-invoice-reset", status_code=302)
 
 
