@@ -10710,7 +10710,7 @@ def _sevdesk_sync_once_background() -> None:
     try:
         settings = _sevdesk_settings(db, include_secret=True)
         if bool(settings.get("enabled")) and bool(settings.get("api_token")):
-            _customer_init_import_sevdesk(db)
+            # Initialimport nur noch manuell über /system/kunden-initialisierung
             _sevdesk_sync_sales_backchannel(db, settings)
             _sevdesk_set_last_sync_at(db)
             db.commit()
