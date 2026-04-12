@@ -48820,6 +48820,66 @@ def system_integration_sevdesk_test(request: Request, user=Depends(require_admin
     )
 
 
+@app.post("/system/integrationen/sevdesk/test-invoice-pdf")
+def system_sevdesk_test_invoice_pdf(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
+    """Testfunktion: Holt die neueste Rechnung als PDF und speichert sie lokal."""
+    from .services.sevdesk_service import list_invoices, download_invoice_pdf
+
+    sevdesk_settings = _sevdesk_settings(db, include_secret=True)
+    if not str(sevdesk_settings.get("api_token") or "").strip():
+        _flash(request, "sevDesk API-Token ist nicht konfiguriert.", "error")
+        return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
+
+    try:
+        # Die neuesten nicht-Entwurf-Rechnungen holen (max 5)
+        invoices = []
+        for status_code in ("1000", "100", "200", "750"):
+            batch = list_invoices(sevdesk_settings, status=status_code, limit=5, embed="contact")
+            invoices.extend(batch)
+            if len(invoices) >= 5:
+                break
+
+        if not invoices:
+            _flash(request, "Keine Rechnungen in sevDesk gefunden.", "warn")
+            return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
+
+        # Ausgabeverzeichnis
+        output_dir = ensure_dirs()["data"] / "sevdesk_test_pdfs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        saved = 0
+        for inv in invoices[:5]:
+            invoice_id = str(inv.get("id") or "").strip()
+            invoice_number = str(inv.get("invoiceNumber") or inv.get("header") or f"RE-{invoice_id}").strip()
+            contact = inv.get("contact") or {}
+            contact_name = str(contact.get("name") or "").strip() if isinstance(contact, dict) else ""
+            status = str(inv.get("status") or "").strip()
+
+            try:
+                pdf_data = download_invoice_pdf(sevdesk_settings, invoice_id)
+                if not pdf_data or len(pdf_data) < 100:
+                    _flash(request, f"{invoice_number}: PDF leer oder zu klein.", "error")
+                    continue
+
+                safe_name = re.sub(r"[^\w\-.]", "_", invoice_number)
+                pdf_path = output_dir / f"{safe_name}.pdf"
+                pdf_path.write_bytes(pdf_data)
+                saved += 1
+                _flash(request, f"{invoice_number} ({contact_name}) — {len(pdf_data) // 1024} KB → {pdf_path}", "info")
+            except Exception as exc:
+                _flash(request, f"{invoice_number}: PDF-Download fehlgeschlagen: {exc}", "error")
+
+        if saved > 0:
+            _flash(request, f"{saved} PDFs gespeichert unter: {output_dir}", "info")
+        else:
+            _flash(request, "Keine PDFs heruntergeladen.", "warn")
+
+    except Exception as exc:
+        _flash(request, f"sevDesk-Fehler: {exc}", "error")
+
+    return RedirectResponse("/system/integrationen/sevdesk", status_code=302)
+
+
 @app.post("/system/integrationen/sevdesk/archive-invoices", response_class=HTMLResponse)
 def system_sevdesk_archive_invoices(request: Request, user=Depends(require_admin), db: Session = Depends(db_session)):
     """Holt alle nicht-Entwurf-Rechnungen von sevDesk als PDF und schiebt sie nach Paperless."""
