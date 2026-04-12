@@ -6865,7 +6865,7 @@ def _mail_default_recipient(db: Session, customer: MasterCustomer | None, crm_ca
 
 BACKGROUND_JOB_ACTIVE_STATUSES = ("queued", "running")
 BACKGROUND_JOB_POLL_INTERVAL_SECONDS = 1.0
-BACKGROUND_JOB_HEARTBEAT_TIMEOUT_SECONDS = 300
+BACKGROUND_JOB_HEARTBEAT_TIMEOUT_SECONDS = 600
 
 
 def _sync_job_progress_payload(raw: str | None) -> dict[str, object]:
@@ -29989,6 +29989,13 @@ def _customer_init_import_sevdesk(db: Session, job: ExternalSyncJob | None = Non
                     error_count=summary["errors"],
                     commit=True,
                 )
+        # Heartbeat aktualisieren vor der Statistik-Phase
+        _sync_job_update_progress(
+            db, job,
+            phase="sevDesk-Kontaktstatistiken werden berechnet",
+            phase_detail=f"{len(orders)} Angebote + {len(invoices)} Rechnungen",
+            commit=True,
+        )
         stats_by_contact: dict[str, dict[str, int]] = {}
         for payload in orders:
             contact = sevdesk_first_value(payload, ("contact.id", "contact", "contact_id"))
