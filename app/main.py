@@ -10705,20 +10705,8 @@ def _sevdesk_sync_sales_backchannel(db: Session, settings: dict[str, str | bool]
 
 
 def _sevdesk_sync_once_background() -> None:
-    SessionLocal = get_sessionmaker()
-    db = SessionLocal()
-    try:
-        settings = _sevdesk_settings(db, include_secret=True)
-        if bool(settings.get("enabled")) and bool(settings.get("api_token")):
-            # Initialimport nur noch manuell über /system/kunden-initialisierung
-            _sevdesk_sync_sales_backchannel(db, settings)
-            _sevdesk_set_last_sync_at(db)
-            db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+    # Komplett deaktiviert — alle sevDesk-Aktionen nur noch manuell
+    pass
 
 
 async def _sevdesk_sync_loop() -> None:
